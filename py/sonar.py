@@ -248,8 +248,8 @@ class SamplerSonarEuler:
                     "FLOAT",
                     {
                         "default": 0.95,
-                        "min": 0.0,
-                        "max": 1.0,
+                        "min": -0.5,
+                        "max": 2.5,
                         "step": 0.01,
                         "round": False,
                     },
@@ -258,8 +258,8 @@ class SamplerSonarEuler:
                     "FLOAT",
                     {
                         "default": 0.75,
-                        "min": 0.0,
-                        "max": 1.0,
+                        "min": -1.5,
+                        "max": 1.5,
                         "step": 0.01,
                         "round": False,
                     },
@@ -269,8 +269,8 @@ class SamplerSonarEuler:
                     "FLOAT",
                     {
                         "default": 1.0,
-                        "min": -2.0,
-                        "max": 2.0,
+                        "min": -30.0,
+                        "max": 5.0,
                         "step": 0.01,
                         "round": False,
                     },
