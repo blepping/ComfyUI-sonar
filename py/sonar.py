@@ -1,4 +1,4 @@
-# Adapted from https://github.com/alexblattner/modified-euler-samplers-for-sonar-diffusers and https://github.com/Kahsolt/stable-diffusion-webui-sonar
+# Sonar sampler part adapted from https://github.com/alexblattner/modified-euler-samplers-for-sonar-diffusers and https://github.com/Kahsolt/stable-diffusion-webui-sonar
 
 from __future__ import annotations
 
@@ -7,6 +7,8 @@ from comfy import samplers
 from comfy.k_diffusion import sampling
 from torch import Tensor
 from tqdm.auto import trange
+
+from . import noise
 
 
 class SonarEuler:
@@ -197,6 +199,7 @@ def sample_sonar_euler_ancestral(
     momentum=0.95,
     momentum_hist=0.75,
     momentum_init="ZERO",
+    noise_type="gaussian",
     direction=1.0,
     eta=1.0,
     s_noise=1.0,
@@ -210,9 +213,22 @@ def sample_sonar_euler_ancestral(
     )
     s.sigmas = sigmas
     extra_args = {} if extra_args is None else extra_args
-    noise_sampler = (
-        sampling.default_noise_sampler(x) if noise_sampler is None else noise_sampler
+    if noise_type != "gaussian" and noise_sampler is not None:
+        raise ValueError(
+            "Unexpected noise_sampler presence with non-default noise type requested",
+        )
+    sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
+    noise_sampler = noise.get_noise_sampler(
+        noise_type,
+        x,
+        sigma_min,
+        sigma_max,
+        seed=None,
+        use_cpu=True,
     )
+    # noise_sampler = (
+    #     sampling.default_noise_sampler(x) if noise_sampler is None else noise_sampler
+    # )
     s_in = x.new_ones([x.shape[0]])
 
     for i in trange(len(sigmas) - 1, disable=disable):
@@ -322,6 +338,19 @@ class SamplerSonarEulerAncestral(SamplerSonarEuler):
                 "round": False,
             },
         )
+        result["required"]["noise_type"] = (
+            (
+                "gaussian",
+                "uniform",
+                "brownian",
+                "perlin",
+                "studentt",
+                "studentt_test",
+                "highres_pyramid",
+                "pink",
+                # "green_ish",
+            ),
+        )
         return result
 
     def get_sampler(
@@ -330,6 +359,7 @@ class SamplerSonarEulerAncestral(SamplerSonarEuler):
         momentum_hist,
         momentum_init,
         direction,
+        noise_type,
         eta,
         s_noise,
     ):
@@ -341,6 +371,7 @@ class SamplerSonarEulerAncestral(SamplerSonarEuler):
                     "momentum": momentum,
                     "momentum_hist": momentum_hist,
                     "direction": direction,
+                    "noise_type": noise_type,
                     "eta": eta,
                     "s_noise": s_noise,
                 },
