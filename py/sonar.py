@@ -1,3 +1,5 @@
+# Adapted from https://github.com/alexblattner/modified-euler-samplers-for-sonar-diffusers and https://github.com/Kahsolt/stable-diffusion-webui-sonar
+
 from __future__ import annotations
 
 import torch
@@ -8,13 +10,20 @@ from tqdm.auto import trange
 
 
 class SonarEuler:
-    def __init__(self, history_type="ZERO", momentum=0.95, momentum_hist=0.75):
+    def __init__(
+        self,
+        history_type="ZERO",
+        momentum=0.95,
+        momentum_hist=0.75,
+        direction=1.0,
+    ):
         if history_type not in ("ZERO", "RAND", "SAMPLE"):
             raise ValueError("Bad history_type: must be one of zero, rand, samples")
         self.history_d = None
         self.history_type = history_type
         self.momentum = momentum
         self.momentum_hist = momentum_hist
+        self.direction = direction
 
     def init_hist_d(self, x: Tensor) -> None:
         if self.history_d is not None:
@@ -30,18 +39,18 @@ class SonarEuler:
     def momentum_step(self, x: Tensor, d: Tensor, dt: Tensor):
         hd = self.history_d
         # correct current `d` with momentum
-        p = 1.0 - self.momentum
-        self.momentum_d = (1.0 - p) * d + p * hd
+        p = (1.0 - self.momentum) * self.direction
+        momentum_d = (1.0 - p) * d + p * hd
 
         # Euler method with momentum
-        x = x + self.momentum_d * dt
+        x = x + momentum_d * dt
 
         # update momentum history
         q = 1.0 - self.momentum_hist
         if isinstance(hd, int) and hd == 0:
-            hd = self.momentum_d
+            hd = momentum_d
         else:
-            hd = (1.0 - q) * hd + q * self.momentum_d
+            hd = (1.0 - q) * hd + q * momentum_d
         self.history_d = hd
         return x
 
@@ -56,7 +65,6 @@ class SonarEuler:
         s_tmin: float = 0.0,
         s_tmax: float = float("inf"),
         s_noise: float = 1.0,
-        generator: torch.Generator | None = None,
     ):
         self.init_hist_d(sample)
 
@@ -71,26 +79,20 @@ class SonarEuler:
         sigma_hat = sigma * (gamma + 1)
 
         if gamma > 0:
-            noise = torch.randn_like(
-                sample.shape,
-                generator=generator,
-            )
+            noise = torch.randn_like(sample.shape)
 
             eps = noise * s_noise
             sample = sample + eps * (sigma_hat**2 - sigma**2) ** 0.5
 
-        model_output = model(sample, sigma_hat * s_in, **extra_args)
-
-        # 2. Convert to an ODE derivative
-        derivative = (sample - model_output) / sigma_hat
-
+        denoised = model(sample, sigma_hat * s_in, **extra_args)
+        derivative = sampling.to_d(sample, sigma, denoised)
         dt = self.sigmas[step_index + 1] - sigma_hat
 
         return (
             self.momentum_step(sample, derivative, dt),
             sigma,
             sigma_hat,
-            model_output,
+            denoised,
         )
 
     def step_ancestral(
@@ -114,11 +116,8 @@ class SonarEuler:
             eta=eta,
         )
 
-        model_output = model(sample, sigma_from * s_in, **extra_args)
-
-        # 2. Convert to an ODE derivative
-        derivative = (sample - model_output) / sigma_from
-
+        denoised = model(sample, sigma_from * s_in, **extra_args)
+        derivative = sampling.to_d(sample, sigma_from, denoised)
         dt = sigma_down - sigma_from
 
         result_sample = self.momentum_step(sample, derivative, dt)
@@ -131,7 +130,7 @@ class SonarEuler:
             result_sample,
             sigma_from,
             sigma_from,
-            model_output,
+            denoised,
         )
 
 
@@ -146,6 +145,7 @@ def sample_sonar_euler(
     momentum=0.95,
     momentum_hist=0.75,
     momentum_init="ZERO",
+    direction=1.0,
     s_churn=0.0,
     s_tmin=0.0,
     s_tmax=float("inf"),
@@ -155,6 +155,7 @@ def sample_sonar_euler(
         momentum=momentum,
         momentum_hist=momentum_hist,
         history_type=momentum_init,
+        direction=direction,
     )
     s.sigmas = sigmas
     extra_args = {} if extra_args is None else extra_args
@@ -196,6 +197,7 @@ def sample_sonar_euler_ancestral(
     momentum=0.95,
     momentum_hist=0.75,
     momentum_init="ZERO",
+    direction=1.0,
     eta=1.0,
     s_noise=1.0,
     noise_sampler=None,
@@ -204,6 +206,7 @@ def sample_sonar_euler_ancestral(
         momentum=momentum,
         momentum_hist=momentum_hist,
         history_type=momentum_init,
+        direction=direction,
     )
     s.sigmas = sigmas
     extra_args = {} if extra_args is None else extra_args
@@ -262,6 +265,16 @@ class SamplerSonarEuler:
                     },
                 ),
                 "momentum_init": (("ZERO", "SAMPLE", "RAND"),),
+                "direction": (
+                    "FLOAT",
+                    {
+                        "default": 1.0,
+                        "min": -2.0,
+                        "max": 2.0,
+                        "step": 0.01,
+                        "round": False,
+                    },
+                ),
                 "s_noise": (
                     "FLOAT",
                     {
@@ -280,7 +293,7 @@ class SamplerSonarEuler:
 
     FUNCTION = "get_sampler"
 
-    def get_sampler(self, momentum, momentum_hist, momentum_init, s_noise):
+    def get_sampler(self, momentum, momentum_hist, momentum_init, direction, s_noise):
         return (
             samplers.KSAMPLER(
                 sample_sonar_euler,
@@ -288,67 +301,38 @@ class SamplerSonarEuler:
                     "momentum_init": momentum_init,
                     "momentum": momentum,
                     "momentum_hist": momentum_hist,
+                    "direction": direction,
                     "s_noise": s_noise,
                 },
             ),
         )
 
 
-class SamplerSonarEulerAncestral:
+class SamplerSonarEulerAncestral(SamplerSonarEuler):
     @classmethod
     def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "momentum": (
-                    "FLOAT",
-                    {
-                        "default": 0.95,
-                        "min": 0.0,
-                        "max": 1.0,
-                        "step": 0.01,
-                        "round": False,
-                    },
-                ),
-                "momentum_hist": (
-                    "FLOAT",
-                    {
-                        "default": 0.75,
-                        "min": 0.0,
-                        "max": 1.0,
-                        "step": 0.01,
-                        "round": False,
-                    },
-                ),
-                "momentum_init": (("ZERO", "SAMPLE", "RAND"),),
-                "eta": (
-                    "FLOAT",
-                    {
-                        "default": 1.0,
-                        "min": 0.0,
-                        "max": 100.0,
-                        "step": 0.01,
-                        "round": False,
-                    },
-                ),
-                "s_noise": (
-                    "FLOAT",
-                    {
-                        "default": 1.0,
-                        "min": 0.0,
-                        "max": 100.0,
-                        "step": 0.01,
-                        "round": False,
-                    },
-                ),
+        result = SamplerSonarEuler.INPUT_TYPES()
+        result["required"]["eta"] = (
+            "FLOAT",
+            {
+                "default": 1.0,
+                "min": 0.0,
+                "max": 100.0,
+                "step": 0.01,
+                "round": False,
             },
-        }
+        )
+        return result
 
-    RETURN_TYPES = ("SAMPLER",)
-    CATEGORY = "sampling/custom_sampling/samplers"
-
-    FUNCTION = "get_sampler"
-
-    def get_sampler(self, momentum, momentum_hist, momentum_init, eta, s_noise):
+    def get_sampler(
+        self,
+        momentum,
+        momentum_hist,
+        momentum_init,
+        direction,
+        eta,
+        s_noise,
+    ):
         return (
             samplers.KSAMPLER(
                 sample_sonar_euler_ancestral,
@@ -356,6 +340,7 @@ class SamplerSonarEulerAncestral:
                     "momentum_init": momentum_init,
                     "momentum": momentum,
                     "momentum_hist": momentum_hist,
+                    "direction": direction,
                     "eta": eta,
                     "s_noise": s_noise,
                 },
