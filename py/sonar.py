@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from enum import Enum, auto
+
 import torch
 from comfy import samplers
 from comfy.k_diffusion import sampling
@@ -11,16 +13,20 @@ from tqdm.auto import trange
 from . import noise
 
 
-class SonarEuler:
+class HistoryType(Enum):
+    ZERO = auto()
+    RAND = auto()
+    SAMPLE = auto()
+
+
+class SonarBase:
     def __init__(
         self,
-        history_type="ZERO",
-        momentum=0.95,
-        momentum_hist=0.75,
-        direction=1.0,
-    ):
-        if history_type not in ("ZERO", "RAND", "SAMPLE"):
-            raise ValueError("Bad history_type: must be one of zero, rand, samples")
+        history_type: HistoryType = HistoryType.ZERO,
+        momentum: float = 0.95,
+        momentum_hist: float = 0.75,
+        direction: float = 1.0,
+    ) -> None:
         self.history_d = None
         self.history_type = history_type
         self.momentum = momentum
@@ -31,11 +37,11 @@ class SonarEuler:
         if self.history_d is not None:
             return
         # memorize delta momentum
-        if self.history_type == "ZERO":
+        if self.history_type == HistoryType.ZERO:
             self.history_d = 0
-        elif self.history_type == "SAMPLE":
+        elif self.history_type == HistoryType.SAMPLE:
             self.history_d = x
-        elif self.history_type == "RAND":
+        elif self.history_type == HistoryType.RAND:
             self.history_d = torch.randn_like(x)
 
     def momentum_step(self, x: Tensor, d: Tensor, dt: Tensor):
@@ -56,25 +62,52 @@ class SonarEuler:
         self.history_d = hd
         return x
 
-    def step(
+
+class SonarSampler(SonarBase):
+    def __init__(
         self,
-        step_index,
         model,
-        sample: torch.FloatTensor,
+        sigmas,
         s_in,
         extra_args,
+        *args,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.model = model
+        self.sigmas = sigmas
+        self.s_in = s_in
+        self.extra_args = extra_args
+
+
+class SonarEuler(SonarSampler):
+    def __init__(
+        self,
         s_churn: float = 0.0,
         s_tmin: float = 0.0,
         s_tmax: float = float("inf"),
         s_noise: float = 1.0,
+        *args,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.s_churn = s_churn
+        self.s_tmin = s_tmin
+        self.s_tmax = s_tmax
+        self.s_noise = s_noise
+
+    def step(
+        self,
+        step_index: int,
+        sample: torch.FloatTensor,
     ):
         self.init_hist_d(sample)
 
         sigma = self.sigmas[step_index]
 
         gamma = (
-            min(s_churn / (len(self.sigmas) - 1), 2**0.5 - 1)
-            if s_tmin <= sigma <= s_tmax
+            min(self.s_churn / (len(self.sigmas) - 1), 2**0.5 - 1)
+            if self.s_tmin <= sigma <= self.s_tmax
             else 0.0
         )
 
@@ -83,10 +116,10 @@ class SonarEuler:
         if gamma > 0:
             noise = torch.randn_like(sample.shape)
 
-            eps = noise * s_noise
+            eps = noise * self.s_noise
             sample = sample + eps * (sigma_hat**2 - sigma**2) ** 0.5
 
-        denoised = model(sample, sigma_hat * s_in, **extra_args)
+        denoised = self.model(sample, sigma_hat * self.s_in, **self.extra_args)
         derivative = sampling.to_d(sample, sigma, denoised)
         dt = self.sigmas[step_index + 1] - sigma_hat
 
@@ -97,35 +130,96 @@ class SonarEuler:
             denoised,
         )
 
-    def step_ancestral(
-        self,
-        step_index,
+    @classmethod
+    @torch.no_grad()
+    def sampler(
+        cls,
         model,
-        sample: torch.FloatTensor,
+        x,
+        sigmas,
+        extra_args=None,
+        callback=None,
+        disable=None,
+        momentum=0.95,
+        momentum_hist=0.75,
+        momentum_init="ZERO",
+        direction=1.0,
+        s_churn=0.0,
+        s_tmin=0.0,
+        s_tmax=float("inf"),
+        s_noise=1.0,
+    ):
+        s_in = x.new_ones([x.shape[0]])
+        sonar = cls(
+            s_churn,
+            s_tmin,
+            s_tmax,
+            s_noise,
+            model,
+            sigmas,
+            s_in,
+            {} if extra_args is None else extra_args,
+            momentum=momentum,
+            momentum_hist=momentum_hist,
+            history_type=momentum_init,
+            direction=direction,
+        )
+
+        for i in trange(len(sigmas) - 1, disable=disable):
+            x, sigma, sigma_hat, denoised = sonar.step(
+                i,
+                x,
+            )
+            if callback is not None:
+                callback(
+                    {
+                        "x": x,
+                        "i": i,
+                        "sigma": sigmas[i],
+                        "sigma_hat": sigma_hat,
+                        "denoised": denoised,
+                    },
+                )
+        return x
+
+
+class SonarEulerAncestral(SonarSampler):
+    def __init__(
+        self,
         noise_sampler,
-        s_in,
-        extra_args,
-        eta=1.0,
+        eta: float = 1.0,
         s_noise: float = 1.0,
+        *args,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.noise_sampler = noise_sampler
+        self.eta = eta
+        self.s_noise = s_noise
+
+    def step(
+        self,
+        step_index: int,
+        sample: torch.FloatTensor,
     ):
         self.init_hist_d(sample)
 
-        sigma_from = self.sigmas[step_index]
-        sigma_to = self.sigmas[step_index + 1]
+        sigma_from, sigma_to = self.sigmas[step_index], self.sigmas[step_index + 1]
         sigma_down, sigma_up = sampling.get_ancestral_step(
             sigma_from,
             sigma_to,
-            eta=eta,
+            eta=self.eta,
         )
 
-        denoised = model(sample, sigma_from * s_in, **extra_args)
+        denoised = self.model(sample, sigma_from * self.s_in, **self.extra_args)
         derivative = sampling.to_d(sample, sigma_from, denoised)
         dt = sigma_down - sigma_from
 
         result_sample = self.momentum_step(sample, derivative, dt)
         if sigma_to > 0:
             result_sample = (
-                result_sample + noise_sampler(sigma_from, sigma_to) * s_noise * sigma_up
+                result_sample
+                + self.noise_sampler(sigma_from, sigma_to) * self.s_noise * sigma_up
             )
 
         return (
@@ -135,127 +229,73 @@ class SonarEuler:
             denoised,
         )
 
-
-@torch.no_grad()
-def sample_sonar_euler(
-    model,
-    x,
-    sigmas,
-    extra_args=None,
-    callback=None,
-    disable=None,
-    momentum=0.95,
-    momentum_hist=0.75,
-    momentum_init="ZERO",
-    direction=1.0,
-    s_churn=0.0,
-    s_tmin=0.0,
-    s_tmax=float("inf"),
-    s_noise=1.0,
-):
-    s = SonarEuler(
-        momentum=momentum,
-        momentum_hist=momentum_hist,
-        history_type=momentum_init,
-        direction=direction,
-    )
-    s.sigmas = sigmas
-    extra_args = {} if extra_args is None else extra_args
-    s_in = x.new_ones([x.shape[0]])
-
-    for i in trange(len(sigmas) - 1, disable=disable):
-        x, sigma, sigma_hat, denoised = s.step(
-            i,
-            model,
-            x,
-            s_in,
-            extra_args,
-            s_churn,
-            s_tmin,
-            s_tmax,
-            s_noise,
-        )
-        if callback is not None:
-            callback(
-                {
-                    "x": x,
-                    "i": i,
-                    "sigma": sigmas[i],
-                    "sigma_hat": sigma_hat,
-                    "denoised": denoised,
-                },
-            )
-    return x
-
-
-@torch.no_grad()
-def sample_sonar_euler_ancestral(
-    model,
-    x,
-    sigmas,
-    extra_args=None,
-    callback=None,
-    disable=None,
-    momentum=0.95,
-    momentum_hist=0.75,
-    momentum_init="ZERO",
-    noise_type="gaussian",
-    direction=1.0,
-    eta=1.0,
-    s_noise=1.0,
-    noise_sampler=None,
-):
-    s = SonarEuler(
-        momentum=momentum,
-        momentum_hist=momentum_hist,
-        history_type=momentum_init,
-        direction=direction,
-    )
-    s.sigmas = sigmas
-    extra_args = {} if extra_args is None else extra_args
-    if noise_type != "gaussian" and noise_sampler is not None:
-        raise ValueError(
-            "Unexpected noise_sampler presence with non-default noise type requested",
-        )
-    sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
-    noise_sampler = noise.get_noise_sampler(
-        noise_type,
+    @classmethod
+    @torch.no_grad()
+    def sampler(
+        cls,
+        model,
         x,
-        sigma_min,
-        sigma_max,
-        seed=None,
-        use_cpu=True,
-    )
-    # noise_sampler = (
-    #     sampling.default_noise_sampler(x) if noise_sampler is None else noise_sampler
-    # )
-    s_in = x.new_ones([x.shape[0]])
-
-    for i in trange(len(sigmas) - 1, disable=disable):
-        x, sigma, sigma_hat, denoised = s.step_ancestral(
-            i,
-            model,
+        sigmas,
+        extra_args=None,
+        callback=None,
+        disable=None,
+        momentum=0.95,
+        momentum_hist=0.75,
+        momentum_init="ZERO",
+        noise_type="gaussian",
+        direction=1.0,
+        eta=1.0,
+        s_noise=1.0,
+        noise_sampler=None,
+    ):
+        if noise_type != "gaussian" and noise_sampler is not None:
+            # Possibly we should just use the supplied already-created noise sampler here.
+            raise ValueError(
+                "Unexpected noise_sampler presence with non-default noise type requested",
+            )
+        sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
+        noise_sampler = noise.get_noise_sampler(
+            noise_type,
             x,
+            sigma_min,
+            sigma_max,
+            seed=None,
+            use_cpu=True,
+        )
+        s_in = x.new_ones([x.shape[0]])
+        sonar = cls(
             noise_sampler,
-            s_in,
-            extra_args,
             eta,
             s_noise,
+            model,
+            sigmas,
+            s_in,
+            {} if extra_args is None else extra_args,
+            momentum=momentum,
+            momentum_hist=momentum_hist,
+            history_type=momentum_init,
+            direction=direction,
         )
-        if callback is not None:
-            callback(
-                {
-                    "x": x,
-                    "i": i,
-                    "sigma": sigmas[i],
-                    "sigma_hat": sigma_hat,
-                    "denoised": denoised,
-                },
+
+        for i in trange(len(sigmas) - 1, disable=disable):
+            x, sigma, sigma_hat, denoised = sonar.step(
+                i,
+                x,
             )
-    return x
+            if callback is not None:
+                callback(
+                    {
+                        "x": x,
+                        "i": i,
+                        "sigma": sigmas[i],
+                        "sigma_hat": sigma_hat,
+                        "denoised": denoised,
+                    },
+                )
+        return x
 
 
-class SamplerSonarEuler:
+class SamplerNodeSonarEuler:
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -312,9 +352,9 @@ class SamplerSonarEuler:
     def get_sampler(self, momentum, momentum_hist, momentum_init, direction, s_noise):
         return (
             samplers.KSAMPLER(
-                sample_sonar_euler,
+                SonarEuler.sampler,
                 {
-                    "momentum_init": momentum_init,
+                    "momentum_init": HistoryType[momentum_init],
                     "momentum": momentum,
                     "momentum_hist": momentum_hist,
                     "direction": direction,
@@ -324,10 +364,10 @@ class SamplerSonarEuler:
         )
 
 
-class SamplerSonarEulerAncestral(SamplerSonarEuler):
+class SamplerNodeSonarEulerAncestral(SamplerNodeSonarEuler):
     @classmethod
     def INPUT_TYPES(cls):
-        result = SamplerSonarEuler.INPUT_TYPES()
+        result = super().INPUT_TYPES()
         result["required"]["eta"] = (
             "FLOAT",
             {
@@ -365,9 +405,9 @@ class SamplerSonarEulerAncestral(SamplerSonarEuler):
     ):
         return (
             samplers.KSAMPLER(
-                sample_sonar_euler_ancestral,
+                SonarEulerAncestral.sampler,
                 {
-                    "momentum_init": momentum_init,
+                    "momentum_init": HistoryType[momentum_init],
                     "momentum": momentum,
                     "momentum_hist": momentum_hist,
                     "direction": direction,
