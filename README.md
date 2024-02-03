@@ -29,6 +29,8 @@ I basically just copied a bunch of noise functions without really knowing what t
 7. `pink`
 8. `highres_pyramid`: Not extensively tested, but it is slower than the other noise types. I would guess it does something like enhance details.
 
+You can scroll down to the the examples section near the bottom to see some example generations with different noise types.
+
 ## Credits
 
 Original Sonar Sampler implementation (for A1111): https://github.com/Kahsolt/stable-diffusion-webui-sonar
@@ -36,3 +38,43 @@ Original Sonar Sampler implementation (for A1111): https://github.com/Kahsolt/st
 My version basically just rips off this Sonar sampler implementation for Diffusers: https://github.com/alexblattner/modified-euler-samplers-for-sonar-diffusers/
 
 Noise generation functions copied from https://github.com/Clybius/ComfyUI-Extra-Samplers with only minor modifications. I may have broken some of them in the process _or_ they may not have been suitable for use and I took them anyway. If they don't work it is not a reflection on the original source.
+
+## Examples
+
+### Noise Types
+
+These were generated with `s_noise=1.1` to make the noise effect more pronounced, default sonar settings (`momentum=0.95, momentum_hist=0.75, direction=1.0, momentum_init=ZERO`):
+
+#### Gaussian
+
+![Gaussian](assets/example_images/noise/noise_gaussian.png)
+
+#### Brownian
+
+![Brownian](assets/example_images/noise/noise_brownian.png)
+
+#### Perlin
+
+![Perlin](assets/example_images/noise/noise_perlin.png)
+
+#### Uniform
+
+![Uniform](assets/example_images/noise/noise_uniform.png)
+
+#### Highres Pyramid
+
+![Highres_pyramid](assets/example_images/noise/noise_highres_pyramid.png)
+
+#### Pink
+
+![Pink](assets/example_images/noise/noise_pink.png)
+
+#### StudentT
+
+![StudentT](assets/example_images/noise/noise_studentt.png)
+
+
+#### StudentT_test
+
+![StudentT_test](assets/example_images/noise/noise_studentt_test.png)
+
