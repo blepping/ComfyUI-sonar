@@ -12,6 +12,14 @@ The `direction` parameter should (unless I screwed it up) work like setting sign
 
 Like the original documentation says, you normally would not want to set `momentum` to a value below `0.85`. The default values are considered reasonable, doing stuff like using a negative direction may not produce good results.
 
+## Usage
+
+The most flexible way to use this is with a custom sampler:
+
+![Usage](assets/example_images/custom_sampler_usage.png)
+
+You can also just choose `sonar_euler` or `sonar_euler_ancestral` from the normal samplers list (will use the default settings). I personally recommend using the custom sampler approach and the ancestral version.
+
 ## Parameters
 
 Very abbreviated section. The init type can make a big difference. If you use `RANDOM` you can get away with setting `direction` to high values (like up to `2.25` or so) and absurdly low values (like `-30.0`). It's also possible to set `momentum` and `momentum_hist` to negative values, although whether it's a good idea...
