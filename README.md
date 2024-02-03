@@ -56,6 +56,13 @@ Base image - no Sonar Sampler steps.
 
 ![Base](assets/example_images/noise/renoise_base.png)
 
+#### Euler A
+
+Normal (non-sonar) Eular A. Not really a comparison with noise (think it would use gaussian) but with the difference in effect from momentum.
+
+![Euler A](assets/example_images/noise/renoise_eulera.png)
+
+
 #### Gaussian
 
 ![Gaussian](assets/example_images/noise/renoise_gaussian.png)
