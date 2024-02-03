@@ -41,9 +41,62 @@ Noise generation functions copied from https://github.com/Clybius/ComfyUI-Extra-
 
 ## Examples
 
-### Noise Types
 
-These were generated with `s_noise=1.1` to make the noise effect more pronounced, default sonar settings (`momentum=0.95, momentum_hist=0.75, direction=1.0, momentum_init=ZERO`):
+
+### Noise Types (img2img)
+
+These were generated with `s_noise=1.05` to make the noise effect more pronounced, 30 steps at `0.66` denoise, sonar settings increased slightly to enhance the effect (`momentum=0.9, momentum_hist=0.85, direction=1.0, momentum_init=ZERO`). It is probably easier to compare using these as the image _mostly_ stays the same as the sonar sampler settings change.
+
+<details>
+<summary>Expand renoise example images</summary>
+
+#### Base
+
+Base image - no Sonar Sampler steps.
+
+![Base](assets/example_images/noise/renoise_base.png)
+
+#### Gaussian
+
+![Gaussian](assets/example_images/noise/renoise_gaussian.png)
+
+#### Brownian
+
+![Brownian](assets/example_images/noise/renoise_brownian.png)
+
+#### Perlin
+
+![Perlin](assets/example_images/noise/renoise_perlin.png)
+
+#### Uniform
+
+![Uniform](assets/example_images/noise/renoise_uniform.png)
+
+#### Highres Pyramid
+
+![Highres_pyramid](assets/example_images/noise/renoise_highres_pyramid.png)
+
+#### Pink
+
+![Pink](assets/example_images/noise/renoise_pink.png)
+
+#### StudentT
+
+![StudentT](assets/example_images/noise/renoise_studentt.png)
+
+
+#### StudentT_test
+
+![StudentT_test](assets/example_images/noise/renoise_studentt_test.png)
+
+</details>
+
+### Noise Types (Initial Generations)
+
+These were generated with `s_noise=1.1` to make the noise effect more pronounced, default sonar settings (`momentum=0.95, momentum_hist=0.75, direction=1.0, momentum_init=ZERO`). It may be harder to see the noise effects since the composition can change a lot in initial generations.
+
+<details>
+<summary>Expand initial generation example images</summary>
 
 #### Gaussian
 
@@ -78,3 +131,4 @@ These were generated with `s_noise=1.1` to make the noise effect more pronounced
 
 ![StudentT_test](assets/example_images/noise/noise_studentt_test.png)
 
+</details>
