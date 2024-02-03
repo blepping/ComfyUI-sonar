@@ -22,13 +22,13 @@ class HistoryType(Enum):
 class SonarBase:
     def __init__(
         self,
-        history_type: HistoryType = HistoryType.ZERO,
+        history_type: HistoryType | None = None,
         momentum: float = 0.95,
         momentum_hist: float = 0.75,
         direction: float = 1.0,
     ) -> None:
         self.history_d = None
-        self.history_type = history_type
+        self.history_type = HistoryType.ZERO if history_type is None else history_type
         self.momentum = momentum
         self.momentum_hist = momentum_hist
         self.direction = direction
@@ -43,6 +43,8 @@ class SonarBase:
             self.history_d = x
         elif self.history_type == HistoryType.RAND:
             self.history_d = torch.randn_like(x)
+        else:
+            raise ValueError("Sonar sampler: bad history type")
 
     def momentum_step(self, x: Tensor, d: Tensor, dt: Tensor):
         hd = self.history_d
@@ -142,7 +144,7 @@ class SonarEuler(SonarSampler):
         disable=None,
         momentum=0.95,
         momentum_hist=0.75,
-        momentum_init="ZERO",
+        momentum_init=HistoryType.ZERO,
         direction=1.0,
         s_churn=0.0,
         s_tmin=0.0,
@@ -241,7 +243,7 @@ class SonarEulerAncestral(SonarSampler):
         disable=None,
         momentum=0.95,
         momentum_hist=0.75,
-        momentum_init="ZERO",
+        momentum_init=HistoryType.ZERO,
         noise_type="gaussian",
         direction=1.0,
         eta=1.0,
@@ -417,3 +419,33 @@ class SamplerNodeSonarEulerAncestral(SamplerNodeSonarEuler):
                 },
             ),
         )
+
+
+def add_samplers():
+    import importlib
+
+    from comfy.samplers import KSampler, k_diffusion_sampling
+
+    extra_samplers = {
+        "sonar_euler": SonarEuler.sampler,
+        "sonar_euler_ancestral": SonarEulerAncestral.sampler,
+    }
+    added = 0
+    for (
+        name,
+        sampler,
+    ) in extra_samplers.items():
+        if name in KSampler.SAMPLERS:
+            continue
+        try:
+            KSampler.SAMPLERS.append(name)
+            setattr(
+                k_diffusion_sampling,
+                f"sample_{name}",
+                sampler,
+            )
+            added += 1
+        except ValueError as exc:
+            print(f"Sonar: Failed to add {name} to built in samplers list: {exc}")
+    if added > 0:
+        importlib.reload(k_diffusion_sampling)
