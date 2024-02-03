@@ -326,7 +326,7 @@ class SamplerNodeSonarEuler:
                     {
                         "default": 1.0,
                         "min": -30.0,
-                        "max": 5.0,
+                        "max": 15.0,
                         "step": 0.01,
                         "round": False,
                     },
