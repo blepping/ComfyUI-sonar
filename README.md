@@ -24,6 +24,14 @@ You can also just choose `sonar_euler` or `sonar_euler_ancestral` from the norma
 
 Very abbreviated section. The init type can make a big difference. If you use `RANDOM` you can get away with setting `direction` to high values (like up to `2.25` or so) and absurdly low values (like `-30.0`). It's also possible to set `momentum` and `momentum_hist` to negative values, although whether it's a good idea...
 
+## Guidance
+
+You can try the `SamplerSonarNaive` sampler which has an optional latent input. The guidance _probably_ isn't working correctly and the implementation definitely isn't exactly the same as the original A1111 version but it still might be fun to play with. The `linear` guidance type is a lot more sensitive to the `guidance_factor` than the `euler` type. For `euler`, reasonable values are around `0.01` to `0.1`, for `linear` reasonable values are more like `0.001` to `0.02`. It is also possible to set guidance factor to a negative value, I've found this results in high contrast and very vivid colors.
+
+Without guidance it should basically work the same as the ancestral Euler version. There are some example images in the examples section below.
+
+**Note**: The reference latent needs to be the same size as the one being sampled.
+
 ## Noise
 
 I basically just copied a bunch of noise functions without really knowing what they do. The main thing I can say is they produce a semi-reasonable result and it's different from the other noise samplers. See credits below.
@@ -49,6 +57,24 @@ Noise generation functions copied from https://github.com/Clybius/ComfyUI-Extra-
 
 ## Examples
 
+### Guidance
+
+<details>
+<summary>Expand guidance example images</summary>
+
+#### Positive
+
+Using the `linear` guidance type and `guidance_factor=0.02`. The reference image was a red and blue checkboard pattern.
+
+![Positive](assets/example_images/guidance/guidance_linear_pos.png)
+
+#### Negative
+
+Using the `linear` guidance type and `guidance_factor=-0.015`. The reference image was a red and blue checkboard pattern.
+
+![Positive](assets/example_images/guidance/guidance_linear_neg.png)
+
+</details>
 
 
 ### Noise Types (img2img)

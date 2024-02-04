@@ -3,13 +3,25 @@ from __future__ import annotations
 
 import math
 import random
+from enum import Enum, auto
 from typing import Callable
 
 import torch
 from comfy.k_diffusion import sampling
 from torch import FloatTensor, Generator, Tensor
 
-# ruff: noqa: D417,D212, D407, ANN002, ANN003, FBT002, S311
+# ruff: noqa: D417,D212, D407, ANN002, ANN003, FBT001, FBT002, S311
+
+
+class NoiseType(Enum):
+    GAUSSIAN = auto()
+    UNIFORM = auto()
+    BROWNIAN = auto()
+    PERLIN = auto()
+    STUDENTT = auto()
+    STUDENTT_TEST = auto()
+    HIGHRES_PYRAMID = auto()
+    PINK = auto()
 
 
 class NoiseError(Exception):
@@ -216,8 +228,9 @@ def highres_pyramid_noise_like(x, discount=0.7):
     orig_w = w
     u = torch.nn.Upsample(size=(orig_h, orig_w), mode="bilinear")
     noise = uniform_noise_like(x)
+    rs = torch.rand(4, dtype=torch.float32) * 2 + 2
     for i in range(4):
-        r = random.random() * 2 + 2  # Rather than always going 2x,
+        r = rs[i]
         h, w = min(orig_h * 15, int(h * (r**i))), min(orig_w * 15, int(w * (r**i)))
         noise += u(torch.randn(b, c, h, w).to(x)) * discount**i
         if h >= orig_h * 15 or w >= orig_w * 15:
@@ -282,21 +295,33 @@ def pink_noise_like(x):
     return noise.sub_(noise_mean).div_(noise_std).to(x.device)
 
 
-NOISE_SAMPLERS = {
+NOISE_SAMPLERS: dict[NoiseType, Callable] = {
     # No brownian as it is a special case that requires extra stuff like seed.
-    "gaussian": sampling.default_noise_sampler,
-    "uniform": lambda x: lambda _s, _sn: (torch.rand_like(x) - 0.5) * 3.46,
-    "perlin": lambda x: lambda _s, _sn: rand_perlin_like(x),
-    "studentt": studentt_noise_sampler,
-    "studentt_test": lambda x: lambda _s, _sn: studentt_noise_like(x).to(x.device),
-    "pink": lambda x: lambda _s, _sn: pink_noise_like(x),
-    "green_ish": lambda x: lambda _s, _sn: green_noise_like(x),
-    "highres_pyramid": lambda x: lambda _s, _sn: highres_pyramid_noise_like(x),
+    NoiseType.GAUSSIAN: sampling.default_noise_sampler,
+    NoiseType.UNIFORM: lambda x: lambda _s, _sn: (torch.rand_like(x) - 0.5) * 3.46,
+    NoiseType.PERLIN: lambda x: lambda _s, _sn: rand_perlin_like(x),
+    NoiseType.STUDENTT: studentt_noise_sampler,
+    NoiseType.STUDENTT_TEST: lambda x: lambda _s, _sn: studentt_noise_like(x).to(
+        x.device,
+    ),
+    NoiseType.PINK: lambda x: lambda _s, _sn: pink_noise_like(x),
+    # NoiseType.GREEN_ISH: lambda x: lambda _s, _sn: green_noise_like(x),
+    NoiseType.HIGHRES_PYRAMID: lambda x: lambda _s, _sn: highres_pyramid_noise_like(x),
 }
 
 
-def get_noise_sampler(name, x, sigma_min, sigma_max, seed=None, use_cpu=True):
-    if name == "brownian":
+def get_noise_sampler(
+    name: str,
+    x: Tensor,
+    sigma_min: float,
+    sigma_max: float,
+    seed: int | None = None,
+    use_cpu: bool = True,
+):
+    if not name or name == "default":
+        name = "gaussian"
+    nt = NoiseType[name.upper()]
+    if nt == NoiseType.BROWNIAN:
         return sampling.BrownianTreeNoiseSampler(
             x,
             sigma_min,
@@ -304,9 +329,7 @@ def get_noise_sampler(name, x, sigma_min, sigma_max, seed=None, use_cpu=True):
             seed=seed,
             cpu=use_cpu,
         )
-    if name == "default" or not name:
-        name = "gaussian"
-    ns = NOISE_SAMPLERS.get(name, None)
+    ns = NOISE_SAMPLERS.get(nt, None)
     if ns is None:
         raise ValueError("Unknown noise sampler")
     return ns(x)
