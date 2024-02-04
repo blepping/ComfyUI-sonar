@@ -311,10 +311,18 @@ class SonarGuidanceMixin:
         guidance_type: GuidanceType | None = None,
         ref_latent: dict[str, Any] | None = None,
         guidance_factor: float = 0.0,
+        guidance_start: int = 1,
+        guidance_end: int = 9999,
     ) -> None:
-        self.ref_latent = self.prepare_ref_latent(ref_latent["samples"])
+        self.ref_latent = (
+            None
+            if ref_latent is None
+            else self.prepare_ref_latent(ref_latent["samples"])
+        )
         self.guidance_factor = guidance_factor
         self.guidance_type = guidance_type
+        self.guidance_start = guidance_start
+        self.guidance_end = guidance_end
 
     @staticmethod
     def prepare_ref_latent(latent: Tensor | None) -> Tensor:
@@ -329,7 +337,7 @@ class SonarGuidanceMixin:
             self.ref_latent is None
             or self.guidance_type is None
             or self.guidance_factor == 0.0
-        ):
+        ) or not (self.guidance_start <= (step_index + 1) <= self.guidance_end):
             return x
         if self.ref_latent.device != x.device:
             self.ref_latent = self.ref_latent.to(device=x.device)
@@ -372,6 +380,8 @@ class SonarNaive(SonarSampler, SonarGuidanceMixin):
         guidance_type: GuidanceType | None = None,
         guidance_latent: Tensor | None = None,
         guidance_factor: float = 0.0,
+        guidance_start: int = 1,
+        guidance_end: int = 9999,
         *args: list[Any],
         **kwargs: dict[str, Any],
     ):
@@ -380,6 +390,8 @@ class SonarNaive(SonarSampler, SonarGuidanceMixin):
             self,
             guidance_type=guidance_type,
             guidance_factor=guidance_factor,
+            guidance_start=guidance_start,
+            guidance_end=guidance_end,
             ref_latent=guidance_latent,
         )
         self.noise_sampler = noise_sampler
@@ -439,6 +451,8 @@ class SonarNaive(SonarSampler, SonarGuidanceMixin):
         guidance_type: GuidanceType | None = None,
         guidance_latent: Tensor | None = None,
         guidance_factor: float = 0.0,
+        guidance_start: int = 1,
+        guidance_end: int = 9999,
     ):
         if noise_type != "gaussian" and noise_sampler is not None:
             # Possibly we should just use the supplied already-created noise sampler here.
@@ -461,6 +475,8 @@ class SonarNaive(SonarSampler, SonarGuidanceMixin):
             guidance_type,
             guidance_latent,
             guidance_factor,
+            guidance_start,
+            guidance_end,
             model,
             sigmas,
             s_in,
@@ -617,11 +633,13 @@ class SamplerNodeSonarNaive(SamplerNodeSonarEuler):
                 "round": False,
             },
         )
-        result["required"]["noise_type"] = (
-            tuple(t.name.lower() for t in noise.NoiseType),
-        )
-        result["required"]["guidance_type"] = (
-            tuple(t.name.lower() for t in GuidanceType),
+        result["required"].update(
+            {
+                "noise_type": (tuple(t.name.lower() for t in noise.NoiseType),),
+                "guidance_type": (tuple(t.name.lower() for t in GuidanceType),),
+                "guidance_start_step": ("INT", {"default": 1, "min": 1}),
+                "guidance_end_step": ("INT", {"default": 9999, "min": 1}),
+            },
         )
         result["optional"] = {"guidance_latent_opt": ("LATENT",)}
         return result
@@ -636,6 +654,8 @@ class SamplerNodeSonarNaive(SamplerNodeSonarEuler):
         s_noise,
         guidance_type,
         guidance_factor,
+        guidance_start_step,
+        guidance_end_step,
         **kwargs: dict[str, Any],
     ):
         return (
@@ -650,6 +670,8 @@ class SamplerNodeSonarNaive(SamplerNodeSonarEuler):
                     "s_noise": s_noise,
                     "guidance_type": GuidanceType[guidance_type.upper()],
                     "guidance_factor": guidance_factor,
+                    "guidance_start": guidance_start_step,
+                    "guidance_end": guidance_end_step,
                     "guidance_latent": kwargs.get("guidance_latent_opt"),
                 },
             ),
