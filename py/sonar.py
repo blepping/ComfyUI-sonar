@@ -62,6 +62,14 @@ class SonarBase:
         else:
             raise ValueError("Sonar sampler: bad history type")
 
+    def update_hist(self, momentum_d):
+        q = 1.0 - self.cfg.momentum_hist
+        hd = self.history_d
+        if isinstance(hd, int) and hd == 0:
+            self.history_d = momentum_d
+        else:
+            self.history_d = (1.0 - q) * hd + q * momentum_d
+
     def momentum_step(self, x: Tensor, d: Tensor, dt: Tensor):
         if self.cfg.momentum == 1.0:
             return x + d * dt
@@ -73,13 +81,8 @@ class SonarBase:
         # Euler method with momentum
         x = x + momentum_d * dt
 
-        # update momentum history
-        q = 1.0 - self.cfg.momentum_hist
-        if isinstance(hd, int) and hd == 0:
-            hd = momentum_d
-        else:
-            hd = (1.0 - q) * hd + q * momentum_d
-        self.history_d = hd
+        self.update_hist(momentum_d)
+
         return x
 
 
@@ -346,7 +349,185 @@ class SonarEulerAncestral(SonarSampler):
             x,
             sigma_min,
             sigma_max,
-            seed=None,
+            seed=extra_args.get("seed"),
+            use_cpu=True,
+        )
+        s_in = x.new_ones([x.shape[0]])
+        sonar = cls(
+            noise_sampler,
+            eta,
+            s_noise,
+            model,
+            sigmas,
+            s_in,
+            {} if extra_args is None else extra_args,
+            sonar_config,
+        )
+
+        for i in trange(len(sigmas) - 1, disable=disable):
+            x, sigma, sigma_hat, denoised = sonar.step(
+                i,
+                x,
+            )
+            if callback is not None:
+                callback(
+                    {
+                        "x": x,
+                        "i": i,
+                        "sigma": sigmas[i],
+                        "sigma_hat": sigma_hat,
+                        "denoised": denoised,
+                    },
+                )
+        return x
+
+
+class SonarDPMPPSDE(SonarSampler):
+    def __init__(
+        self,
+        noise_sampler,
+        eta: float = 1.0,
+        s_noise: float = 1.0,
+        *args: list[Any],
+        **kwargs: dict[str, Any],
+    ):
+        super().__init__(*args, **kwargs)
+        self.noise_sampler = noise_sampler
+        self.eta = eta
+        self.s_noise = s_noise
+
+    @staticmethod
+    def sigma_fn(t) -> float:
+        return t.neg().exp()
+
+    @staticmethod
+    def t_fn(sigma) -> float:
+        return sigma.log.neg()
+
+    def momentum_step(
+        self,
+        step_index,
+        x: Tensor,
+        denoised: Tensor,
+        sigma_from,
+        sigma_to,
+        sigma_down,
+    ):
+        if sigma_to == 0:
+            derivative = sampling.to_d(x, sigma_from, denoised)
+            dt = sigma_down - sigma_from
+            return super().momentum_step(x, derivative, dt)
+
+        def sigma_fn(t):
+            return t.neg().exp()
+
+        def t_fn(sigma):
+            return sigma.log().neg()
+
+        hd = self.history_d
+        p = (1.0 - self.cfg.momentum) * self.cfg.direction
+
+        r = 1 / 2
+        # DPM-Solver++
+        t, t_next = t_fn(sigma_from), t_fn(sigma_to)
+        h = t_next - t
+        s = t + h * r
+        fac = 1 / (2 * r)
+
+        # Step 1
+        sd, su = sampling.get_ancestral_step(sigma_fn(t), sigma_fn(s), self.eta)
+        s_ = t_fn(sd)
+        diff_2 = (t - s_).expm1() * denoised
+        momentum_d = (1.0 - p) * diff_2 + p * hd
+        self.update_hist(momentum_d)
+        x_2 = (sigma_fn(s_) / sigma_fn(t)) * x - momentum_d
+        x_2 = x_2 + self.noise_sampler(sigma_fn(t), sigma_fn(s)) * self.s_noise * su
+        denoised_2 = self.model(x_2, sigma_fn(s) * self.s_in, **self.extra_args)
+
+        # Step 2
+        sd, su = sampling.get_ancestral_step(
+            sigma_fn(t),
+            sigma_fn(t_next),
+            self.eta,
+        )
+        t_next_ = t_fn(sd)
+        denoised_d = (1 - fac) * denoised + fac * denoised_2
+        diff_1 = (t - t_next_).expm1() * denoised_d
+        momentum_d = (1.0 - p) * diff_1 + p * hd
+        self.update_hist(momentum_d)
+        x = (sigma_fn(t_next_) / sigma_fn(t)) * x - momentum_d
+        x = self.guidance_step(step_index, x, denoised_d)
+        return x + self.noise_sampler(sigma_fn(t), sigma_fn(t_next)) * self.s_noise * su
+
+    def step(
+        self,
+        step_index: int,
+        sample: torch.FloatTensor,
+    ):
+        def sigma_fn(t):
+            return t.neg().exp()
+
+        def t_fn(sigma):
+            return sigma.log().neg()
+
+        self.init_hist_d(sample)
+
+        sigma_from, sigma_to = self.sigmas[step_index], self.sigmas[step_index + 1]
+        sigma_down, sigma_up = sampling.get_ancestral_step(
+            sigma_from,
+            sigma_to,
+            eta=self.eta,
+        )
+
+        denoised = self.model(sample, sigma_from * self.s_in, **self.extra_args)
+        result_sample = self.momentum_step(
+            step_index,
+            sample,
+            denoised,
+            sigma_from,
+            sigma_to,
+            sigma_down,
+        )
+
+        return (
+            result_sample,
+            sigma_from,
+            sigma_from,
+            denoised,
+        )
+
+    @classmethod
+    @torch.no_grad()
+    def sampler(
+        cls,
+        model,
+        x,
+        sigmas,
+        extra_args=None,
+        callback=None,
+        disable=None,
+        sonar_config=None,
+        eta=1.0,
+        s_noise=1.0,
+        noise_sampler=None,
+    ):
+        if sonar_config is None:
+            sonar_config = SonarConfig()
+        if (
+            noise_sampler is not None
+            and sonar_config.noise_type != noise.NoiseType.GAUSSIAN
+        ):
+            # Possibly we should just use the supplied already-created noise sampler here.
+            raise ValueError(
+                "Unexpected noise_sampler presence with non-default noise type requested",
+            )
+        sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
+        noise_sampler = noise.get_noise_sampler(
+            sonar_config.noise_type,
+            x,
+            sigma_min,
+            sigma_max,
+            seed=extra_args.get("seed"),
             use_cpu=True,
         )
         s_in = x.new_ones([x.shape[0]])
@@ -387,6 +568,7 @@ def add_samplers():
     extra_samplers = {
         "sonar_euler": SonarEuler.sampler,
         "sonar_euler_ancestral": SonarEulerAncestral.sampler,
+        "sonar_dpmpp_sde": SonarDPMPPSDE.sampler,
     }
     added = 0
     for (

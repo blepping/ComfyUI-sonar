@@ -9,6 +9,7 @@ from .sonar import (
     GuidanceType,
     HistoryType,
     SonarConfig,
+    SonarDPMPPSDE,
     SonarEuler,
     SonarEulerAncestral,
 )
@@ -244,6 +245,58 @@ class SamplerNodeSonarEulerAncestral(SamplerNodeSonarEuler):
         return (
             samplers.KSAMPLER(
                 SonarEulerAncestral.sampler,
+                {
+                    "sonar_config": cfg,
+                    "eta": eta,
+                    "s_noise": s_noise,
+                },
+            ),
+        )
+
+
+class SamplerNodeSonarDPMPPSDE(SamplerNodeSonarEuler):
+    @classmethod
+    def INPUT_TYPES(cls):
+        result = super().INPUT_TYPES()
+        result["required"].update(
+            {
+                "eta": (
+                    "FLOAT",
+                    {
+                        "default": 1.0,
+                        "min": 0.0,
+                        "max": 100.0,
+                        "step": 0.01,
+                        "round": False,
+                    },
+                ),
+                "noise_type": (tuple(t.name.lower() for t in noise.NoiseType),),
+            },
+        )
+        return result
+
+    def get_sampler(
+        self,
+        momentum,
+        momentum_hist,
+        momentum_init,
+        direction,
+        noise_type,
+        eta,
+        s_noise,
+        guidance_cfg_opt=None,
+    ):
+        cfg = SonarConfig(
+            momentum=momentum,
+            init=HistoryType[momentum_init.upper()],
+            momentum_hist=momentum_hist,
+            direction=direction,
+            noise_type=noise.NoiseType[noise_type.upper()],
+            guidance=guidance_cfg_opt,
+        )
+        return (
+            samplers.KSAMPLER(
+                SonarDPMPPSDE.sampler,
                 {
                     "sonar_config": cfg,
                     "eta": eta,
