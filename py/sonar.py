@@ -440,6 +440,7 @@ class SonarDPMPPSDE(SonarSampler):
         diff_2 = (t - s_).expm1() * denoised
         momentum_d = (1.0 - p) * diff_2 + p * hd
         self.update_hist(momentum_d)
+        hd = self.history_d
         x_2 = (sigma_fn(s_) / sigma_fn(t)) * x - momentum_d
         x_2 = x_2 + self.noise_sampler(sigma_fn(t), sigma_fn(s)) * self.s_noise * su
         denoised_2 = self.model(x_2, sigma_fn(s) * self.s_in, **self.extra_args)
