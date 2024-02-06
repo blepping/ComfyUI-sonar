@@ -236,7 +236,7 @@ class SonarEuler(SonarSampler):
         s_noise=1.0,
     ):
         if sonar_config is None:
-            raise ValueError("Missing Sonar config")
+            sonar_config = SonarConfig()
         s_in = x.new_ones([x.shape[0]])
         sonar = cls(
             s_churn,
@@ -331,7 +331,7 @@ class SonarEulerAncestral(SonarSampler):
         noise_sampler=None,
     ):
         if sonar_config is None:
-            raise ValueError("Missing Sonar config")
+            sonar_config = SonarConfig()
         if (
             noise_sampler is not None
             and sonar_config.noise_type != noise.NoiseType.GAUSSIAN
