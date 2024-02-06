@@ -404,6 +404,7 @@ class SonarDPMPPSDE(SonarSampler):
     def t_fn(sigma) -> float:
         return sigma.log.neg()
 
+    # DPM++ solver algorithm copied from ComfyUI source.
     def momentum_step(
         self,
         step_index,

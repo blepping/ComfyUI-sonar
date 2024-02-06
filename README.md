@@ -54,6 +54,9 @@ I basically just copied a bunch of noise functions without really knowing what t
 6. `studentt_test`: An experiment that may be removed, it doesn't seem to be adding enough noise. You can possibly compensate by increasing `s_noise`.
 7. `pink`
 8. `highres_pyramid`: Not extensively tested, but it is slower than the other noise types. I would guess it does something like enhance details.
+9. `laplacian`
+10. `power`
+11. `rainbow_mild` and `rainbow_intense`: A combination of green (-ish, the implementation may be broken) noise plus perlin noise. Very colorful results.
 
 You can scroll down to the the [Examples](#examples) section near the bottom to see some example generations with different noise types.
 

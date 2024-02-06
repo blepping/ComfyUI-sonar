@@ -21,6 +21,11 @@ class NoiseType(Enum):
     STUDENTT_TEST = auto()
     HIGHRES_PYRAMID = auto()
     PINK = auto()
+    # GREEN = auto()
+    LAPLACIAN = auto()
+    POWER = auto()
+    RAINBOW_MILD = auto()
+    RAINBOW_INTENSE = auto()
 
 
 class NoiseError(Exception):
@@ -256,7 +261,7 @@ def studentt_noise_sampler(
 
 def green_noise_like(x):
     # The comments said this didn't work and I had to learn the hard way. Turns out it's true!
-    (_, _, height, width) = x.shape
+    width, height = x.size(dim=2), x.size(dim=3)
     noise = torch.randn_like(x)
     scale = 1.0 / (width * height)
     fy = torch.fft.fftfreq(width, device=x.device)[:, None] ** 2
@@ -294,6 +299,35 @@ def pink_noise_like(x):
     return noise.sub_(noise_mean).div_(noise_std).to(x.device)
 
 
+def laplacian_noise_like(x):
+    from torch.distributions import Laplace
+
+    noise = torch.randn_like(x) / 4.0
+    noise += Laplace(loc=0, scale=1.0).rsample(x.size()).to(noise.device)
+    return noise / noise.std()
+
+
+def power_noise_like(tensor, alpha=2, k=1):  # This doesn't work properly right now
+    """Generate 1/f noise for a given tensor.
+
+    Args:
+        tensor: The tensor to add noise to.
+        alpha: The parameter that determines the slope of the spectrum.
+        k: A constant.
+
+    Returns:
+        A tensor with the same shape as `tensor` containing 1/f noise.
+    """
+    tensor = torch.randn_like(tensor)
+    fft = torch.fft.fft2(tensor)
+    freq = torch.arange(1, len(fft) + 1, dtype=torch.float)
+    spectral_density = k / freq**alpha
+    noise = torch.rand(tensor.shape) * spectral_density
+    mean = torch.mean(noise, dim=(-2, -1), keepdim=True).to(tensor.device)
+    std = torch.std(noise, dim=(-2, -1), keepdim=True).to(tensor.device)
+    return noise.to(tensor.device).sub_(mean).div_(std)
+
+
 NOISE_SAMPLERS: dict[NoiseType, Callable] = {
     # No brownian as it is a special case that requires extra stuff like seed.
     NoiseType.GAUSSIAN: sampling.default_noise_sampler,
@@ -304,8 +338,17 @@ NOISE_SAMPLERS: dict[NoiseType, Callable] = {
         x.device,
     ),
     NoiseType.PINK: lambda x: lambda _s, _sn: pink_noise_like(x),
-    # NoiseType.GREEN_ISH: lambda x: lambda _s, _sn: green_noise_like(x),
     NoiseType.HIGHRES_PYRAMID: lambda x: lambda _s, _sn: highres_pyramid_noise_like(x),
+    NoiseType.RAINBOW_MILD: lambda x: lambda _s, _sn: (
+        green_noise_like(x) * 0.55 + rand_perlin_like(x) * 0.7
+    )
+    * 1.15,
+    NoiseType.RAINBOW_INTENSE: lambda x: lambda _s, _sn: (
+        green_noise_like(x) * 0.75 + rand_perlin_like(x) * 0.5
+    )
+    * 1.15,
+    NoiseType.LAPLACIAN: lambda x: lambda _s, _sn: laplacian_noise_like(x),
+    NoiseType.POWER: lambda x: lambda _s, _sn: power_noise_like(x),
 }
 
 
