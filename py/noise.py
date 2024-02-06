@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import math
-import random
 from enum import Enum, auto
 from typing import Callable
 
@@ -10,7 +9,7 @@ import torch
 from comfy.k_diffusion import sampling
 from torch import FloatTensor, Generator, Tensor
 
-# ruff: noqa: D417,D212, D407, ANN002, ANN003, FBT001, FBT002, S311
+# ruff: noqa: D412, D413, D417, D212, D407, ANN002, ANN003, FBT001, FBT002, S311
 
 
 class NoiseType(Enum):
@@ -311,17 +310,16 @@ NOISE_SAMPLERS: dict[NoiseType, Callable] = {
 
 
 def get_noise_sampler(
-    name: str,
+    noise_type: NoiseType | None,
     x: Tensor,
     sigma_min: float,
     sigma_max: float,
     seed: int | None = None,
     use_cpu: bool = True,
 ):
-    if not name or name == "default":
-        name = "gaussian"
-    nt = NoiseType[name.upper()]
-    if nt == NoiseType.BROWNIAN:
+    if noise_type is None:
+        noise_type = NoiseType.GAUSSIAN
+    if noise_type == NoiseType.BROWNIAN:
         return sampling.BrownianTreeNoiseSampler(
             x,
             sigma_min,
@@ -329,7 +327,7 @@ def get_noise_sampler(
             seed=seed,
             cpu=use_cpu,
         )
-    ns = NOISE_SAMPLERS.get(nt, None)
+    ns = NOISE_SAMPLERS.get(noise_type)
     if ns is None:
         raise ValueError("Unknown noise sampler")
     return ns(x)

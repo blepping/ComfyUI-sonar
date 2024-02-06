@@ -5,7 +5,7 @@ sonar.add_samplers()
 NODE_CLASS_MAPPINGS = {
     "SamplerSonarEuler": nodes.SamplerNodeSonarEuler,
     "SamplerSonarEulerA": nodes.SamplerNodeSonarEulerAncestral,
-    "SamplerSonarNaive": nodes.SamplerNodeSonarNaive,
+    "NoisyLatentLike": nodes.NoisyLatentLikeNode,
     "SonarGuidanceConfig": nodes.GuidanceConfigNode,
 }
 

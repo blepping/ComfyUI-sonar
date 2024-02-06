@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import torch
 from comfy import samplers
 
 from . import noise
@@ -7,10 +8,55 @@ from .sonar import (
     GuidanceConfig,
     GuidanceType,
     HistoryType,
+    SonarConfig,
     SonarEuler,
     SonarEulerAncestral,
-    SonarNaive,
 )
+
+
+class NoisyLatentLikeNode:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "noise_type": (
+                    tuple(
+                        t.name.lower()
+                        for t in noise.NoiseType
+                        if t is not noise.NoiseType.BROWNIAN
+                    ),
+                ),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFFFFFFFFFF}),
+                "latent": ("LATENT",),
+            },
+        }
+
+    RETURN_TYPES = ("LATENT",)
+    CATEGORY = "latent/noise"
+
+    FUNCTION = "go"
+
+    def go(
+        self,
+        noise_type,
+        seed,
+        latent,
+    ):
+        ns = noise.get_noise_sampler(
+            noise.NoiseType[noise_type.upper()],
+            latent["samples"],
+            None,
+            None,
+            seed=None,
+            use_cpu=True,
+        )
+        randst = torch.random.get_rng_state()
+        try:
+            torch.random.manual_seed(seed)
+            result = ns(None, None)
+        finally:
+            torch.random.set_rng_state(randst)
+        return ({"samples": result},)
 
 
 class GuidanceConfigNode:
@@ -59,7 +105,7 @@ class GuidanceConfigNode:
         )
 
 
-class SamplerNodeSonarEuler:
+class SamplerNodeSonarBase:
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -95,6 +141,20 @@ class SamplerNodeSonarEuler:
                         "round": False,
                     },
                 ),
+            },
+            "optional": {"guidance_cfg_opt": ("SONAR_GUIDANCE_CFG",)},
+        }
+
+    RETURN_TYPES = ("SAMPLER",)
+    CATEGORY = "sampling/custom_sampling/samplers"
+
+
+class SamplerNodeSonarEuler(SamplerNodeSonarBase):
+    @classmethod
+    def INPUT_TYPES(cls):
+        result = super().INPUT_TYPES()
+        result["required"].update(
+            {
                 "s_noise": (
                     "FLOAT",
                     {
@@ -106,23 +166,36 @@ class SamplerNodeSonarEuler:
                     },
                 ),
             },
-        }
+        )
+        return result
 
     RETURN_TYPES = ("SAMPLER",)
     CATEGORY = "sampling/custom_sampling/samplers"
 
     FUNCTION = "get_sampler"
 
-    def get_sampler(self, momentum, momentum_hist, momentum_init, direction, s_noise):
+    def get_sampler(
+        self,
+        momentum,
+        momentum_hist,
+        momentum_init,
+        direction,
+        s_noise,
+        guidance_cfg_opt=None,
+    ):
+        cfg = SonarConfig(
+            momentum=momentum,
+            init=HistoryType[momentum_init.upper()],
+            momentum_hist=momentum_hist,
+            direction=direction,
+            guidance=guidance_cfg_opt,
+        )
         return (
             samplers.KSAMPLER(
                 SonarEuler.sampler,
                 {
-                    "momentum_init": HistoryType[momentum_init],
-                    "momentum": momentum,
-                    "momentum_hist": momentum_hist,
-                    "direction": direction,
                     "s_noise": s_noise,
+                    "sonar_config": cfg,
                 },
             ),
         )
@@ -132,18 +205,20 @@ class SamplerNodeSonarEulerAncestral(SamplerNodeSonarEuler):
     @classmethod
     def INPUT_TYPES(cls):
         result = super().INPUT_TYPES()
-        result["required"]["eta"] = (
-            "FLOAT",
+        result["required"].update(
             {
-                "default": 1.0,
-                "min": 0.0,
-                "max": 100.0,
-                "step": 0.01,
-                "round": False,
+                "eta": (
+                    "FLOAT",
+                    {
+                        "default": 1.0,
+                        "min": 0.0,
+                        "max": 100.0,
+                        "step": 0.01,
+                        "round": False,
+                    },
+                ),
+                "noise_type": (tuple(t.name.lower() for t in noise.NoiseType),),
             },
-        )
-        result["required"]["noise_type"] = (
-            tuple(t.name.lower() for t in noise.NoiseType),
         )
         return result
 
@@ -156,56 +231,23 @@ class SamplerNodeSonarEulerAncestral(SamplerNodeSonarEuler):
         noise_type,
         eta,
         s_noise,
+        guidance_cfg_opt=None,
     ):
+        cfg = SonarConfig(
+            momentum=momentum,
+            init=HistoryType[momentum_init.upper()],
+            momentum_hist=momentum_hist,
+            direction=direction,
+            noise_type=noise.NoiseType[noise_type.upper()],
+            guidance=guidance_cfg_opt,
+        )
         return (
             samplers.KSAMPLER(
                 SonarEulerAncestral.sampler,
                 {
-                    "momentum_init": HistoryType[momentum_init],
-                    "momentum": momentum,
-                    "momentum_hist": momentum_hist,
-                    "direction": direction,
-                    "noise_type": noise_type,
+                    "sonar_config": cfg,
                     "eta": eta,
                     "s_noise": s_noise,
-                },
-            ),
-        )
-
-
-class SamplerNodeSonarNaive(SamplerNodeSonarEuler):
-    @classmethod
-    def INPUT_TYPES(cls):
-        result = super().INPUT_TYPES()
-        result["required"].update(
-            {
-                "noise_type": (tuple(t.name.lower() for t in noise.NoiseType),),
-            },
-        )
-        result["optional"] = {"guidance_cfg_opt": ("SONAR_GUIDANCE_CFG",)}
-        return result
-
-    def get_sampler(
-        self,
-        momentum,
-        momentum_hist,
-        momentum_init,
-        direction,
-        noise_type,
-        s_noise,
-        guidance_cfg_opt=None,
-    ):
-        return (
-            samplers.KSAMPLER(
-                SonarNaive.sampler,
-                {
-                    "momentum_init": HistoryType[momentum_init],
-                    "momentum": momentum,
-                    "momentum_hist": momentum_hist,
-                    "direction": direction,
-                    "noise_type": noise_type,
-                    "s_noise": s_noise,
-                    "guidance": guidance_cfg_opt,
                 },
             ),
         )
