@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from enum import Enum, auto
-from typing import Any
+from typing import Any, NamedTuple
 
 import torch
-from comfy import samplers
 from comfy.k_diffusion import sampling
 from torch import Tensor
 from tqdm.auto import trange
@@ -23,6 +22,14 @@ class HistoryType(Enum):
 class GuidanceType(Enum):
     LINEAR = auto()
     EULER = auto()
+
+
+class GuidanceConfig(NamedTuple):
+    guidance_type: GuidanceType = GuidanceType.LINEAR
+    factor: float = 0.01
+    start_step: int = 1
+    end_step: int = 9999
+    latent: Tensor | None = None
 
 
 class SonarBase:
@@ -308,21 +315,14 @@ class SonarEulerAncestral(SonarSampler):
 class SonarGuidanceMixin:
     def __init__(
         self,
-        guidance_type: GuidanceType | None = None,
-        ref_latent: dict[str, Any] | None = None,
-        guidance_factor: float = 0.0,
-        guidance_start: int = 1,
-        guidance_end: int = 9999,
+        cfg: GuidanceConfig | None = None,
     ) -> None:
+        self.cfg = cfg
         self.ref_latent = (
-            None
-            if ref_latent is None
-            else self.prepare_ref_latent(ref_latent["samples"])
+            self.prepare_ref_latent(cfg.latent)
+            if cfg and cfg.latent is not None
+            else None
         )
-        self.guidance_factor = guidance_factor
-        self.guidance_type = guidance_type
-        self.guidance_start = guidance_start
-        self.guidance_end = guidance_end
 
     @staticmethod
     def prepare_ref_latent(latent: Tensor | None) -> Tensor:
@@ -335,15 +335,15 @@ class SonarGuidanceMixin:
     def guidance_step(self, step_index: int, x: Tensor, denoised: Tensor):
         if (
             self.ref_latent is None
-            or self.guidance_type is None
-            or self.guidance_factor == 0.0
-        ) or not (self.guidance_start <= (step_index + 1) <= self.guidance_end):
+            or self.cfg.guidance_type is None
+            or self.cfg.factor == 0.0
+        ) or not (self.cfg.start_step <= (step_index + 1) <= self.cfg.end_step):
             return x
         if self.ref_latent.device != x.device:
             self.ref_latent = self.ref_latent.to(device=x.device)
-        if self.guidance_type == GuidanceType.LINEAR:
+        if self.cfg.guidance_type == GuidanceType.LINEAR:
             return self.guidance_linear(x)
-        if self.guidance_type == GuidanceType.EULER:
+        if self.cfg.guidance_type == GuidanceType.EULER:
             return self.guidance_euler(step_index, x, denoised)
         raise ValueError("Sonar: Guidance: Unknown guidance type")
 
@@ -359,7 +359,7 @@ class SonarGuidanceMixin:
         sigma, sigma_next = self.sigmas[step_index], self.sigmas[step_index + 1]
 
         d = sampling.to_d(x, sigma, ref_img_shift)
-        dt = (sigma_next - sigma) * self.guidance_factor
+        dt = (sigma_next - sigma) * self.cfg.factor
         return x + d * dt
 
     def guidance_linear(
@@ -369,7 +369,7 @@ class SonarGuidanceMixin:
         avg_t = x.mean(dim=[1, 2, 3], keepdim=True)
         std_t = x.std(dim=[1, 2, 3], keepdim=True)
         ref_img_shift = self.ref_latent * std_t + avg_t
-        return (1.0 - self.guidance_factor) * x + self.guidance_factor * ref_img_shift
+        return (1.0 - self.cfg.factor) * x + self.cfg.factor * ref_img_shift
 
 
 class SonarNaive(SonarSampler, SonarGuidanceMixin):
@@ -377,23 +377,12 @@ class SonarNaive(SonarSampler, SonarGuidanceMixin):
         self,
         noise_sampler,
         s_noise: float = 1.0,
-        guidance_type: GuidanceType | None = None,
-        guidance_latent: Tensor | None = None,
-        guidance_factor: float = 0.0,
-        guidance_start: int = 1,
-        guidance_end: int = 9999,
+        guidance: GuidanceConfig | None = None,
         *args: list[Any],
         **kwargs: dict[str, Any],
     ):
         super().__init__(*args, **kwargs)
-        SonarGuidanceMixin.__init__(
-            self,
-            guidance_type=guidance_type,
-            guidance_factor=guidance_factor,
-            guidance_start=guidance_start,
-            guidance_end=guidance_end,
-            ref_latent=guidance_latent,
-        )
+        SonarGuidanceMixin.__init__(self, guidance)
         self.noise_sampler = noise_sampler
         self.s_noise = s_noise
 
@@ -448,11 +437,7 @@ class SonarNaive(SonarSampler, SonarGuidanceMixin):
         direction=1.0,
         s_noise=1.0,
         noise_sampler=None,
-        guidance_type: GuidanceType | None = None,
-        guidance_latent: Tensor | None = None,
-        guidance_factor: float = 0.0,
-        guidance_start: int = 1,
-        guidance_end: int = 9999,
+        guidance: GuidanceConfig | None = None,
     ):
         if noise_type != "gaussian" and noise_sampler is not None:
             # Possibly we should just use the supplied already-created noise sampler here.
@@ -472,11 +457,7 @@ class SonarNaive(SonarSampler, SonarGuidanceMixin):
         sonar = cls(
             noise_sampler,
             s_noise,
-            guidance_type,
-            guidance_latent,
-            guidance_factor,
-            guidance_start,
-            guidance_end,
+            guidance,
             model,
             sigmas,
             s_in,
@@ -503,179 +484,6 @@ class SonarNaive(SonarSampler, SonarGuidanceMixin):
                     },
                 )
         return x
-
-
-class SamplerNodeSonarEuler:
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "momentum": (
-                    "FLOAT",
-                    {
-                        "default": 0.95,
-                        "min": -0.5,
-                        "max": 2.5,
-                        "step": 0.01,
-                        "round": False,
-                    },
-                ),
-                "momentum_hist": (
-                    "FLOAT",
-                    {
-                        "default": 0.75,
-                        "min": -1.5,
-                        "max": 1.5,
-                        "step": 0.01,
-                        "round": False,
-                    },
-                ),
-                "momentum_init": (tuple(t.name for t in HistoryType),),
-                "direction": (
-                    "FLOAT",
-                    {
-                        "default": 1.0,
-                        "min": -30.0,
-                        "max": 15.0,
-                        "step": 0.01,
-                        "round": False,
-                    },
-                ),
-                "s_noise": (
-                    "FLOAT",
-                    {
-                        "default": 1.0,
-                        "min": 0.0,
-                        "max": 100.0,
-                        "step": 0.01,
-                        "round": False,
-                    },
-                ),
-            },
-        }
-
-    RETURN_TYPES = ("SAMPLER",)
-    CATEGORY = "sampling/custom_sampling/samplers"
-
-    FUNCTION = "get_sampler"
-
-    def get_sampler(self, momentum, momentum_hist, momentum_init, direction, s_noise):
-        return (
-            samplers.KSAMPLER(
-                SonarEuler.sampler,
-                {
-                    "momentum_init": HistoryType[momentum_init],
-                    "momentum": momentum,
-                    "momentum_hist": momentum_hist,
-                    "direction": direction,
-                    "s_noise": s_noise,
-                },
-            ),
-        )
-
-
-class SamplerNodeSonarEulerAncestral(SamplerNodeSonarEuler):
-    @classmethod
-    def INPUT_TYPES(cls):
-        result = super().INPUT_TYPES()
-        result["required"]["eta"] = (
-            "FLOAT",
-            {
-                "default": 1.0,
-                "min": 0.0,
-                "max": 100.0,
-                "step": 0.01,
-                "round": False,
-            },
-        )
-        result["required"]["noise_type"] = (
-            tuple(t.name.lower() for t in noise.NoiseType),
-        )
-        return result
-
-    def get_sampler(
-        self,
-        momentum,
-        momentum_hist,
-        momentum_init,
-        direction,
-        noise_type,
-        eta,
-        s_noise,
-    ):
-        return (
-            samplers.KSAMPLER(
-                SonarEulerAncestral.sampler,
-                {
-                    "momentum_init": HistoryType[momentum_init],
-                    "momentum": momentum,
-                    "momentum_hist": momentum_hist,
-                    "direction": direction,
-                    "noise_type": noise_type,
-                    "eta": eta,
-                    "s_noise": s_noise,
-                },
-            ),
-        )
-
-
-class SamplerNodeSonarNaive(SamplerNodeSonarEuler):
-    @classmethod
-    def INPUT_TYPES(cls):
-        result = super().INPUT_TYPES()
-        result["required"]["guidance_factor"] = (
-            "FLOAT",
-            {
-                "default": 0.01,
-                "min": -2.0,
-                "max": 2.0,
-                "step": 0.001,
-                "round": False,
-            },
-        )
-        result["required"].update(
-            {
-                "noise_type": (tuple(t.name.lower() for t in noise.NoiseType),),
-                "guidance_type": (tuple(t.name.lower() for t in GuidanceType),),
-                "guidance_start_step": ("INT", {"default": 1, "min": 1}),
-                "guidance_end_step": ("INT", {"default": 9999, "min": 1}),
-            },
-        )
-        result["optional"] = {"guidance_latent_opt": ("LATENT",)}
-        return result
-
-    def get_sampler(
-        self,
-        momentum,
-        momentum_hist,
-        momentum_init,
-        direction,
-        noise_type,
-        s_noise,
-        guidance_type,
-        guidance_factor,
-        guidance_start_step,
-        guidance_end_step,
-        **kwargs: dict[str, Any],
-    ):
-        return (
-            samplers.KSAMPLER(
-                SonarNaive.sampler,
-                {
-                    "momentum_init": HistoryType[momentum_init],
-                    "momentum": momentum,
-                    "momentum_hist": momentum_hist,
-                    "direction": direction,
-                    "noise_type": noise_type,
-                    "s_noise": s_noise,
-                    "guidance_type": GuidanceType[guidance_type.upper()],
-                    "guidance_factor": guidance_factor,
-                    "guidance_start": guidance_start_step,
-                    "guidance_end": guidance_end_step,
-                    "guidance_latent": kwargs.get("guidance_latent_opt"),
-                },
-            ),
-        )
 
 
 def add_samplers():

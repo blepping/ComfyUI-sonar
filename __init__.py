@@ -1,11 +1,12 @@
-from .py import sonar
+from .py import nodes, sonar
 
 sonar.add_samplers()
 
 NODE_CLASS_MAPPINGS = {
-    "SamplerSonarEuler": sonar.SamplerNodeSonarEuler,
-    "SamplerSonarEulerA": sonar.SamplerNodeSonarEulerAncestral,
-    "SamplerSonarNaive": sonar.SamplerNodeSonarNaive,
+    "SamplerSonarEuler": nodes.SamplerNodeSonarEuler,
+    "SamplerSonarEulerA": nodes.SamplerNodeSonarEulerAncestral,
+    "SamplerSonarNaive": nodes.SamplerNodeSonarNaive,
+    "SonarGuidanceConfig": nodes.GuidanceConfigNode,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {}
