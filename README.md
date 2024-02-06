@@ -1,6 +1,6 @@
 # ComfyUI-sonar
 
-Extremely WIP and untested implementation of Sonar sampling for [ComfyUI](https://github.com/comfyanonymous/ComfyUI). Currently it may not be even close to working _properly_ but it does produce pretty reasonable results.
+Very WIP and not very well tested implementation of Sonar sampling for [ComfyUI](https://github.com/comfyanonymous/ComfyUI). Currently it may not be even close to working _properly_ but it does produce pretty reasonable results.
 
 Only supports Euler and Euler Ancestral sampling.
 
@@ -20,6 +20,13 @@ The most flexible way to use this is with a custom sampler:
 
 You can also just choose `sonar_euler` or `sonar_euler_ancestral` from the normal samplers list (will use the default settings). I personally recommend using the custom sampler approach and the ancestral version.
 
+## Nodes
+
+1. `SamplerSonarEuler` — Custom sampler node that combines Euler sampling and momentum and optionally guidance. A bit boring compared to the ancestral version but it has predictability going for it.
+2. `SamplerSonarEulerAncestral` — Ancestral version of the above. Same features, just with ancestral Euler.
+3. `SonarGuidanceConfig` — You can optionally plug this into the Sonar sampler nodes. See the [Guidance](#guidance) section below.
+4. `NoisyLatentLike` — If you give it a latent (or latent batch) it'll return a noisy latent of the same shape. Allows specifying all the custom noise types except `brownian` which has some special requirements. Provided just because the noise generation functions are conveniently available. You can also use this as a reference latent with `SonarGuidanceConfig` node and depending on the strength it can act like variation seed (you'd change the seed in the `NoisyLatentLike` node). *Note*: The seed stuff may or may not work correctly.
+
 ## Parameters
 
 Very abbreviated section. The init type can make a big difference. If you use `RANDOM` you can get away with setting `direction` to high values (like up to `2.25` or so) and absurdly low values (like `-30.0`). It's also possible to set `momentum` and `momentum_hist` to negative values, although whether it's a good idea...
@@ -30,13 +37,13 @@ You can try the `SamplerSonarNaive` sampler which has an optional latent input. 
 
 It is possible to set the start and end steps guidance is activate. Rather than setting a low guidance and using it for the whole generation, it's also possible to set high guidance and end it after a relatively low number of steps.
 
-Without guidance it should basically work the same as the ancestral Euler version. There are some example images in the examples section below.
+Without guidance it should basically work the same as the ancestral Euler version. There are some example images in the [Examples](#examples) section below.
 
 **Note**: The reference latent needs to be the same size as the one being sampled. Also note that step numbers in the step range are 1-based and inclusive, so 1 is the first step.
 
 ## Noise
 
-I basically just copied a bunch of noise functions without really knowing what they do. The main thing I can say is they produce a semi-reasonable result and it's different from the other noise samplers. See credits below.
+I basically just copied a bunch of noise functions without really knowing what they do. The main thing I can say is they produce a semi-reasonable result and it's different from the other noise samplers. See [Credits](#credits) below.
 
 1. `gaussian`: This is the default noise type.
 2. `uniform`: Might enhance background details?
@@ -47,7 +54,7 @@ I basically just copied a bunch of noise functions without really knowing what t
 7. `pink`
 8. `highres_pyramid`: Not extensively tested, but it is slower than the other noise types. I would guess it does something like enhance details.
 
-You can scroll down to the the examples section near the bottom to see some example generations with different noise types.
+You can scroll down to the the [Examples](#examples) section near the bottom to see some example generations with different noise types.
 
 ## Credits
 
