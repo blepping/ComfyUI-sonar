@@ -142,6 +142,13 @@ class SamplerNodeSonarBase:
                         "round": False,
                     },
                 ),
+                "rand_init_noise_type": (
+                    tuple(
+                        t.name.lower()
+                        for t in noise.NoiseType
+                        if t is not noise.NoiseType.BROWNIAN
+                    ),
+                ),
             },
             "optional": {"guidance_cfg_opt": ("SONAR_GUIDANCE_CFG",)},
         }
@@ -181,6 +188,7 @@ class SamplerNodeSonarEuler(SamplerNodeSonarBase):
         momentum_hist,
         momentum_init,
         direction,
+        rand_init_noise_type,
         s_noise,
         guidance_cfg_opt=None,
     ):
@@ -189,6 +197,7 @@ class SamplerNodeSonarEuler(SamplerNodeSonarBase):
             init=HistoryType[momentum_init.upper()],
             momentum_hist=momentum_hist,
             direction=direction,
+            rand_init_noise_type=noise.NoiseType[rand_init_noise_type.upper()],
             guidance=guidance_cfg_opt,
         )
         return (
@@ -229,6 +238,7 @@ class SamplerNodeSonarEulerAncestral(SamplerNodeSonarEuler):
         momentum_hist,
         momentum_init,
         direction,
+        rand_init_noise_type,
         noise_type,
         eta,
         s_noise,
@@ -239,6 +249,7 @@ class SamplerNodeSonarEulerAncestral(SamplerNodeSonarEuler):
             init=HistoryType[momentum_init.upper()],
             momentum_hist=momentum_hist,
             direction=direction,
+            rand_init_noise_type=noise.NoiseType[rand_init_noise_type.upper()],
             noise_type=noise.NoiseType[noise_type.upper()],
             guidance=guidance_cfg_opt,
         )
@@ -281,6 +292,7 @@ class SamplerNodeSonarDPMPPSDE(SamplerNodeSonarEuler):
         momentum_hist,
         momentum_init,
         direction,
+        rand_init_noise_type,
         noise_type,
         eta,
         s_noise,
@@ -291,6 +303,7 @@ class SamplerNodeSonarDPMPPSDE(SamplerNodeSonarEuler):
             init=HistoryType[momentum_init.upper()],
             momentum_hist=momentum_hist,
             direction=direction,
+            rand_init_noise_type=noise.NoiseType[rand_init_noise_type.upper()],
             noise_type=noise.NoiseType[noise_type.upper()],
             guidance=guidance_cfg_opt,
         )

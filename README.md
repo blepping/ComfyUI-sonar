@@ -22,11 +22,11 @@ You can also just choose `sonar_euler`, `sonar_euler_ancestral` or `sonar_dpmpp_
 
 ## Nodes
 
-1. `SamplerSonarEuler` — Custom sampler node that combines Euler sampling and momentum and optionally guidance. A bit boring compared to the ancestral version but it has predictability going for it.
+1. `SamplerSonarEuler` — Custom sampler node that combines Euler sampling and momentum and optionally guidance. A bit boring compared to the ancestral version but it has predictability going for it. You can possibly try setting init type to `RAND` and using different noise types, however this sampler seems _very_ sensitive to that init type. You may want to set direction to a very low value like `0.05` or `-0.15` when using the `RAND` init type.
 2. `SamplerSonarEulerAncestral` — Ancestral version of the above. Same features, just with ancestral Euler.
 4. `SonarGuidanceConfig` — You can optionally plug this into the Sonar sampler nodes. See the [Guidance](#guidance) section below.
 5. `NoisyLatentLike` — If you give it a latent (or latent batch) it'll return a noisy latent of the same shape. Allows specifying all the custom noise types except `brownian` which has some special requirements. Provided just because the noise generation functions are conveniently available. You can also use this as a reference latent with `SonarGuidanceConfig` node and depending on the strength it can act like variation seed (you'd change the seed in the `NoisyLatentLike` node). *Note*: The seed stuff may or may not work correctly.
-6. `SamplerSonarDPMPPSDE` — This one is extra experimental but it is an attempt to add moment and guidance to the DPM++ SDE sampler. It may not work correctly but you can sample stuff with it and get interesting results.
+6. `SamplerSonarDPMPPSDE` — This one is extra experimental but it is an attempt to add moment and guidance to the DPM++ SDE sampler. It may not work correctly but you can sample stuff with it and get interesting results. I actually really like this one, and you can get away with more extreme stuff like `green_test` noise and still produce reasonable results. You may want to use the `BlehDiscardPenultimateSigma` node from my [ComfyUI-bleh](https://github.com/blepping/ComfyUI-bleh) collection if you find the result seems a bit washed out and b lurry.
 
 ## Parameters
 
@@ -144,6 +144,26 @@ Normal (non-sonar) Eular A. Not really a comparison with noise (think it would u
 
 ![StudentT_test](assets/example_images/noise/renoise_studentt_test.png)
 
+#### Laplacian
+
+![Laplacian](assets/example_images/noise/renoise_laplacian.png)
+
+#### Power
+
+![Power](assets/example_images/noise/renoise_power.png)
+
+#### Rainbow Mild
+
+![Rainbow Mild](assets/example_images/noise/renoise_rainbow_mild.png)
+
+#### Rainbow Intense
+
+![Rainbow Intense](assets/example_images/noise/renoise_rainbow_intense.png)
+
+#### Green_test_
+
+![Green_test](assets/example_images/noise/renoise_green_test.png)
+
 </details>
 
 ### Noise Types (Initial Generations)
@@ -181,9 +201,30 @@ These were generated with `s_noise=1.1` to make the noise effect more pronounced
 
 ![StudentT](assets/example_images/noise/noise_studentt.png)
 
-
 #### StudentT_test
 
 ![StudentT_test](assets/example_images/noise/noise_studentt_test.png)
+
+#### Laplacian
+
+![Laplacian](assets/example_images/noise/noise_laplacian.png)
+
+#### Power
+
+![Power](assets/example_images/noise/noise_power.png)
+
+#### Rainbow Mild
+
+![Rainbow Mild](assets/example_images/noise/noise_rainbow_mild.png)
+
+#### Rainbow Intense
+
+![Rainbow Intense](assets/example_images/noise/noise_rainbow_intense.png)
+
+#### Green_test
+
+This might seem too crazy for actual use, but you can actually get decent results using the DPMPP Sonar sampler and a relatively high step count.
+
+![Green_test](assets/example_images/noise/noise_green_test.png)
 
 </details>

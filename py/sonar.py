@@ -38,6 +38,7 @@ class SonarConfig(NamedTuple):
     direction: float = 1.0
     init: HistoryType = HistoryType.ZERO
     noise_type: noise.NoiseType | None = None
+    rand_init_noise_type: noise.NoiseType | None = None
     guidance: GuidanceConfig | None = None
 
 
@@ -48,6 +49,7 @@ class SonarBase:
     ) -> None:
         self.history_d = None
         self.cfg = cfg
+        self.noise_sampler = None
 
     def init_hist_d(self, x: Tensor) -> None:
         if self.history_d is not None:
@@ -58,7 +60,15 @@ class SonarBase:
         elif self.cfg.init == HistoryType.SAMPLE:
             self.history_d = x
         elif self.cfg.init == HistoryType.RAND:
-            self.history_d = torch.randn_like(x)
+            ns = noise.get_noise_sampler(
+                self.cfg.rand_init_noise_type,
+                x,
+                None,
+                None,
+                seed=self.extra_args.get("seed"),
+                use_cpu=True,
+            )
+            self.history_d = ns(None, None)
         else:
             raise ValueError("Sonar sampler: bad history type")
 
