@@ -21,11 +21,11 @@ class NoiseType(Enum):
     STUDENTT_TEST = auto()
     HIGHRES_PYRAMID = auto()
     PINK = auto()
-    # GREEN = auto()
     LAPLACIAN = auto()
     POWER = auto()
     RAINBOW_MILD = auto()
     RAINBOW_INTENSE = auto()
+    GREEN_TEST = auto()
 
 
 class NoiseError(Exception):
@@ -349,6 +349,7 @@ NOISE_SAMPLERS: dict[NoiseType, Callable] = {
     * 1.15,
     NoiseType.LAPLACIAN: lambda x: lambda _s, _sn: laplacian_noise_like(x),
     NoiseType.POWER: lambda x: lambda _s, _sn: power_noise_like(x),
+    NoiseType.GREEN_TEST: lambda x: lambda _s, _sn: green_noise_like(x),
 }
 
 

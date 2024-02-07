@@ -57,6 +57,7 @@ I basically just copied a bunch of noise functions without really knowing what t
 9. `laplacian`
 10. `power`
 11. `rainbow_mild` and `rainbow_intense`: A combination of green (-ish, the implementation may be broken) noise plus perlin noise. Very colorful results.
+12. `green_test`: Even more rainbow-y than the rainbow noise types. It _probably_ isn't working correctly, but the results are very interesting and colorful. Depending on the model, it may not work well for an initial generation but may be worth trying with img2img type workflows.
 
 You can scroll down to the the [Examples](#examples) section near the bottom to see some example generations with different noise types.
 
