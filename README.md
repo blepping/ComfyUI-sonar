@@ -1,8 +1,8 @@
 # ComfyUI-sonar
 
-Very WIP and not very well tested implementation of Sonar sampling for [ComfyUI](https://github.com/comfyanonymous/ComfyUI). Currently it may not be even close to working _properly_ but it does produce pretty reasonable results.
+A janky implementation of Sonar sampling (momentum-based sampling) for [ComfyUI](https://github.com/comfyanonymous/ComfyUI). It may or may not be working _properly_ but it does produce pretty reasonable results. I am using it personally. At this point, I would say it's suitable for general use with the caveat that it's very likely stuff like implementation and inputs to nodes will still be changing fairly frequently. In other words, don't depend on reproduceable generations with this unless you're willing to keep track of the git revision something was generated with.
 
-Only supports Euler and Euler Ancestral sampling.
+Currently supports Euler, Euler Ancestral, and DPM++ SDE sampling.
 
 ## Description
 
