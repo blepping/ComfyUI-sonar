@@ -24,12 +24,61 @@ class NoiseType(Enum):
     LAPLACIAN = auto()
     POWER = auto()
     RAINBOW_MILD = auto()
+    # RAINBOW_MILD2 = auto()
     RAINBOW_INTENSE = auto()
+    # RAINBOW_INTENSE2 = auto()
+    # RAINBOW_INTENSE3 = auto()
     GREEN_TEST = auto()
 
 
 class NoiseError(Exception):
     pass
+
+
+class CustomNoiseItem:
+    def __init__(self, factor, noise_type):
+        self.factor = factor
+        self.noise_type = noise_type
+
+
+class CustomNoise:
+    def __init__(self, items=None):
+        self.items = items if items is not None else []
+
+    def clone(self):
+        return CustomNoise(
+            [CustomNoiseItem(i.factor, i.noise_type) for i in self.items],
+        )
+
+    def add(self, item):
+        self.items.append(item)
+
+    def rescaled(self, scale=1.0):
+        total = sum(i.factor for i in self.items)
+        divisor = total / scale
+        return CustomNoise(
+            [CustomNoiseItem(i.factor / divisor, i.noise_type) for i in self.items],
+        )
+
+    @torch.no_grad()
+    def make_noise_sampler(self, x: Tensor) -> Callable:
+        items = tuple(
+            (get_noise_sampler(i.noise_type, x, None, None), i.factor)
+            for i in self.items
+        )
+        if not items or not all(i[0] for i in items):
+            raise ValueError("Failed to get noise sampler")
+
+        def noise_sampler(s, sn):
+            nonlocal items
+            result = items[0][0](s, sn) * items[0][1]
+            for ns, factor in items[1:]:
+                result += ns(s, sn) * factor
+            result /= result.std()
+            scale = sum(i[1] for i in items)
+            return result * scale
+
+        return noise_sampler
 
 
 def get_positions(block_shape: tuple[int, int]) -> Tensor:
@@ -331,7 +380,7 @@ def power_noise_like(tensor, alpha=2, k=1):  # This doesn't work properly right 
 NOISE_SAMPLERS: dict[NoiseType, Callable] = {
     # No brownian as it is a special case that requires extra stuff like seed.
     NoiseType.GAUSSIAN: sampling.default_noise_sampler,
-    NoiseType.UNIFORM: lambda x: lambda _s, _sn: (torch.rand_like(x) - 0.5) * 3.46,
+    NoiseType.UNIFORM: lambda x: lambda _s, _sn: uniform_noise_like(x),
     NoiseType.PERLIN: lambda x: lambda _s, _sn: rand_perlin_like(x),
     NoiseType.STUDENTT: studentt_noise_sampler,
     NoiseType.STUDENTT_TEST: lambda x: lambda _s, _sn: studentt_noise_like(x).to(
@@ -350,20 +399,36 @@ NOISE_SAMPLERS: dict[NoiseType, Callable] = {
     NoiseType.LAPLACIAN: lambda x: lambda _s, _sn: laplacian_noise_like(x),
     NoiseType.POWER: lambda x: lambda _s, _sn: power_noise_like(x),
     NoiseType.GREEN_TEST: lambda x: lambda _s, _sn: green_noise_like(x),
+    # NoiseType.RAINBOW_MILD2: lambda x: lambda _s, _sn: (
+    #     green_noise_like(x) * 0.55 + uniform_noise_like(x) * 0.7
+    # )
+    # * 1.15,
+    # NoiseType.RAINBOW_INTENSE2: lambda x: lambda _s, _sn: (
+    #     green_noise_like(x) * 0.75 + uniform_noise_like(x) * 0.5
+    # )
+    # * 1.15,
+    # NoiseType.RAINBOW_INTENSE3: lambda x: lambda _s, _sn: (
+    #     green_noise_like(x) * 0.75 + highres_pyramid_noise_like(x) * 0.5
+    # )
+    # * 1.15,
 }
 
 
 def get_noise_sampler(
-    noise_type: NoiseType | None,
+    noise_type: str | NoiseType | None,
     x: Tensor,
-    sigma_min: float,
-    sigma_max: float,
+    sigma_min: float | None,
+    sigma_max: float | None,
     seed: int | None = None,
     use_cpu: bool = True,
-):
+) -> Callable:
     if noise_type is None:
         noise_type = NoiseType.GAUSSIAN
+    elif isinstance(noise_type, str):
+        noise_type = NoiseType[noise_type.upper()]
     if noise_type == NoiseType.BROWNIAN:
+        if sigma_min is None or sigma_max is None:
+            raise ValueError("Must pass sigma min/max when using brownian noise")
         return sampling.BrownianTreeNoiseSampler(
             x,
             sigma_min,

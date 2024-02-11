@@ -7,6 +7,7 @@ NODE_CLASS_MAPPINGS = {
     "SamplerSonarEulerA": nodes.SamplerNodeSonarEulerAncestral,
     "SamplerSonarDPMPPSDE": nodes.SamplerNodeSonarDPMPPSDE,
     "NoisyLatentLike": nodes.NoisyLatentLikeNode,
+    "SonarCustomNoise": nodes.SonarCustomNoiseNode,
     "SonarGuidanceConfig": nodes.GuidanceConfigNode,
 }
 

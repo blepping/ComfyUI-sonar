@@ -38,6 +38,7 @@ class SonarConfig(NamedTuple):
     direction: float = 1.0
     init: HistoryType = HistoryType.ZERO
     noise_type: noise.NoiseType | None = None
+    custom_noise: noise.CustomNoise | None = None
     rand_init_noise_type: noise.NoiseType | None = None
     guidance: GuidanceConfig | None = None
 
@@ -354,14 +355,17 @@ class SonarEulerAncestral(SonarSampler):
                 "Unexpected noise_sampler presence with non-default noise type requested",
             )
         sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
-        noise_sampler = noise.get_noise_sampler(
-            sonar_config.noise_type,
-            x,
-            sigma_min,
-            sigma_max,
-            seed=extra_args.get("seed"),
-            use_cpu=True,
-        )
+        if sonar_config.custom_noise:
+            noise_sampler = sonar_config.custom_noise.make_noise_sampler(x)
+        else:
+            noise_sampler = noise.get_noise_sampler(
+                sonar_config.noise_type,
+                x,
+                sigma_min,
+                sigma_max,
+                seed=extra_args.get("seed"),
+                use_cpu=True,
+            )
         s_in = x.new_ones([x.shape[0]])
         sonar = cls(
             noise_sampler,
@@ -534,14 +538,17 @@ class SonarDPMPPSDE(SonarSampler):
                 "Unexpected noise_sampler presence with non-default noise type requested",
             )
         sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
-        noise_sampler = noise.get_noise_sampler(
-            sonar_config.noise_type,
-            x,
-            sigma_min,
-            sigma_max,
-            seed=extra_args.get("seed"),
-            use_cpu=True,
-        )
+        if sonar_config.custom_noise:
+            noise_sampler = sonar_config.custom_noise.make_noise_sampler(x)
+        else:
+            noise_sampler = noise.get_noise_sampler(
+                sonar_config.noise_type,
+                x,
+                sigma_min,
+                sigma_max,
+                seed=extra_args.get("seed"),
+                use_cpu=True,
+            )
         s_in = x.new_ones([x.shape[0]])
         sonar = cls(
             noise_sampler,

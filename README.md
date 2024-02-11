@@ -61,6 +61,10 @@ I basically just copied a bunch of noise functions without really knowing what t
 
 You can scroll down to the the [Examples](#examples) section near the bottom to see some example generations with different noise types.
 
+The sampler and `NoisyLatentLike` nodes now take an optional `SonarCustomNoise` input. You can chain `SonarCustomNoise` nodes together to mix different types of noise, similar to how some of the built in ones. It shouldn't matter what order the noise types are chained. If `rescale` is set to `0.0` no rescaling will occur. `factor` is the proportion of that type of noise you want. If you want to use `rescale` it should be on the node that you are plugging into a sampler. Just for example if you had two `SonarCustomNoise` nodes both with `factor=0.7` and `rescale=1.0` on the last one, it would be effectively the same as if you'd used `factor=0.5` and `rescale=1.0` doesn't actually do anything. You can also rescale to values above `1.0` — the result is more noise, similar to increasing `s_noise` above `1.0` on a sampler. The simple explanation is `rescale` means you don't have to make sure the `factor`s add up to the scale you want (which normally would be `1.0`).
+
+**Note**: If you connect the optional `SonarCustomNoise` node to a Sonar sampler or the `NoisyLatentLike` node it will override the noise type selected in the node.
+
 ## Credits
 
 Original Sonar Sampler implementation (for A1111): https://github.com/Kahsolt/stable-diffusion-webui-sonar

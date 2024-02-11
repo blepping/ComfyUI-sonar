@@ -30,6 +30,9 @@ class NoisyLatentLikeNode:
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFFFFFFFFFF}),
                 "latent": ("LATENT",),
             },
+            "optional": {
+                "custom_noise_opt": ("SONAR_CUSTOM_NOISE",),
+            },
         }
 
     RETURN_TYPES = ("LATENT",)
@@ -42,15 +45,19 @@ class NoisyLatentLikeNode:
         noise_type,
         seed,
         latent,
+        custom_noise_opt=None,
     ):
-        ns = noise.get_noise_sampler(
-            noise.NoiseType[noise_type.upper()],
-            latent["samples"],
-            None,
-            None,
-            seed=None,
-            use_cpu=True,
-        )
+        if custom_noise_opt is not None:
+            ns = custom_noise_opt.make_noise_sampler(latent["samples"])
+        else:
+            ns = noise.get_noise_sampler(
+                noise.NoiseType[noise_type.upper()],
+                latent["samples"],
+                None,
+                None,
+                seed=None,
+                use_cpu=True,
+            )
         randst = torch.random.get_rng_state()
         try:
             torch.random.manual_seed(seed)
@@ -58,6 +65,59 @@ class NoisyLatentLikeNode:
         finally:
             torch.random.set_rng_state(randst)
         return ({"samples": result},)
+
+
+class SonarCustomNoiseNode:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "factor": (
+                    "FLOAT",
+                    {
+                        "default": 1.0,
+                        "min": -100.0,
+                        "max": 100.0,
+                        "step": 0.001,
+                        "round": False,
+                    },
+                ),
+                "rescale": (
+                    "FLOAT",
+                    {
+                        "default": 0.0,
+                        "min": 0.0,
+                        "max": 100.0,
+                        "step": 0.001,
+                        "round": False,
+                    },
+                ),
+                "noise_type": (
+                    tuple(
+                        t.name.lower()
+                        for t in noise.NoiseType
+                        if t is not noise.NoiseType.BROWNIAN
+                    ),
+                ),
+            },
+            "optional": {
+                "sonar_custom_noise_opt": ("SONAR_CUSTOM_NOISE",),
+            },
+        }
+
+    RETURN_TYPES = ("SONAR_CUSTOM_NOISE",)
+    CATEGORY = "advanced/noise"
+    FUNCTION = "go"
+
+    def go(self, factor, rescale, noise_type, sonar_custom_noise_opt=None):
+        nis = (
+            sonar_custom_noise_opt.clone()
+            if sonar_custom_noise_opt
+            else noise.CustomNoise()
+        )
+        if factor != 0:
+            nis.add(noise.CustomNoiseItem(factor, noise_type))
+        return (nis if rescale == 0 else nis.rescaled(rescale),)
 
 
 class GuidanceConfigNode:
@@ -150,7 +210,9 @@ class SamplerNodeSonarBase:
                     ),
                 ),
             },
-            "optional": {"guidance_cfg_opt": ("SONAR_GUIDANCE_CFG",)},
+            "optional": {
+                "guidance_cfg_opt": ("SONAR_GUIDANCE_CFG",),
+            },
         }
 
     RETURN_TYPES = ("SAMPLER",)
@@ -230,6 +292,11 @@ class SamplerNodeSonarEulerAncestral(SamplerNodeSonarEuler):
                 "noise_type": (tuple(t.name.lower() for t in noise.NoiseType),),
             },
         )
+        result["optional"].update(
+            {
+                "custom_noise_opt": ("SONAR_CUSTOM_NOISE",),
+            },
+        )
         return result
 
     def get_sampler(
@@ -243,6 +310,7 @@ class SamplerNodeSonarEulerAncestral(SamplerNodeSonarEuler):
         eta,
         s_noise,
         guidance_cfg_opt=None,
+        custom_noise_opt=None,
     ):
         cfg = SonarConfig(
             momentum=momentum,
@@ -251,6 +319,7 @@ class SamplerNodeSonarEulerAncestral(SamplerNodeSonarEuler):
             direction=direction,
             rand_init_noise_type=noise.NoiseType[rand_init_noise_type.upper()],
             noise_type=noise.NoiseType[noise_type.upper()],
+            custom_noise=custom_noise_opt.clone() if custom_noise_opt else None,
             guidance=guidance_cfg_opt,
         )
         return (
@@ -284,6 +353,11 @@ class SamplerNodeSonarDPMPPSDE(SamplerNodeSonarEuler):
                 "noise_type": (tuple(t.name.lower() for t in noise.NoiseType),),
             },
         )
+        result["optional"].update(
+            {
+                "custom_noise_opt": ("SONAR_CUSTOM_NOISE",),
+            },
+        )
         return result
 
     def get_sampler(
@@ -297,6 +371,7 @@ class SamplerNodeSonarDPMPPSDE(SamplerNodeSonarEuler):
         eta,
         s_noise,
         guidance_cfg_opt=None,
+        custom_noise_opt=None,
     ):
         cfg = SonarConfig(
             momentum=momentum,
@@ -305,6 +380,7 @@ class SamplerNodeSonarDPMPPSDE(SamplerNodeSonarEuler):
             direction=direction,
             rand_init_noise_type=noise.NoiseType[rand_init_noise_type.upper()],
             noise_type=noise.NoiseType[noise_type.upper()],
+            custom_noise=custom_noise_opt.clone() if custom_noise_opt else None,
             guidance=guidance_cfg_opt,
         )
         return (
