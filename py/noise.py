@@ -261,7 +261,7 @@ def rand_perlin_like(x):
         noise += perlin_noise(
             (noise_height, noise_width),
             (noise_height, noise_width),
-            batch_size=4,
+            batch_size=x.shape[1],  # This should be the number of channels.
         ).to(x.device)
     return noise / noise.std()
 
@@ -370,6 +370,7 @@ def power_noise_like(tensor, alpha=2, k=1):  # This doesn't work properly right 
     tensor = torch.randn_like(tensor)
     fft = torch.fft.fft2(tensor)
     freq = torch.arange(1, len(fft) + 1, dtype=torch.float)
+    freq = freq.reshape(freq.shape + (1,) * (len(tensor.shape) - 1))
     spectral_density = k / freq**alpha
     noise = torch.rand(tensor.shape) * spectral_density
     mean = torch.mean(noise, dim=(-2, -1), keepdim=True).to(tensor.device)
