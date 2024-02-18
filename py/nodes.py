@@ -56,7 +56,7 @@ class NoisyLatentLikeNode:
                 None,
                 None,
                 seed=None,
-                use_cpu=True,
+                cpu=True,
             )
         randst = torch.random.get_rng_state()
         try:
@@ -113,7 +113,7 @@ class SonarCustomNoiseNode:
         nis = (
             sonar_custom_noise_opt.clone()
             if sonar_custom_noise_opt
-            else noise.CustomNoise()
+            else noise.CustomNoiseChain()
         )
         if factor != 0:
             nis.add(noise.CustomNoiseItem(factor, noise_type))

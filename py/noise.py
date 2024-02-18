@@ -1,7 +1,9 @@
 # Noise generation functions shamelessly yoinked from https://github.com/Clybius/ComfyUI-Extra-Samplers
 from __future__ import annotations
 
+import functools as fun
 import math
+import operator as op
 from enum import Enum, auto
 from typing import Callable
 
@@ -41,12 +43,12 @@ class CustomNoiseItem:
         self.noise_type = noise_type
 
 
-class CustomNoise:
+class CustomNoiseChain:
     def __init__(self, items=None):
         self.items = items if items is not None else []
 
     def clone(self):
-        return CustomNoise(
+        return CustomNoiseChain(
             [CustomNoiseItem(i.factor, i.noise_type) for i in self.items],
         )
 
@@ -56,27 +58,56 @@ class CustomNoise:
     def rescaled(self, scale=1.0):
         total = sum(i.factor for i in self.items)
         divisor = total / scale
-        return CustomNoise(
+        return CustomNoiseChain(
             [CustomNoiseItem(i.factor / divisor, i.noise_type) for i in self.items],
         )
 
+    def __call__(
+        self,
+        x: Tensor,
+        sigma_min=None,
+        sigma_max=None,
+        seed=None,
+        transform=lambda x: x,
+        cpu=True,
+    ):
+        pass
+
     @torch.no_grad()
-    def make_noise_sampler(self, x: Tensor) -> Callable:
-        items = tuple(
-            (get_noise_sampler(i.noise_type, x, None, None), i.factor)
+    def make_noise_sampler(
+        self,
+        x: Tensor,
+        sigma_min=None,
+        sigma_max=None,
+        seed=None,
+        cpu=True,
+    ) -> Callable:
+        noise_samplers = tuple(
+            get_noise_sampler(
+                i.noise_type,
+                x,
+                sigma_min,
+                sigma_max,
+                seed=seed,
+                cpu=cpu,
+                factor=i.factor,
+            )
             for i in self.items
         )
-        if not items or not all(i[0] for i in items):
+        if not noise_samplers or not all(noise_samplers):
             raise ValueError("Failed to get noise sampler")
+        scale = sum(i.factor for i in self.items)
 
-        def noise_sampler(s, sn):
-            nonlocal items
-            result = items[0][0](s, sn) * items[0][1]
-            for ns, factor in items[1:]:
-                result += ns(s, sn) * factor
-            result /= result.std()
-            scale = sum(i[1] for i in items)
-            return result * scale
+        def noise_sampler(sigma, sigma_next):
+            result = fun.reduce(
+                op.add,
+                (ns(sigma, sigma_next) for ns in noise_samplers),
+            )
+            std = result.std()
+            if std > 1:
+                result /= std
+            result *= scale
+            return result
 
         return noise_sampler
 
@@ -369,8 +400,9 @@ def power_noise_like(tensor, alpha=2, k=1):  # This doesn't work properly right 
     """
     tensor = torch.randn_like(tensor)
     fft = torch.fft.fft2(tensor)
-    freq = torch.arange(1, len(fft) + 1, dtype=torch.float)
-    freq = freq.reshape(freq.shape + (1,) * (len(tensor.shape) - 1))
+    freq = torch.arange(1, len(fft) + 1, dtype=torch.float).reshape(
+        (len(fft),) + (1,) * (tensor.dim() - 1),
+    )
     spectral_density = k / freq**alpha
     noise = torch.rand(tensor.shape) * spectral_density
     mean = torch.mean(noise, dim=(-2, -1), keepdim=True).to(tensor.device)
@@ -378,28 +410,78 @@ def power_noise_like(tensor, alpha=2, k=1):  # This doesn't work properly right 
     return noise.to(tensor.device).sub_(mean).div_(std)
 
 
+class NoiseSampler:
+    def __init__(
+        self,
+        x: Tensor,
+        sigma_min: float | None = None,
+        sigma_max: float | None = None,
+        seed: int | None = None,
+        cpu: bool = False,
+        transform: Callable = lambda t: t,
+        make_noise_sampler: Callable | None = None,
+        factor: float = 1.0,
+    ):
+        try:
+            self.noise_sampler = make_noise_sampler(
+                x,
+                transform(torch.as_tensor(sigma_min))
+                if sigma_min is not None
+                else None,
+                transform(torch.as_tensor(sigma_max))
+                if sigma_max is not None
+                else None,
+                seed=seed,
+                cpu=cpu,
+            )
+        except TypeError:
+            self.noise_sampler = make_noise_sampler(x)
+        self.factor = factor
+        self.transform = transform
+        self.device = x.device
+        self.dtype = x.dtype
+
+    @classmethod
+    def simple(cls, f):
+        return lambda *args, **kwargs: cls(
+            *args,
+            **kwargs,
+            make_noise_sampler=lambda x, *_args, **_kwargs: lambda _s, _sn: f(x),
+        )
+
+    @classmethod
+    def wrap(cls, f):
+        return lambda *args, **kwargs: cls(*args, **kwargs, make_noise_sampler=f)
+
+    def __call__(self, *args, **kwargs):
+        args = (
+            self.transform(torch.as_tensor(s)) if s is not None else s for s in args
+        )
+        result = self.noise_sampler(*args, **kwargs)
+        result *= self.factor
+        if hasattr(result, "to"):
+            return result.to(dtype=self.dtype, device=self.device)
+        return result
+
+
 NOISE_SAMPLERS: dict[NoiseType, Callable] = {
-    # No brownian as it is a special case that requires extra stuff like seed.
-    NoiseType.GAUSSIAN: sampling.default_noise_sampler,
-    NoiseType.UNIFORM: lambda x: lambda _s, _sn: uniform_noise_like(x),
-    NoiseType.PERLIN: lambda x: lambda _s, _sn: rand_perlin_like(x),
-    NoiseType.STUDENTT: studentt_noise_sampler,
-    NoiseType.STUDENTT_TEST: lambda x: lambda _s, _sn: studentt_noise_like(x).to(
-        x.device,
+    NoiseType.BROWNIAN: NoiseSampler.wrap(sampling.BrownianTreeNoiseSampler),
+    NoiseType.GAUSSIAN: NoiseSampler.simple(torch.randn_like),
+    NoiseType.UNIFORM: NoiseSampler.simple(uniform_noise_like),
+    NoiseType.PERLIN: NoiseSampler.simple(rand_perlin_like),
+    NoiseType.STUDENTT: NoiseSampler.wrap(studentt_noise_sampler),
+    NoiseType.STUDENTT_TEST: NoiseSampler.simple(studentt_noise_like),
+    NoiseType.PINK: NoiseSampler.simple(pink_noise_like),
+    NoiseType.HIGHRES_PYRAMID: NoiseSampler.simple(highres_pyramid_noise_like),
+    NoiseType.RAINBOW_MILD: NoiseSampler.simple(
+        lambda x: (green_noise_like(x) * 0.55 + rand_perlin_like(x) * 0.7) * 1.15,
     ),
-    NoiseType.PINK: lambda x: lambda _s, _sn: pink_noise_like(x),
-    NoiseType.HIGHRES_PYRAMID: lambda x: lambda _s, _sn: highres_pyramid_noise_like(x),
-    NoiseType.RAINBOW_MILD: lambda x: lambda _s, _sn: (
-        green_noise_like(x) * 0.55 + rand_perlin_like(x) * 0.7
-    )
-    * 1.15,
-    NoiseType.RAINBOW_INTENSE: lambda x: lambda _s, _sn: (
-        green_noise_like(x) * 0.75 + rand_perlin_like(x) * 0.5
-    )
-    * 1.15,
-    NoiseType.LAPLACIAN: lambda x: lambda _s, _sn: laplacian_noise_like(x),
-    NoiseType.POWER: lambda x: lambda _s, _sn: power_noise_like(x),
-    NoiseType.GREEN_TEST: lambda x: lambda _s, _sn: green_noise_like(x),
+    NoiseType.RAINBOW_INTENSE: NoiseSampler.simple(
+        lambda x: (green_noise_like(x) * 0.75 + rand_perlin_like(x) * 0.5) * 1.15,
+    ),
+    NoiseType.LAPLACIAN: NoiseSampler.simple(laplacian_noise_like),
+    NoiseType.POWER: NoiseSampler.simple(power_noise_like),
+    NoiseType.GREEN_TEST: NoiseSampler.simple(green_noise_like),
     # NoiseType.RAINBOW_MILD2: lambda x: lambda _s, _sn: (
     #     green_noise_like(x) * 0.55 + uniform_noise_like(x) * 0.7
     # )
@@ -421,23 +503,16 @@ def get_noise_sampler(
     sigma_min: float | None,
     sigma_max: float | None,
     seed: int | None = None,
-    use_cpu: bool = True,
+    cpu: bool = True,
+    factor: float = 1.0,
 ) -> Callable:
     if noise_type is None:
         noise_type = NoiseType.GAUSSIAN
     elif isinstance(noise_type, str):
         noise_type = NoiseType[noise_type.upper()]
-    if noise_type == NoiseType.BROWNIAN:
-        if sigma_min is None or sigma_max is None:
-            raise ValueError("Must pass sigma min/max when using brownian noise")
-        return sampling.BrownianTreeNoiseSampler(
-            x,
-            sigma_min,
-            sigma_max,
-            seed=seed,
-            cpu=use_cpu,
-        )
-    ns = NOISE_SAMPLERS.get(noise_type)
-    if ns is None:
+    if noise_type == NoiseType.BROWNIAN and (sigma_min is None or sigma_max is None):
+        raise ValueError("Must pass sigma min/max when using brownian noise")
+    mkns = NOISE_SAMPLERS.get(noise_type)
+    if mkns is None:
         raise ValueError("Unknown noise sampler")
-    return ns(x)
+    return mkns(x, sigma_min, sigma_max, seed=seed, cpu=cpu, factor=factor)

@@ -67,7 +67,7 @@ class SonarBase:
                 None,
                 None,
                 seed=self.extra_args.get("seed"),
-                use_cpu=True,
+                cpu=True,
             )
             self.history_d = ns(None, None)
         else:
@@ -364,7 +364,7 @@ class SonarEulerAncestral(SonarSampler):
                 sigma_min,
                 sigma_max,
                 seed=extra_args.get("seed"),
-                use_cpu=True,
+                cpu=True,
             )
         s_in = x.new_ones([x.shape[0]])
         sonar = cls(
@@ -547,7 +547,7 @@ class SonarDPMPPSDE(SonarSampler):
                 sigma_min,
                 sigma_max,
                 seed=extra_args.get("seed"),
-                use_cpu=True,
+                cpu=True,
             )
         s_in = x.new_ones([x.shape[0]])
         sonar = cls(
