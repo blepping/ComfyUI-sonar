@@ -14,6 +14,18 @@ from torch import FloatTensor, Generator, Tensor
 # ruff: noqa: D412, D413, D417, D212, D407, ANN002, ANN003, FBT001, FBT002, S311
 
 
+# This likely isn't correct.
+def scale_noise(noise, factor=1.0):
+    mean, std = noise.mean(), noise.std()
+    noise = noise - mean
+    if std >= 0.98:
+        noise /= std
+    elif std < 0.98:
+        noise *= 1.0 + std
+    noise *= factor
+    return noise
+
+
 class NoiseType(Enum):
     GAUSSIAN = auto()
     UNIFORM = auto()
@@ -103,11 +115,7 @@ class CustomNoiseChain:
                 op.add,
                 (ns(sigma, sigma_next) for ns in noise_samplers),
             )
-            std = result.std()
-            if std > 1:
-                result /= std
-            result *= scale
-            return result
+            return scale_noise(result, scale)
 
         return noise_sampler
 
@@ -457,8 +465,7 @@ class NoiseSampler:
         args = (
             self.transform(torch.as_tensor(s)) if s is not None else s for s in args
         )
-        result = self.noise_sampler(*args, **kwargs)
-        result *= self.factor
+        result = scale_noise(self.noise_sampler(*args, **kwargs), self.factor)
         if hasattr(result, "to"):
             return result.to(dtype=self.dtype, device=self.device)
         return result

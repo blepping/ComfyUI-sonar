@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import inspect
+from typing import Any, Callable
+
 import torch
 from comfy import samplers
 
@@ -55,7 +58,7 @@ class NoisyLatentLikeNode:
                 latent["samples"],
                 None,
                 None,
-                seed=None,
+                seed=seed,
                 cpu=True,
             )
         randst = torch.random.get_rng_state()
@@ -392,4 +395,151 @@ class SamplerNodeSonarDPMPPSDE(SamplerNodeSonarEuler):
                     "s_noise": s_noise,
                 },
             ),
+        )
+
+
+class SamplerNodeConfigOverride:
+    KWARG_OVERRIDES = ("s_noise", "eta", "s_churn", "r", "solver_type")
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "sampler": ("SAMPLER",),
+                "eta": (
+                    "FLOAT",
+                    {
+                        "default": 1.0,
+                        "step": 0.01,
+                        "round": False,
+                    },
+                ),
+                "s_noise": (
+                    "FLOAT",
+                    {
+                        "default": 1.0,
+                        "step": 0.01,
+                        "round": False,
+                    },
+                ),
+                "s_churn": (
+                    "FLOAT",
+                    {
+                        "default": 0.0,
+                        "min": 0.0,
+                        "step": 0.01,
+                        "round": False,
+                    },
+                ),
+                "r": (
+                    "FLOAT",
+                    {
+                        "default": 0.5,
+                        "step": 0.01,
+                        "round": False,
+                    },
+                ),
+                "sde_solver": (("midpoint", "heun"),),
+            },
+            "optional": {
+                "noise_type": (tuple(t.name.lower() for t in noise.NoiseType),),
+                "custom_noise_opt": ("SONAR_CUSTOM_NOISE",),
+            },
+        }
+
+    RETURN_TYPES = ("SAMPLER",)
+    CATEGORY = "sampling/custom_sampling/samplers"
+
+    FUNCTION = "get_sampler"
+
+    def get_sampler(
+        self,
+        sampler,
+        eta,
+        s_noise,
+        s_churn,
+        r,
+        sde_solver,
+        noise_type=None,
+        custom_noise_opt=None,
+    ):
+        return (
+            samplers.KSAMPLER(
+                self.sampler_function,
+                extra_options=sampler.extra_options
+                | {
+                    "override_sampler_cfg": {
+                        "sampler": sampler,
+                        "noise_type": noise.NoiseType[noise_type.upper()]
+                        if noise_type is not None
+                        else None,
+                        "custom_noise": custom_noise_opt,
+                        "s_noise": s_noise,
+                        "eta": eta,
+                        "s_churn": s_churn,
+                        "r": r,
+                        "solver_type": sde_solver,
+                    },
+                },
+                inpaint_options=sampler.inpaint_options | {},
+            ),
+        )
+
+    @classmethod
+    @torch.no_grad()
+    def sampler_function(
+        cls,
+        model,
+        x,
+        sigmas,
+        *args: list[Any],
+        override_sampler_cfg: dict[str, Any] | None = None,
+        noise_sampler: Callable | None = None,
+        extra_args: dict[str, Any] | None = None,
+        **kwargs: dict[str, Any],
+    ):
+        if not override_sampler_cfg:
+            raise ValueError("Override sampler config missing!")
+        if extra_args is None:
+            extra_args = {}
+        cfg = override_sampler_cfg
+        sampler, noise_type, custom_noise = (
+            cfg["sampler"],
+            cfg.get("noise_type"),
+            cfg.get("custom_noise"),
+        )
+        sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
+        seed = extra_args.get("seed")
+        if custom_noise is not None:
+            noise_sampler = custom_noise.make_noise_sampler(
+                x,
+                sigma_min,
+                sigma_max,
+                seed=seed,
+            )
+        elif noise_type is not None:
+            noise_sampler = noise.get_noise_sampler(
+                noise_type,
+                x,
+                sigma_min,
+                sigma_max,
+                seed=seed,
+                cpu=True,
+            )
+        sig = inspect.signature(sampler.sampler_function)
+        params = sig.parameters
+        kwargs = kwargs | {}
+        if "noise_sampler" in params:
+            kwargs["noise_sampler"] = noise_sampler
+        for k in cls.KWARG_OVERRIDES:
+            if k not in params or cfg.get(k) is None:
+                continue
+            kwargs[k] = cfg[k]
+        return sampler.sampler_function(
+            model,
+            x,
+            sigmas,
+            *args,
+            extra_args=extra_args,
+            **kwargs,
         )

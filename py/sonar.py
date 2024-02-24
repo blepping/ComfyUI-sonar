@@ -212,7 +212,7 @@ class SonarEuler(SonarSampler):
         sigma_hat = sigma * (gamma + 1)
 
         if gamma > 0:
-            noise = torch.randn_like(sample.shape)
+            noise = torch.randn_like(sample)
 
             eps = noise * self.s_noise
             sample = sample + eps * (sigma_hat**2 - sigma**2) ** 0.5
@@ -355,15 +355,21 @@ class SonarEulerAncestral(SonarSampler):
                 "Unexpected noise_sampler presence with non-default noise type requested",
             )
         sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
+        seed = extra_args.get("seed")
         if sonar_config.custom_noise:
-            noise_sampler = sonar_config.custom_noise.make_noise_sampler(x)
-        else:
+            noise_sampler = sonar_config.custom_noise.make_noise_sampler(
+                x,
+                sigma_min,
+                sigma_max,
+                seed=seed,
+            )
+        elif noise_sampler is None:
             noise_sampler = noise.get_noise_sampler(
                 sonar_config.noise_type,
                 x,
                 sigma_min,
                 sigma_max,
-                seed=extra_args.get("seed"),
+                seed=seed,
                 cpu=True,
             )
         s_in = x.new_ones([x.shape[0]])
@@ -538,15 +544,21 @@ class SonarDPMPPSDE(SonarSampler):
                 "Unexpected noise_sampler presence with non-default noise type requested",
             )
         sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
+        seed = extra_args.get("seed")
         if sonar_config.custom_noise:
-            noise_sampler = sonar_config.custom_noise.make_noise_sampler(x)
-        else:
+            noise_sampler = sonar_config.custom_noise.make_noise_sampler(
+                x,
+                sigma_min,
+                sigma_max,
+                seed=seed,
+            )
+        elif noise_sampler is None:
             noise_sampler = noise.get_noise_sampler(
                 sonar_config.noise_type,
                 x,
                 sigma_min,
                 sigma_max,
-                seed=extra_args.get("seed"),
+                seed=seed,
                 cpu=True,
             )
         s_in = x.new_ones([x.shape[0]])
