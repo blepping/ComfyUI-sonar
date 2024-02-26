@@ -14,18 +14,10 @@ from torch import FloatTensor, Generator, Tensor
 # ruff: noqa: D412, D413, D417, D212, D407, ANN002, ANN003, FBT001, FBT002, S311
 
 
-# This likely isn't correct.
 def scale_noise(noise, factor=1.0):
-    return noise * factor
     mean, std = noise.mean(), noise.std()
-    # print(f"factor={factor:.3}, mean={mean:.3}, std={std:.3}")
-    noise = noise - mean
-    if std >= 0.98:
-        noise /= std
-    elif std < 0.98:
-        noise *= 1.0 + std
-    noise *= factor
-    return noise
+    # print(f"NOISE * {factor:.3}: std={std:.3}, mean={mean:.3}")
+    return (noise - mean).div_(std).mul_(factor)
 
 
 class NoiseType(Enum):
@@ -34,7 +26,6 @@ class NoiseType(Enum):
     BROWNIAN = auto()
     PERLIN = auto()
     STUDENTT = auto()
-    STUDENTT_TEST = auto()
     HIGHRES_PYRAMID = auto()
     PINK = auto()
     LAPLACIAN = auto()
@@ -72,6 +63,7 @@ class CustomNoiseChain:
     def rescaled(self, scale=1.0):
         total = sum(i.factor for i in self.items)
         divisor = total / scale
+        divisor = divisor if divisor != 0 else 1.0
         return CustomNoiseChain(
             [CustomNoiseItem(i.factor / divisor, i.noise_type) for i in self.items],
         )
@@ -117,9 +109,7 @@ class CustomNoiseChain:
                 op.add,
                 (ns(sigma, sigma_next) for ns in noise_samplers),
             )
-            result = scale_noise(result, scale)
-            # print("SCALING", scale, "sum", result.sum().item())
-            return result
+            return scale_noise(result, scale)
 
         return noise_sampler
 
@@ -432,6 +422,7 @@ class NoiseSampler:
         cpu: bool = False,
         transform: Callable = lambda t: t,
         make_noise_sampler: Callable | None = None,
+        normalize_noise=False,
         factor: float = 1.0,
     ):
         try:
@@ -449,6 +440,7 @@ class NoiseSampler:
         except TypeError:
             self.noise_sampler = make_noise_sampler(x)
         self.factor = factor
+        self.normalize_noise = normalize_noise
         self.transform = transform
         self.device = x.device
         self.dtype = x.dtype
@@ -469,12 +461,15 @@ class NoiseSampler:
         args = (
             self.transform(torch.as_tensor(s)) if s is not None else s for s in args
         )
-        # print(">", self.factor)
-        result = self.noise_sampler(*args, **kwargs) * self.factor
-        # result = scale_noise(self.noise_sampler(*args, **kwargs), self.factor)
-        if hasattr(result, "to"):
-            return result.to(dtype=self.dtype, device=self.device)
-        return result
+        noise = self.noise_sampler(*args, **kwargs)
+        noise = (
+            scale_noise(noise, self.factor)
+            if self.normalize_noise
+            else noise.mul_(self.factor)
+        )
+        if hasattr(noise, "to"):
+            return noise.to(dtype=self.dtype, device=self.device)
+        return noise
 
 
 NOISE_SAMPLERS: dict[NoiseType, Callable] = {
@@ -482,8 +477,7 @@ NOISE_SAMPLERS: dict[NoiseType, Callable] = {
     NoiseType.GAUSSIAN: NoiseSampler.simple(torch.randn_like),
     NoiseType.UNIFORM: NoiseSampler.simple(uniform_noise_like),
     NoiseType.PERLIN: NoiseSampler.simple(rand_perlin_like),
-    NoiseType.STUDENTT: NoiseSampler.wrap(studentt_noise_sampler),
-    NoiseType.STUDENTT_TEST: NoiseSampler.simple(studentt_noise_like),
+    NoiseType.STUDENTT: NoiseSampler.simple(studentt_noise_like),
     NoiseType.PINK: NoiseSampler.simple(pink_noise_like),
     NoiseType.HIGHRES_PYRAMID: NoiseSampler.simple(highres_pyramid_noise_like),
     NoiseType.RAINBOW_MILD: NoiseSampler.simple(
@@ -518,6 +512,7 @@ def get_noise_sampler(
     seed: int | None = None,
     cpu: bool = True,
     factor: float = 1.0,
+    normalize_noise=True,
 ) -> Callable:
     if noise_type is None:
         noise_type = NoiseType.GAUSSIAN
@@ -528,4 +523,12 @@ def get_noise_sampler(
     mkns = NOISE_SAMPLERS.get(noise_type)
     if mkns is None:
         raise ValueError("Unknown noise sampler")
-    return mkns(x, sigma_min, sigma_max, seed=seed, cpu=cpu, factor=factor)
+    return mkns(
+        x,
+        sigma_min,
+        sigma_max,
+        seed=seed,
+        cpu=cpu,
+        factor=factor,
+        normalize_noise=normalize_noise,
+    )

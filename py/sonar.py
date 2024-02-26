@@ -305,7 +305,6 @@ class SonarEuler(SonarSampler):
             noise_sampler,
             seed=extra_args.get("seed"),
         )
-        # print("noise sampler:", noise_sampler, sonar.noise_sampler)
 
         for i in trange(len(sigmas) - 1, disable=disable):
             x, sigma, sigma_hat, denoised = sonar.step(
