@@ -164,7 +164,7 @@ Normal (non-sonar) Eular A. Not really a comparison with noise (think it would u
 
 ![Rainbow Intense](assets/example_images/noise/renoise_rainbow_intense.png)
 
-#### Green_test_
+#### Green_test
 
 ![Green_test](assets/example_images/noise/renoise_green_test.png)
 

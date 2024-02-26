@@ -16,7 +16,9 @@ from torch import FloatTensor, Generator, Tensor
 
 # This likely isn't correct.
 def scale_noise(noise, factor=1.0):
+    return noise * factor
     mean, std = noise.mean(), noise.std()
+    # print(f"factor={factor:.3}, mean={mean:.3}, std={std:.3}")
     noise = noise - mean
     if std >= 0.98:
         noise /= std
@@ -115,7 +117,9 @@ class CustomNoiseChain:
                 op.add,
                 (ns(sigma, sigma_next) for ns in noise_samplers),
             )
-            return scale_noise(result, scale)
+            result = scale_noise(result, scale)
+            # print("SCALING", scale, "sum", result.sum().item())
+            return result
 
         return noise_sampler
 
@@ -465,7 +469,9 @@ class NoiseSampler:
         args = (
             self.transform(torch.as_tensor(s)) if s is not None else s for s in args
         )
-        result = scale_noise(self.noise_sampler(*args, **kwargs), self.factor)
+        # print(">", self.factor)
+        result = self.noise_sampler(*args, **kwargs) * self.factor
+        # result = scale_noise(self.noise_sampler(*args, **kwargs), self.factor)
         if hasattr(result, "to"):
             return result.to(dtype=self.dtype, device=self.device)
         return result
