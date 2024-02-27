@@ -4,6 +4,8 @@ A janky implementation of Sonar sampling (momentum-based sampling) for [ComfyUI]
 
 Currently supports Euler, Euler Ancestral, and DPM++ SDE sampling.
 
+See the [ChangeLog](changelog.md) for recent user-visible changes.
+
 ## Description
 
 See https://github.com/Kahsolt/stable-diffusion-webui-sonar for a more in-depth explanation.
@@ -22,11 +24,15 @@ You can also just choose `sonar_euler`, `sonar_euler_ancestral` or `sonar_dpmpp_
 
 ## Nodes
 
-1. `SamplerSonarEuler` — Custom sampler node that combines Euler sampling and momentum and optionally guidance. A bit boring compared to the ancestral version but it has predictability going for it. You can possibly try setting init type to `RAND` and using different noise types, however this sampler seems _very_ sensitive to that init type. You may want to set direction to a very low value like `0.05` or `-0.15` when using the `RAND` init type.
-2. `SamplerSonarEulerAncestral` — Ancestral version of the above. Same features, just with ancestral Euler.
-4. `SonarGuidanceConfig` — You can optionally plug this into the Sonar sampler nodes. See the [Guidance](#guidance) section below.
-5. `NoisyLatentLike` — If you give it a latent (or latent batch) it'll return a noisy latent of the same shape. Allows specifying all the custom noise types except `brownian` which has some special requirements. Provided just because the noise generation functions are conveniently available. You can also use this as a reference latent with `SonarGuidanceConfig` node and depending on the strength it can act like variation seed (you'd change the seed in the `NoisyLatentLike` node). *Note*: The seed stuff may or may not work correctly.
-6. `SamplerSonarDPMPPSDE` — This one is extra experimental but it is an attempt to add moment and guidance to the DPM++ SDE sampler. It may not work correctly but you can sample stuff with it and get interesting results. I actually really like this one, and you can get away with more extreme stuff like `green_test` noise and still produce reasonable results. You may want to use the `BlehDiscardPenultimateSigma` node from my [ComfyUI-bleh](https://github.com/blepping/ComfyUI-bleh) collection if you find the result seems a bit washed out and b lurry.
+* `SamplerSonarEuler` — Custom sampler node that combines Euler sampling and momentum and optionally guidance. A bit boring compared to the ancestral version but it has predictability going for it. You can possibly try setting init type to `RAND` and using different noise types, however this sampler seems _very_ sensitive to that init type. You may want to set direction to a very low value like `0.05` or `-0.15` when using the `RAND` init type. Setting `momentum=1` is the same as disabling momentum, so this sampler with `momentum=1` is basically the same as the basic `euler` sampler.
+* `SamplerSonarEulerAncestral` — Ancestral version of the above. Same features, just with ancestral Euler.
+* `SonarGuidanceConfig` — You can optionally plug this into the Sonar sampler nodes. See the [Guidance](#guidance) section below.
+* `NoisyLatentLike` — If you give it a latent (or latent batch) it'll return a noisy latent of the same shape. Allows specifying all the custom noise types except `brownian` which has some special requirements. Provided just because the noise generation functions are conveniently available. You can also use this as a reference latent with `SonarGuidanceConfig` node and depending on the strength it can act like variation seed (you'd change the seed in the `NoisyLatentLike` node). *Note*: The seed stuff may or may not work correctly.
+* `SamplerSonarDPMPPSDE` — This one is extra experimental but it is an attempt to add moment and guidance to the DPM++ SDE sampler. It may not work correctly but you can sample stuff with it and get interesting results. I actually really like this one, and you can get away with more extreme stuff like `green_test` noise and still produce reasonable results. You may want to use the `BlehDiscardPenultimateSigma` node from my [ComfyUI-bleh](https://github.com/blepping/ComfyUI-bleh) collection if you find the result seems a bit washed out and blurry.
+* `SamplerConfigOverride` — can be used to override configuration settings for other samplers, including the noise type. For example, you could force `euler_ancestral` to use a different noise type. It's also possible to override other settings like `s_noise`, etc. *Note*: The wrapper inspects the sampling function's arguments to see what it supports, so you should connect the sampler directly to this rather than having other nodes (like a different sampler wrapper) in between.
+* `SonarCustomNoise` — See the [Noise](#noise) section below.
+
+*Note*: `NoisyLatentLike` and `SamplerConfigOverride` are candidates for moving to a different project. They're just here at the moment because the noise generation functions are readily available.
 
 ## Parameters
 
@@ -51,19 +57,22 @@ I basically just copied a bunch of noise functions without really knowing what t
 3. `brownian`: This is the noise type SDE samplers use.
 4. `perlin`
 5. `studentt`: There's a comment that says it may enhance subject details. It seemed to produce a fairly dark result.
-6. `studentt_test`: An experiment that may be removed, it doesn't seem to be adding enough noise. You can possibly compensate by increasing `s_noise`.
-7. `pink`
-8. `highres_pyramid`: Not extensively tested, but it is slower than the other noise types. I would guess it does something like enhance details.
-9. `laplacian`
-10. `power`
-11. `rainbow_mild` and `rainbow_intense`: A combination of green (-ish, the implementation may be broken) noise plus perlin noise. Very colorful results.
-12. `green_test`: Even more rainbow-y than the rainbow noise types. It _probably_ isn't working correctly, but the results are very interesting and colorful. Depending on the model, it may not work well for an initial generation but may be worth trying with img2img type workflows.
+6. `pink`
+7. `highres_pyramid`: Not extensively tested, but it is slower than the other noise types. I would guess it does something like enhance details.
+8. `laplacian`
+9. `power`
+10. `rainbow_mild` and `rainbow_intense`: A combination of green (-ish, the implementation may be broken) noise plus perlin noise. Very colorful results.
+11. `green_test`: Even more rainbow-y than the rainbow noise types. It _probably_ isn't working correctly, but the results are very interesting and colorful. Depending on the model, it may not work well for an initial generation but may be worth trying with img2img type workflows.
 
 You can scroll down to the the [Examples](#examples) section near the bottom to see some example generations with different noise types.
 
 The sampler and `NoisyLatentLike` nodes now take an optional `SonarCustomNoise` input. You can chain `SonarCustomNoise` nodes together to mix different types of noise, similar to how some of the built in ones. It shouldn't matter what order the noise types are chained. If `rescale` is set to `0.0` no rescaling will occur. `factor` is the proportion of that type of noise you want. If you want to use `rescale` it should be on the node that you are plugging into a sampler. Just for example if you had two `SonarCustomNoise` nodes both with `factor=0.7` and `rescale=1.0` on the last one, it would be effectively the same as if you'd used `factor=0.5` and `rescale=1.0` doesn't actually do anything. You can also rescale to values above `1.0` — the result is more noise, similar to increasing `s_noise` above `1.0` on a sampler. The simple explanation is `rescale` means you don't have to make sure the `factor`s add up to the scale you want (which normally would be `1.0`).
 
-**Note**: If you connect the optional `SonarCustomNoise` node to a Sonar sampler or the `NoisyLatentLike` node it will override the noise type selected in the node.
+**Note**: If you connect the optional `SonarCustomNoise` node to a Sonar sampler, the `NoisyLatentLike` node or the `SamplerConfigOverride` node, it will override the noise type selected in the node.
+
+## Related
+
+I also have some other ComfyUI nodes here: https://github.com/blepping/ComfyUI-bleh/
 
 ## Credits
 
@@ -141,10 +150,14 @@ Normal (non-sonar) Eular A. Not really a comparison with noise (think it would u
 
 #### StudentT
 
+**outdated**
+
 ![StudentT](assets/example_images/noise/renoise_studentt.png)
 
 
 #### StudentT_test
+
+**outdated**
 
 ![StudentT_test](assets/example_images/noise/renoise_studentt_test.png)
 
@@ -203,9 +216,13 @@ These were generated with `s_noise=1.1` to make the noise effect more pronounced
 
 #### StudentT
 
+**outdated**
+
 ![StudentT](assets/example_images/noise/noise_studentt.png)
 
 #### StudentT_test
+
+**outdated**
 
 ![StudentT_test](assets/example_images/noise/noise_studentt_test.png)
 
