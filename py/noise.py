@@ -1,6 +1,7 @@
 # Noise generation functions shamelessly yoinked from https://github.com/Clybius/ComfyUI-Extra-Samplers
 from __future__ import annotations
 
+import abc
 import functools as fun
 import math
 import operator as op
@@ -16,7 +17,6 @@ from torch import FloatTensor, Generator, Tensor
 
 def scale_noise(noise, factor=1.0):
     mean, std = noise.mean(), noise.std()
-    # print(f"NOISE * {factor:.3}: std={std:.3}, mean={mean:.3}")
     return (noise - mean).div_(std).mul_(factor)
 
 
@@ -42,10 +42,56 @@ class NoiseError(Exception):
     pass
 
 
-class CustomNoiseItem:
-    def __init__(self, factor, noise_type):
+class CustomNoiseItemBase(abc.ABC):
+    def __init__(self, factor, **kwargs):
         self.factor = factor
-        self.noise_type = noise_type
+        self.keys = set(kwargs.keys())
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+    def clone(self):
+        return self.__class__(self.factor, **{k: getattr(self, k) for k in self.keys})
+
+    def set_factor(self, factor):
+        self.factor = factor
+        return self
+
+    @abc.abstractmethod
+    def make_noise_sampler(
+        self,
+        x: Tensor,
+        sigma_min=None,
+        sigma_max=None,
+        seed=None,
+        cpu=True,
+    ):
+        raise NotImplementedError
+
+
+class CustomNoiseItem(CustomNoiseItemBase):
+    def __init__(self, factor, **kwargs):
+        super().__init__(factor, **kwargs)
+        if getattr(self, "noise_type", None) is None:
+            raise ValueError("Noise type required!")
+
+    @torch.no_grad()
+    def make_noise_sampler(
+        self,
+        x: Tensor,
+        sigma_min=None,
+        sigma_max=None,
+        seed=None,
+        cpu=True,
+    ):
+        return get_noise_sampler(
+            self.noise_type,
+            x,
+            sigma_min,
+            sigma_max,
+            seed=seed,
+            cpu=cpu,
+            factor=self.factor,
+        )
 
 
 class CustomNoiseChain:
@@ -54,7 +100,7 @@ class CustomNoiseChain:
 
     def clone(self):
         return CustomNoiseChain(
-            [CustomNoiseItem(i.factor, i.noise_type) for i in self.items],
+            [i.clone() for i in self.items],
         )
 
     def add(self, item):
@@ -65,19 +111,8 @@ class CustomNoiseChain:
         divisor = total / scale
         divisor = divisor if divisor != 0 else 1.0
         return CustomNoiseChain(
-            [CustomNoiseItem(i.factor / divisor, i.noise_type) for i in self.items],
+            [i.clone().set_factor(i.factor / divisor) for i in self.items],
         )
-
-    def __call__(
-        self,
-        x: Tensor,
-        sigma_min=None,
-        sigma_max=None,
-        seed=None,
-        transform=lambda x: x,
-        cpu=True,
-    ):
-        pass
 
     @torch.no_grad()
     def make_noise_sampler(
@@ -89,14 +124,12 @@ class CustomNoiseChain:
         cpu=True,
     ) -> Callable:
         noise_samplers = tuple(
-            get_noise_sampler(
-                i.noise_type,
+            i.make_noise_sampler(
                 x,
                 sigma_min,
                 sigma_max,
                 seed=seed,
                 cpu=cpu,
-                factor=i.factor,
             )
             for i in self.items
         )

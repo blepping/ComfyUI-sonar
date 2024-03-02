@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import abc
 import inspect
 from typing import Any, Callable
 
@@ -70,7 +71,11 @@ class NoisyLatentLikeNode:
         return ({"samples": result},)
 
 
-class SonarCustomNoiseNode:
+class SonarCustomNoiseNodeBase(abc.ABC):
+    @abc.abstractmethod
+    def get_item_class(self):
+        raise NotImplementedError
+
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -95,13 +100,6 @@ class SonarCustomNoiseNode:
                         "round": False,
                     },
                 ),
-                "noise_type": (
-                    tuple(
-                        t.name.lower()
-                        for t in noise.NoiseType
-                        if t is not noise.NoiseType.BROWNIAN
-                    ),
-                ),
             },
             "optional": {
                 "sonar_custom_noise_opt": ("SONAR_CUSTOM_NOISE",),
@@ -112,15 +110,40 @@ class SonarCustomNoiseNode:
     CATEGORY = "advanced/noise"
     FUNCTION = "go"
 
-    def go(self, factor, rescale, noise_type, sonar_custom_noise_opt=None):
+    def go(
+        self,
+        factor,
+        rescale,
+        sonar_custom_noise_opt=None,
+        **kwargs: dict[str, Any],
+    ):
         nis = (
             sonar_custom_noise_opt.clone()
             if sonar_custom_noise_opt
             else noise.CustomNoiseChain()
         )
         if factor != 0:
-            nis.add(noise.CustomNoiseItem(factor, noise_type))
+            nis.add(self.get_item_class()(factor, **kwargs))
         return (nis if rescale == 0 else nis.rescaled(rescale),)
+
+
+class SonarCustomNoiseNode(SonarCustomNoiseNodeBase):
+    @classmethod
+    def INPUT_TYPES(cls):
+        result = super().INPUT_TYPES()
+        result["required"] |= {
+            "noise_type": (
+                tuple(
+                    t.name.lower()
+                    for t in noise.NoiseType
+                    if t is not noise.NoiseType.BROWNIAN
+                ),
+            ),
+        }
+        return result
+
+    def get_item_class(self):
+        return noise.CustomNoiseItem
 
 
 class GuidanceConfigNode:
