@@ -167,7 +167,12 @@ class PowerNoiseItem(CustomNoiseItemBase):
         filter_rfft = self.make_filter(size, oversample=1)
         filter_fft = rfft2_to_fft2(filter_rfft)
         noise = torch.fft.irfft2(
-            torch.randn(filter_rfft.shape, dtype=torch.complex64) * filter_rfft,
+            filter_rfft
+            * torch.randn(
+                filter_rfft.shape,
+                dtype=torch.complex64,
+                generator=torch.Generator().manual_seed(0),
+            ),
             s=size,
             norm="ortho",
         )
