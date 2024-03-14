@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import math
-from typing import Optional
+import os
+import random
 
+import folder_paths
 import torch
 from comfy.k_diffusion.sampling import BrownianTreeNoiseSampler
+from PIL import Image
 from torch import Tensor
 
 from .nodes import SonarCustomNoiseNodeBase
@@ -160,6 +163,44 @@ class PowerNoiseItem(CustomNoiseItemBase):
 
         return sampler
 
+    def preview(self, size=(128, 128)):
+        filter_rfft = self.make_filter(size, oversample=1)
+        filter_fft = rfft2_to_fft2(filter_rfft)
+        noise = torch.fft.irfft2(
+            torch.randn(filter_rfft.shape, dtype=torch.complex64) * filter_rfft,
+            s=size,
+            norm="ortho",
+        )
+        kernel = torch.fft.irfft2(filter_rfft, s=size, norm="ortho")
+        kernel = kernel.roll((size[0] // 2, size[1] // 2), (-2, -1))
+        img = (
+            torch.cat(
+                [
+                    filter_fft.mul_(1 / 3).tanh_().mul_(256.0),
+                    kernel.mul_(1 / 3).tanh_().add_(1.0).mul_(128.0),
+                    noise.mul_(1 / 3).tanh_().add_(1.0).mul_(128.0),
+                ],
+                dim=-1,
+            )
+            .clamp(0, 255)
+            .to(torch.uint8)
+        )
+        return Image.fromarray(img[0, 0].numpy())
+
+
+def rfft2_to_fft2(x):
+    """Apply hermitian-summetry to reconstruct the second half of a fft.
+
+    Only for previews.
+    """
+    height, width = x.shape[-2:]
+    x_r = x.roll(height // 2, -2)  # torch.fft.fftshift(x, -2)
+    x_l = x_r[..., 1 : -1 if width & 1 else None]
+    x_l = torch.flip(x_l.conj(), dims=(-2, -1))
+    if height & 1 == 0:
+        x_l = x_l.roll(1, -2)
+    return torch.cat([x_l, x_r], dim=-1)
+
 
 class SonarPowerNoiseNode(SonarCustomNoiseNodeBase):
     @classmethod
@@ -247,8 +288,41 @@ class SonarPowerNoiseNode(SonarCustomNoiseNodeBase):
                     "round": False,
                 },
             ),
+            "preview": (["none", "no_mix", "mix"],),
         }
         return result
 
     def get_item_class(self):
         return PowerNoiseItem
+
+    def go(
+        self,
+        preview="none",
+        **kwargs,
+    ):
+        result = super().go(**kwargs)
+        if preview == "none":
+            return result
+        if preview == "no_mix":
+            kwargs["mix"] = 1.0
+        img = PowerNoiseItem(**kwargs).preview()
+
+        output_dir = folder_paths.get_temp_directory()
+        prefix_append = "sonar_temp_" + "".join(
+            random.choice("abcdefghijklmnopqrstupvxyz") for x in range(5)  # noqa: S311
+        )
+        full_output_folder, filename, counter, subfolder, _ = (
+            folder_paths.get_save_image_path(prefix_append, output_dir)
+        )
+        filename = f"{filename}_{counter:05}_.png"
+        file_path = os.path.join(full_output_folder, filename)  # noqa: PTH118
+        img.save(file_path, compress_level=1)
+
+        return {
+            "ui": {
+                "images": [
+                    {"filename": filename, "subfolder": subfolder, "type": "temp"},
+                ],
+            },
+            "result": result,
+        }
