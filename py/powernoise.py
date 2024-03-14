@@ -8,33 +8,26 @@ from comfy.k_diffusion.sampling import BrownianTreeNoiseSampler
 from torch import Tensor
 
 from .nodes import SonarCustomNoiseNodeBase
-from .noise import CustomNoiseItemBase, scale_noise
+from .noise import CustomNoiseItemBase
 
-# ruff: noqa: D412, D413, D417, D212, D407, ANN002, ANN003, FBT001, FBT002, S311
+# ruff: noqa: ANN003, FBT001, FBT002
 
 
 class PowerNoiseItem(CustomNoiseItemBase):
     def __init__(self, factor, **kwargs):
         super().__init__(factor, **kwargs)
-        self.cached_filter = None
         self.lowpass = max(self.lowpass, self.highpass)
 
     @torch.no_grad()
-    def make_filter(self, shape, oversample=4, rel_bw=0.25, device=None):
+    def make_filter(self, shape, oversample=4, rel_bw=0.125):
         """Construct a band-pass * 1/f^alpha filter in rfft space."""
-        if self.cached_filter is not None and self.cached_filter.shape[-2:] == shape:
-            return self.cached_filter.to(device)
-
         height, width = shape[-2:]
         hfreq_bins = width // 2 + 1
 
         # Flat unit gain frequency response
         if self.mix < 1.0:
-            flat = torch.ones(1, 1, height, hfreq_bins) * (
-                1.0 / math.sqrt(height * hfreq_bins)
-            )
+            flat = torch.ones(1, 1, height, hfreq_bins)
         if self.mix <= 0.0:
-            flat = self.cached_filter = flat.to(device, non_blocking=True)
             return flat
 
         # Start with an over-sampled fftshift(rfft2freq()) grid. uses complex
@@ -67,12 +60,12 @@ class PowerNoiseItem(CustomNoiseItemBase):
 
         # filter gain function
         op = torch.empty_like(d)
-        m_highpass = d > self.highpass
+        m_highpass = d >= self.highpass
         m_lowpass = d < self.lowpass
         m_band = m_highpass & m_lowpass
         # 1 / f^alpha for the band-pass region
         op[m_band] = d[m_band].pow(-self.alpha)
-        # easing gaussians (TODO: try cosine windows)
+        # easing gaussian (TODO: try cosine windows)
         m_lowpass = ~m_lowpass
         op[m_lowpass] = math.pow(self.lowpass, -self.alpha) * torch.exp(
             -(d[m_lowpass] - self.lowpass).square() / (rel_bw * self.lowpass) ** 2,
@@ -90,34 +83,28 @@ class PowerNoiseItem(CustomNoiseItemBase):
             align_corners=True,
         )
         op = op.roll(-(height // 2), -2)  # ifftshift
-        if self.alpha <= 0:
+        if self.alpha > 0:
             # In general, the mean offset should be kept as is, sampled from
-            # N(0, 1 / sqrt(H*W) ). However, gains goes to inf when alpha<0.
+            # N(0, 1 / sqrt(H*W) ). However, gain goes to inf when alpha>0.
             op[..., 0, 0] = 0
 
         # Scale to unit power gain, then mix flat filter
-        op_sq = op.square()
-        op_sq_sum = op_sq.sum()
-        if self.mix >= 1.0:
-            if op_sq_sum > 0:
-                op *= 1.0 / op_sq_sum.sqrt()
-        elif op_sq_sum > 0:
-            op_sq *= 1.0 / op_sq_sum
-            op = torch.lerp(flat.square(), op_sq, self.mix).sqrt()
-        else:
-            op = flat
-
-        op = op.to(device, non_blocking=True)
-        self.cached_filter = op
-        return op
+        mean_pow_gain = op.mean()
+        if mean_pow_gain <= 0.0:
+            # don't fail catastrophically when something broke
+            return flat
+        op *= 1.0 / mean_pow_gain
+        if self.mix < 1.0:
+            op = torch.lerp(flat, op, self.mix, out=op)
+        return op.sqrt_()
 
     @torch.no_grad()
     def make_noise_sampler(
         self,
         x: Tensor,
-        sigma_min: Optional[float],
-        sigma_max: Optional[float],
-        seed: Optional[int],
+        sigma_min: float | None,
+        sigma_max: float | None,
+        seed: int | None,
         cpu: bool = True,
     ):
         shape = x.shape
@@ -139,19 +126,20 @@ class PowerNoiseItem(CustomNoiseItemBase):
         common_mode = self.common_mode
         if common_mode > 0.0:
             b, c, h, w = shape
+            torch.eye(c, c)
             channel_mixer = torch.lerp(
                 torch.eye(c, c),
                 torch.ones(c, c) / c,
                 common_mode,
             )
-            channel_mixer = channel_mixer.to(device)
+            channel_mixer = channel_mixer.sqrt().to(device, non_blocking=True)
 
-        filter_rfft = self.make_filter(shape, device=device)
+        filter_rfft = self.make_filter(shape).to(device, non_blocking=True)
 
         @torch.no_grad()
         def sampler(sigma, sigma_next):
             if time_brownian:
-                noise = brownian_tree(sigma, sigma_next)
+                noise = brownian_tree(sigma, sigma_next).to(device)
                 noise_rfft = torch.fft.rfft2(noise, norm="ortho")
             else:
                 noise_rfft = torch.randn(
@@ -160,7 +148,7 @@ class PowerNoiseItem(CustomNoiseItemBase):
                     device=device,
                 )
             noise = torch.fft.irfft2(
-                filter_rfft * noise_rfft,
+                noise_rfft.mul_(filter_rfft),
                 s=shape[-2:],
                 norm="ortho",
             )
@@ -168,8 +156,7 @@ class PowerNoiseItem(CustomNoiseItemBase):
             if common_mode > 0.0:
                 noise = channel_mixer @ noise.swapaxes(0, 1).reshape(c, -1)
                 noise = noise.reshape(c, b, h, w).swapaxes(1, 0)
-            return noise * self.factor
-            return scale_noise(noise, self.factor)
+            return noise.mul_(self.factor)
 
         return sampler
 
