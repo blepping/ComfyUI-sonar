@@ -1,4 +1,4 @@
-from .py import nodes, sonar
+from .py import nodes, powernoise, sonar
 
 sonar.add_samplers()
 
@@ -9,6 +9,7 @@ NODE_CLASS_MAPPINGS = {
     "SamplerConfigOverride": nodes.SamplerNodeConfigOverride,
     "NoisyLatentLike": nodes.NoisyLatentLikeNode,
     "SonarCustomNoise": nodes.SonarCustomNoiseNode,
+    "SonarPowerNoise": powernoise.SonarPowerNoiseNode,
     "SonarGuidanceConfig": nodes.GuidanceConfigNode,
 }
 
