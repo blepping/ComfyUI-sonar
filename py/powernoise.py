@@ -18,7 +18,6 @@ class PowerNoiseItem(CustomNoiseItemBase):
         super().__init__(factor, **kwargs)
         self.max_freq = max(self.max_freq, self.min_freq)
 
-    @torch.no_grad()
     def make_filter(self, shape, oversample=4, rel_bw=0.125):
         """Construct a band-pass * 1/f^alpha filter in rfft space."""
         height, width = shape[-2:]
@@ -101,7 +100,6 @@ class PowerNoiseItem(CustomNoiseItemBase):
             op = torch.lerp(flat, op, self.mix, out=op)
         return op.sqrt_()
 
-    @torch.no_grad()
     def make_noise_sampler(
         self,
         x: Tensor,
@@ -139,7 +137,6 @@ class PowerNoiseItem(CustomNoiseItemBase):
 
         filter_rfft = self.make_filter(shape).to(device, non_blocking=True)
 
-        @torch.no_grad()
         def sampler(sigma, sigma_next):
             if time_brownian:
                 noise = brownian_tree(sigma, sigma_next).to(device)
