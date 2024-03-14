@@ -46,7 +46,10 @@ class PowerNoiseItem(CustomNoiseItemBase):
         # Rotate, stretch and p-norm
         if abs(self.rotate) >= 1e-3:
             fc *= torch.exp(1.0j * torch.deg2rad(torch.scalar_tensor(self.rotate)))
-        fc.real *= self.stretch
+        if self.stretch > 1.0:
+            fc.real *= self.stretch
+        else:
+            fc.imag *= 1.0 / self.stretch
         if abs(self.pnorm - 2.0) < 1e-3:
             d = fc.abs()
         else:
@@ -201,9 +204,9 @@ class SonarPowerNoiseNode(SonarCustomNoiseNodeBase):
                 "FLOAT",
                 {
                     "default": 1.0,
-                    "min": 1.0,
-                    "max": 1e3,
-                    "step": 0.001,
+                    "min": 0.01,
+                    "max": 100,
+                    "step": 0.1,
                     "round": False,
                 },
             ),
@@ -213,7 +216,7 @@ class SonarPowerNoiseNode(SonarCustomNoiseNodeBase):
                     "default": 0,
                     "min": -90,
                     "max": 90,
-                    "step": 0.001,
+                    "step": 5,
                     "round": False,
                 },
             ),
@@ -223,7 +226,7 @@ class SonarPowerNoiseNode(SonarCustomNoiseNodeBase):
                     "default": 2,
                     "min": 0.125,
                     "max": 100,
-                    "step": 0.001,
+                    "step": 0.1,
                     "round": False,
                 },
             ),
