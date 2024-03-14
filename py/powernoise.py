@@ -16,7 +16,7 @@ from .noise import CustomNoiseItemBase
 class PowerNoiseItem(CustomNoiseItemBase):
     def __init__(self, factor, **kwargs):
         super().__init__(factor, **kwargs)
-        self.lowpass = max(self.lowpass, self.highpass)
+        self.max_freq = max(self.max_freq, self.min_freq)
 
     @torch.no_grad()
     def make_filter(self, shape, oversample=4, rel_bw=0.125):
@@ -63,21 +63,21 @@ class PowerNoiseItem(CustomNoiseItemBase):
 
         # filter gain function
         op = torch.empty_like(d)
-        m_highpass = d >= self.highpass
-        m_lowpass = d < self.lowpass
+        m_highpass = d >= self.min_freq
+        m_lowpass = d < self.max_freq
         m_band = m_highpass & m_lowpass
         # 1 / f^alpha for the band-pass region
         op[m_band] = d[m_band].pow(-self.alpha)
         # easing gaussian (TODO: try cosine windows)
         m_lowpass = ~m_lowpass
-        op[m_lowpass] = math.pow(self.lowpass, -self.alpha) * torch.exp(
-            -(d[m_lowpass] - self.lowpass).square() / (rel_bw * self.lowpass) ** 2,
+        op[m_lowpass] = math.pow(self.max_freq, -self.alpha) * torch.exp(
+            -(d[m_lowpass] - self.max_freq).square() / (rel_bw * self.max_freq) ** 2,
         )
-        if self.highpass > 0.0:
+        if self.min_freq > 0.0:
             m_highpass = ~m_highpass
-            op[m_highpass] = math.pow(self.highpass, -self.alpha) * torch.exp(
-                -(d[m_highpass] - self.highpass).square()
-                / (rel_bw * self.highpass) ** 2,
+            op[m_highpass] = math.pow(self.min_freq, -self.alpha) * torch.exp(
+                -(d[m_highpass] - self.min_freq).square()
+                / (rel_bw * self.min_freq) ** 2,
             )
         op = torch.nn.functional.interpolate(
             op[None, None, ...],
@@ -180,7 +180,7 @@ class SonarPowerNoiseNode(SonarCustomNoiseNodeBase):
                     "round": False,
                 },
             ),
-            "lowpass": (
+            "max_freq": (
                 "FLOAT",
                 {
                     "default": 0.7071,
@@ -190,7 +190,7 @@ class SonarPowerNoiseNode(SonarCustomNoiseNodeBase):
                     "round": False,
                 },
             ),
-            "highpass": (
+            "min_freq": (
                 "FLOAT",
                 {
                     "default": 0.0,
