@@ -17,6 +17,7 @@ class PowerNoiseItem(CustomNoiseItemBase):
     def __init__(self, factor, **kwargs):
         super().__init__(factor, **kwargs)
         self.cached_filter = None
+        self.lowpass = max(self.lowpass, self.highpass)
 
     @torch.no_grad()
     def make_filter(self, shape, oversample=4, rel_bw=0.25, device=None):
