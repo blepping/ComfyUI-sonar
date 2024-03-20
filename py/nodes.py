@@ -33,9 +33,13 @@ class NoisyLatentLikeNode:
                 ),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFFFFFFFFFF}),
                 "latent": ("LATENT",),
+                "multiplier": ("FLOAT", {"default": 1.0}),
+                "add_to_latent": ("BOOLEAN", {"default": False}),
             },
             "optional": {
                 "custom_noise_opt": ("SONAR_CUSTOM_NOISE",),
+                "mul_by_sigmas_opt": ("SIGMAS",),
+                "model_opt": ("MODEL",),
             },
         }
 
@@ -46,17 +50,41 @@ class NoisyLatentLikeNode:
 
     def go(
         self,
-        noise_type,
-        seed,
-        latent,
-        custom_noise_opt=None,
+        noise_type: str,
+        seed: None | int,
+        latent: dict,
+        multiplier: float = 1.0,
+        add_to_latent=False,
+        custom_noise_opt: object | None = None,
+        mul_by_sigmas_opt: None | torch.Tensor = None,
+        model_opt: object | None = None,
     ):
+        model, sigmas = model_opt, mul_by_sigmas_opt
+        if sigmas is not None and len(sigmas) > 0:
+            if model is None:
+                raise ValueError(
+                    "NoisyLatentLike requires a model when sigmas are connected!",
+                )
+            while hasattr(model, "model"):
+                model = model.model
+            latent_scale_factor = model.latent_format.scale_factor
+            max_denoise = samplers.Sampler().max_denoise(
+                samplers.wrap_model(model),
+                sigmas,
+            )
+            multiplier *= (
+                float(
+                    torch.sqrt(1.0 + sigmas[0] ** 2.0) if max_denoise else sigmas[0],
+                )
+                / latent_scale_factor
+            )
+        latent_samples = latent["samples"]
         if custom_noise_opt is not None:
-            ns = custom_noise_opt.make_noise_sampler(latent["samples"])
+            ns = custom_noise_opt.make_noise_sampler(latent_samples)
         else:
             ns = noise.get_noise_sampler(
                 noise.NoiseType[noise_type.upper()],
-                latent["samples"],
+                latent_samples,
                 None,
                 None,
                 seed=seed,
@@ -68,6 +96,10 @@ class NoisyLatentLikeNode:
             result = ns(None, None)
         finally:
             torch.random.set_rng_state(randst)
+        if multiplier != 1.0:
+            result *= multiplier
+        if add_to_latent:
+            result += latent_samples.to(result.device)
         return ({"samples": result},)
 
 
