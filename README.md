@@ -94,6 +94,12 @@ By default, the node generates normal gaussian noise. Here's an overview of its 
 
 **Seed Considerations**: While the node defaults to outputting gaussian noise, a given seed produce a different sample than the one produced by other gaussian noise sources. This stems from sampling the noise directly in the frequency domain to avoid the cost of a FFT. When `time_brownian = true`, noise sampling occurs in the spatial domain, ensuring that default parameters yield output equivalent to `SonarCustomNoise` set to `brownian`.
 
+***
+
+That's an advanced explanation. From a usage perspective, using positive alpha will tend to create a colorful effect, using negative alpha will create line/streak like artifacts sort of like an oil painting canvas. Start with small values at first (`-0.1`, `0.1`) and adjust as necessary. `time_brownian` makes the effect of power noise (and alpha) stronger - also note that it can only be used when sampling and not for `NoisyLatentLike`. Setting `common_mode` also generally seems to intensify these effects. Different types of models (normal EPS models, v-prediction models, SDXL) generally react differently to these exotic noise types so my advice is to experiment! Lowering `mix` uses normal gaussian noise for part of the generated noise. For example, `mix=1.0` means 100% power noise, `mix=0.5` means 50/50 power noise and normal gaussian noise. This also is about the same as setting factor to `0.5` and plugging in a `SonarCustomNoise` node with factor at `0.5` also and the type set to `guassian`.
+
+Noise from the `SonarCustomNoise` node and `SonarPowerNoise` can be freely mixed.
+
 ## Related
 
 I also have some other ComfyUI nodes here: https://github.com/blepping/ComfyUI-bleh/
@@ -106,7 +112,11 @@ My version basically just rips off this Sonar sampler implementation for Diffuse
 
 Noise generation functions copied from https://github.com/Clybius/ComfyUI-Extra-Samplers with only minor modifications. I may have broken some of them in the process _or_ they may not have been suitable for use and I took them anyway. If they don't work it is not a reflection on the original source.
 
+`SonarPowerNoise` contributed by [elias-gaeros](https://github.com/elias-gaeros/). Thanks!
+
 ## Examples
+
+Unfortunately, right now these examples are somewhat incomplete and out of date. I hope to update them when I get the time.
 
 ### Guidance
 

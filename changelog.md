@@ -2,6 +2,10 @@
 
 Note, only relatively significant changes to user-visible functionality will be included here. Most recent changes at the top.
 
+## 20240314
+
+* `SonarPowerNoise` node added.
+
 ## 20240227
 
 * Refactored noise generation functions (will break seeds).
