@@ -24,17 +24,83 @@ You can also just choose `sonar_euler`, `sonar_euler_ancestral` or `sonar_dpmpp_
 
 ## Nodes
 
-* `SamplerSonarEuler` — Custom sampler node that combines Euler sampling and momentum and optionally guidance. A bit boring compared to the ancestral version but it has predictability going for it. You can possibly try setting init type to `RAND` and using different noise types, however this sampler seems _very_ sensitive to that init type. You may want to set direction to a very low value like `0.05` or `-0.15` when using the `RAND` init type. Setting `momentum=1` is the same as disabling momentum, so this sampler with `momentum=1` is basically the same as the basic `euler` sampler.
-* `SamplerSonarEulerAncestral` — Ancestral version of the above. Same features, just with ancestral Euler.
-* `SonarGuidanceConfig` — You can optionally plug this into the Sonar sampler nodes. See the [Guidance](#guidance) section below.
-* `NoisyLatentLike` — If you give it a latent (or latent batch) it'll return a noisy latent of the same shape. Allows specifying all the custom noise types except `brownian` which has some special requirements. Provided just because the noise generation functions are conveniently available. You can also use this as a reference latent with `SonarGuidanceConfig` node and depending on the strength it can act like variation seed (you'd change the seed in the `NoisyLatentLike` node). *Note*: The seed stuff may or may not work correctly.
-* `SamplerSonarDPMPPSDE` — This one is extra experimental but it is an attempt to add moment and guidance to the DPM++ SDE sampler. It may not work correctly but you can sample stuff with it and get interesting results. I actually really like this one, and you can get away with more extreme stuff like `green_test` noise and still produce reasonable results. You may want to use the `BlehDiscardPenultimateSigma` node from my [ComfyUI-bleh](https://github.com/blepping/ComfyUI-bleh) collection if you find the result seems a bit washed out and blurry.
-* `SamplerConfigOverride` — can be used to override configuration settings for other samplers, including the noise type. For example, you could force `euler_ancestral` to use a different noise type. It's also possible to override other settings like `s_noise`, etc. *Note*: The wrapper inspects the sampling function's arguments to see what it supports, so you should connect the sampler directly to this rather than having other nodes (like a different sampler wrapper) in between.
-* `SonarCustomNoise` — See the [Noise](#noise) section below.
+### `SamplerSonarEuler`
 
-*Note*: `NoisyLatentLike` and `SamplerConfigOverride` are candidates for moving to a different project. They're just here at the moment because the noise generation functions are readily available.
+Custom sampler node that combines Euler sampling and momentum and optionally guidance. A bit boring compared to the ancestral version but it has predictability going for it. You can possibly try setting init type to `RAND` and using different noise types, however this sampler seems _very_ sensitive to that init type. You may want to set direction to a very low value like `0.05` or `-0.15` when using the `RAND` init type. Setting `momentum=1` is the same as disabling momentum, so this sampler with `momentum=1` is basically the same as the basic `euler` sampler.
 
-## Parameters
+### `SamplerSonarEulerAncestral`
+
+Ancestral version of the above. Same features, just with ancestral Euler.
+
+### `SamplerSonarDPMPPSDE`
+
+Attempt to add momentum and guidance to the DPM++ SDE sampler. It may not work correctly but you can sample stuff with it and get interesting results. I actually really like this one, and you can get away with more extreme stuff like `green_test` noise and still produce reasonable results. You may want to use the `BlehDiscardPenultimateSigma` node from my [ComfyUI-bleh](https://github.com/blepping/ComfyUI-bleh) collection if you find the result seems a bit washed out and blurry.
+
+### `SonarGuidanceConfig`
+
+You can optionally plug this into the Sonar sampler nodes. See the [Guidance](#guidance) section below.
+
+### `NoisyLatentLike`
+
+This node takes a reference latent and generates noise of the same shape. The one required input is `latent`.
+
+You can connect a `SonarCustomNoise` or `SonerPowerNoise` node to the `custom_noise_opt` input: if that is attached, the built in noise type selector is ignored. The generated noise will be multiplied by the `multiplier` value. Note that you cannot use `brownian` noise whether specified directly or via custom noise nodes.
+
+The node has two main modes: simply generate and scale the noise by the multiplier and return or add it to the input latent. In this mode, you don't connect anything to the `mul_by_sigmas_opt` or `model_opt` inputs and you would use other nodes to calculate the correct strength.
+
+In the second mode you must connect sigmas (for example from a `BasicScheduler` node) to the `mul_by_sigmas_opt` input and connect a model to the `model_opt` input. It will calculate the strength based on the first item in the list of sigmas (so you could use something like a `SplitSigmas` node to slice them as needed). Note that `multiplier` still applies: the calculated strength will be scaled by it. This second mode is generally this is the most convenient way to use the node since the two main uses cases are: making a latent with initial noise or adding noise to a latent (for img2img type stuff).
+
+If you want to create noise for initial sampling, connect model and sigmas to the node, connect an empty latent (or one of the appropriate size) to it and that is basically all you need to do (aside from configuring the noise types). For img2img (upscaling, etc), either slice the sigmas at the appropriate or set a denoise in something like the `BasicScheduler` node. **Note**: You also need to turn on the `add_to_latent` toggle. Turning this on doesn't matter for initial noise since an empty latent is all zeros.
+
+
+### `SamplerConfigOverride`
+
+can be used to override configuration settings for other samplers, including the noise type. For example, you could force `euler_ancestral` to use a different noise type. It's also possible to override other settings like `s_noise`, etc. *Note*: The wrapper inspects the sampling function's arguments to see what it supports, so you should connect the sampler directly to this rather than having other nodes (like a different sampler wrapper) in between.
+
+**Note**: If you are using this with Sonar samplers, make sure you set the noise type in the sampler to `gaussian` as the Sonar samplers only allow overriding noise types in that case.
+
+### `SonarCustomNoise`
+
+See the [Noise](#noise) section below for information on noise types.
+
+### `SonarPowerNoise`
+
+This node generates [fractional Brownian motion (fBm) noise](https://en.wikipedia.org/wiki/Fractional_Brownian_motion#Frequency-domain_interpretation). It offers versatility in producing various types of noise including gaussian, pink, 2D brownian noise, and all intermediates.
+
+By default, the node generates normal gaussian noise.
+
+<details>
+
+<summary>Expand detailed explanation</summary>
+
+
+Here's an overview of its parameters:
+
+- `factor` and `rescale` operate similarly to `SonarCustomNoise`, enabling the addition of multiple sources of noises.
+- `time_brownian` introduces correlation across sampler timesteps for SDE solvers.
+- `alpha` is the main parameter. `alpha > 0` amplifies low frequencies; `alpha = 1` yields pink noise, and `alpha = 2` produces brownian noise. Conversely, for `alpha < 0`, it amplifies high frequencies.
+- `min_freq` and `max_freq` determine the range of frequencies allowed through. Setting `max_freq = `$\sqrt{1/2} \simeq 0.7071$ enables the passage of the highest frequencies. In cases where `alpha < 0`, setting `max_freq = 0.5` is advisable to diminish the power of diagonally oriented frequencies.
+- `stretch`, `rotate`, and `pnorm` alter the filter's shape by stretching, rotating, or cushioning the band-pass region.
+- Lowering `mix` moderates the filter's effect by blending back unfiltered gaussian noise from the same sample.
+- `common_mode` is an attempt to desaturate the latent by injecting the average across channels into every latent channel. However, this may result in a specific color due to the encoding of the unit vector by the latent space. Note that this is done _after_ the `mix`ing of unfiltered gaussian noise.
+- Enabling `preview` provides a visual representation of the filter. `no_mix` sets `mix = 1` for the preview. The preview includes, from left to right:
+  - Fourier domain visualization: Low frequencies at the center, with black indicating filtered-out frequencies.
+  - Spatial visualization of the 2D kernel: The filtering can be interpreted as convolution with the displayed kernel.
+  - Sample: Gaussian sample with shaped frequency spectrum. A single latent channel will look like this.
+
+**Frequency-domain Interpretation**: The Fourier transform decomposes a 2D latent into sinusoids covering all spatial orientations and frequencies. For an independent and identically distributed gaussian sample, energy is evenly distributed across all frequencies and orientations. Scaling the power spectrum by $1 / f^\alpha$, where $\alpha>0$, boosts low frequencies, introducing spatial correlations.
+
+**Spatial Domain Interpretation**: A gaussian latent sample comprises independently sampled pixels, exhibiting no spatial correlations. Conversely, a requirement that each pixel value differs from its neighbors by a $\epsilon \sim \mathcal{N}(0, 1)$ results in 2D brownian noise ($\alpha=2$).
+
+**Seed Considerations**: While the node defaults to outputting gaussian noise, a given seed produce a different sample than the one produced by other gaussian noise sources. This stems from sampling the noise directly in the frequency domain to avoid the cost of a FFT. When `time_brownian = true`, noise sampling occurs in the spatial domain, ensuring that default parameters yield output equivalent to `SonarCustomNoise` set to `brownian`.
+
+</details>
+
+From a usage perspective, using positive alpha will tend to create a colorful effect, using negative alpha will create line/streak like artifacts sort of like an oil painting canvas. Start with small values at first (`-0.1`, `0.1`) and adjust as necessary. `time_brownian` makes the effect of power noise (and alpha) stronger - also note that it can only be used when sampling and not for `NoisyLatentLike`. Setting `common_mode` also generally seems to intensify these effects. Different types of models (normal EPS models, v-prediction models, SDXL) generally react differently to these exotic noise types so my advice is to experiment! Lowering `mix` uses normal gaussian noise for part of the generated noise. For example, `mix=1.0` means 100% power noise, `mix=0.5` means 50/50 power noise and normal gaussian noise. This also is about the same as setting factor to `0.5` and plugging in a `SonarCustomNoise` node with factor at `0.5` also and the type set to `guassian`.
+
+Noise from the `SonarCustomNoise` node and `SonarPowerNoise` can be freely mixed.
+
+## Sonar Sampler Parameters
 
 Very abbreviated section. The init type can make a big difference. If you use `RANDOM` you can get away with setting `direction` to high values (like up to `2.25` or so) and absurdly low values (like `-30.0`). It's also possible to set `momentum` and `momentum_hist` to negative values, although whether it's a good idea...
 
@@ -70,35 +136,7 @@ The sampler and `NoisyLatentLike` nodes now take an optional `SonarCustomNoise` 
 
 **Note**: If you connect the optional `SonarCustomNoise` node to a Sonar sampler, the `NoisyLatentLike` node or the `SamplerConfigOverride` node, it will override the noise type selected in the node.
 
-### SonarPowerNoise
 
-The `SonarPowerNoise` node generates [fractional Brownian motion (fBm) noise](https://en.wikipedia.org/wiki/Fractional_Brownian_motion#Frequency-domain_interpretation). It offers versatility in producing various types of noise including gaussian, pink, 2D brownian noise, and all intermediates.
-
-By default, the node generates normal gaussian noise. Here's an overview of its parameters:
-
-- `factor` and `rescale` operate similarly to `SonarCustomNoise`, enabling the addition of multiple sources of noises.
-- `time_brownian` introduces correlation across sampler timesteps for SDE solvers.
-- `alpha` is the main parameter. `alpha > 0` amplifies low frequencies; `alpha = 1` yields pink noise, and `alpha = 2` produces brownian noise. Conversely, for `alpha < 0`, it amplifies high frequencies.
-- `min_freq` and `max_freq` determine the range of frequencies allowed through. Setting `max_freq = `$\sqrt{1/2} \simeq 0.7071$ enables the passage of the highest frequencies. In cases where `alpha < 0`, setting `max_freq = 0.5` is advisable to diminish the power of diagonally oriented frequencies.
-- `stretch`, `rotate`, and `pnorm` alter the filter's shape by stretching, rotating, or cushioning the band-pass region.
-- Lowering `mix` moderates the filter's effect by blending back unfiltered gaussian noise from the same sample.
-- `common_mode` is an attempt to desaturate the latent by injecting the average across channels into every latent channel. However, this may result in a specific color due to the encoding of the unit vector by the latent space. Note that this is done _after_ the `mix`ing of unfiltered gaussian noise.
-- Enabling `preview` provides a visual representation of the filter. `no_mix` sets `mix = 1` for the preview. The preview includes, from left to right:
-  - Fourier domain visualization: Low frequencies at the center, with black indicating filtered-out frequencies.
-  - Spatial visualization of the 2D kernel: The filtering can be interpreted as convolution with the displayed kernel.
-  - Sample: Gaussian sample with shaped frequency spectrum. A single latent channel will look like this.
-
-**Frequency-domain Interpretation**: The Fourier transform decomposes a 2D latent into sinusoids covering all spatial orientations and frequencies. For an independent and identically distributed gaussian sample, energy is evenly distributed across all frequencies and orientations. Scaling the power spectrum by $1 / f^\alpha$, where $\alpha>0$, boosts low frequencies, introducing spatial correlations.
-
-**Spatial Domain Interpretation**: A gaussian latent sample comprises independently sampled pixels, exhibiting no spatial correlations. Conversely, a requirement that each pixel value differs from its neighbors by a $\epsilon \sim \mathcal{N}(0, 1)$ results in 2D brownian noise ($\alpha=2$).
-
-**Seed Considerations**: While the node defaults to outputting gaussian noise, a given seed produce a different sample than the one produced by other gaussian noise sources. This stems from sampling the noise directly in the frequency domain to avoid the cost of a FFT. When `time_brownian = true`, noise sampling occurs in the spatial domain, ensuring that default parameters yield output equivalent to `SonarCustomNoise` set to `brownian`.
-
-***
-
-That's an advanced explanation. From a usage perspective, using positive alpha will tend to create a colorful effect, using negative alpha will create line/streak like artifacts sort of like an oil painting canvas. Start with small values at first (`-0.1`, `0.1`) and adjust as necessary. `time_brownian` makes the effect of power noise (and alpha) stronger - also note that it can only be used when sampling and not for `NoisyLatentLike`. Setting `common_mode` also generally seems to intensify these effects. Different types of models (normal EPS models, v-prediction models, SDXL) generally react differently to these exotic noise types so my advice is to experiment! Lowering `mix` uses normal gaussian noise for part of the generated noise. For example, `mix=1.0` means 100% power noise, `mix=0.5` means 50/50 power noise and normal gaussian noise. This also is about the same as setting factor to `0.5` and plugging in a `SonarCustomNoise` node with factor at `0.5` also and the type set to `guassian`.
-
-Noise from the `SonarCustomNoise` node and `SonarPowerNoise` can be freely mixed.
 
 ## Related
 
