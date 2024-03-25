@@ -57,8 +57,6 @@ If you want to create noise for initial sampling, connect model and sigmas to th
 
 can be used to override configuration settings for other samplers, including the noise type. For example, you could force `euler_ancestral` to use a different noise type. It's also possible to override other settings like `s_noise`, etc. *Note*: The wrapper inspects the sampling function's arguments to see what it supports, so you should connect the sampler directly to this rather than having other nodes (like a different sampler wrapper) in between.
 
-**Note**: If you are using this with Sonar samplers, make sure you set the noise type in the sampler to `gaussian` as the Sonar samplers only allow overriding noise types in that case.
-
 ### `SonarCustomNoise`
 
 See the [Noise](#noise) section below for information on noise types.
@@ -146,9 +144,9 @@ I also have some other ComfyUI nodes here: https://github.com/blepping/ComfyUI-b
 
 Original Sonar Sampler implementation (for A1111): https://github.com/Kahsolt/stable-diffusion-webui-sonar
 
-My version basically just rips off this Sonar sampler implementation for Diffusers: https://github.com/alexblattner/modified-euler-samplers-for-sonar-diffusers/
+My version was initially based on this Sonar sampler implementation for Diffusers: https://github.com/alexblattner/modified-euler-samplers-for-sonar-diffusers/
 
-Noise generation functions copied from https://github.com/Clybius/ComfyUI-Extra-Samplers with only minor modifications. I may have broken some of them in the process _or_ they may not have been suitable for use and I took them anyway. If they don't work it is not a reflection on the original source.
+Many noise generation functions copied from https://github.com/Clybius/ComfyUI-Extra-Samplers with only minor modifications. I may have broken some of them in the process _or_ they may not have been suitable for use and I took them anyway. If they don't work it is not a reflection on the original source.
 
 `SonarPowerNoise` contributed by [elias-gaeros](https://github.com/elias-gaeros/). Thanks!
 
