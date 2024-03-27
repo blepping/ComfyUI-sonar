@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum, auto
+from sys import stderr
 from typing import Any, Callable, NamedTuple
 
 import torch
@@ -44,6 +45,8 @@ class SonarConfig(NamedTuple):
 
 
 class SonarBase:
+    DEFAULT_NOISE_TYPE = noise.NoiseType.GAUSSIAN
+
     def __init__(self, cfg: SonarConfig) -> None:
         self.history_d = None
         self.cfg = cfg
@@ -59,11 +62,11 @@ class SonarBase:
         sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
         if noise_sampler is not None and self.cfg.noise_type not in (
             None,
-            noise.NoiseType.GAUSSIAN,
+            self.DEFAULT_NOISE_TYPE,
         ):
-            # Possibly we should just use the supplied already-created noise sampler here.
-            raise ValueError(
-                "Unexpected noise_sampler presence with non-default noise type requested",
+            print(
+                "Sonar: Warning: Noise sampler supplied, overriding noise type from settings",
+                file=stderr,
             )
         if self.cfg.custom_noise:
             noise_sampler = self.cfg.custom_noise.make_noise_sampler(
@@ -72,9 +75,9 @@ class SonarBase:
                 sigma_max,
                 seed=seed,
             )
-        elif noise_sampler is None and self.cfg.noise_type:
+        elif noise_sampler is None:
             noise_sampler = noise.get_noise_sampler(
-                self.cfg.noise_type,
+                self.cfg.noise_type or self.DEFAULT_NOISE_TYPE,
                 x,
                 sigma_min,
                 sigma_max,
@@ -386,14 +389,6 @@ class SonarEulerAncestral(SonarSampler):
     ):
         if sonar_config is None:
             sonar_config = SonarConfig()
-        if (
-            noise_sampler is not None
-            and sonar_config.noise_type != noise.NoiseType.GAUSSIAN
-        ):
-            # Possibly we should just use the supplied already-created noise sampler here.
-            raise ValueError(
-                "Unexpected noise_sampler presence with non-default noise type requested",
-            )
         s_in = x.new_ones([x.shape[0]])
         sonar = cls(
             eta,
@@ -430,6 +425,8 @@ class SonarEulerAncestral(SonarSampler):
 
 
 class SonarDPMPPSDE(SonarSampler):
+    DEFAULT_NOISE_TYPE = noise.NoiseType.BROWNIAN
+
     def __init__(
         self,
         eta: float = 1.0,
@@ -560,15 +557,6 @@ class SonarDPMPPSDE(SonarSampler):
     ):
         if sonar_config is None:
             sonar_config = SonarConfig()
-        if (
-            noise_sampler is not None
-            and sonar_config.noise_type != noise.NoiseType.GAUSSIAN
-        ):
-            # Possibly we should just use the supplied already-created noise sampler here.
-            raise ValueError(
-                "Unexpected noise_sampler presence with non-default noise type requested",
-            )
-
         s_in = x.new_ones([x.shape[0]])
         sonar = cls(
             eta,

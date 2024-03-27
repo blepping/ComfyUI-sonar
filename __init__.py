@@ -15,4 +15,7 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {}
 
+if hasattr(nodes, "KRestartSamplerCustomNoise"):
+    NODE_CLASS_MAPPINGS["KRestartSamplerCustomNoise"] = nodes.KRestartSamplerCustomNoise
+
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]

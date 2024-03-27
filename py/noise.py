@@ -15,9 +15,16 @@ from torch import FloatTensor, Generator, Tensor
 # ruff: noqa: D412, D413, D417, D212, D407, ANN002, ANN003, FBT001, FBT002, S311
 
 
-def scale_noise(noise, factor=1.0):
-    mean, std = noise.mean(), noise.std()
-    return (noise - mean).div_(std).mul_(factor)
+def scale_noise(noise, factor=1.0, threshold_std_devs=2.5):
+    mean, std = noise.mean().item(), noise.std().item()
+    threshold = threshold_std_devs / math.sqrt(noise.numel())
+    if abs(mean) > threshold:
+        noise -= mean
+    if abs(1.0 - std) > threshold:
+        noise /= std
+    if factor != 1.0:
+        noise *= factor
+    return noise
 
 
 class NoiseType(Enum):
@@ -27,6 +34,7 @@ class NoiseType(Enum):
     PERLIN = auto()
     STUDENTT = auto()
     HIGHRES_PYRAMID = auto()
+    PYRAMID = auto()
     PINK = auto()
     LAPLACIAN = auto()
     POWER = auto()
@@ -36,6 +44,15 @@ class NoiseType(Enum):
     # RAINBOW_INTENSE2 = auto()
     # RAINBOW_INTENSE3 = auto()
     GREEN_TEST = auto()
+
+    @classmethod
+    def get_names(cls, default=None, skip=None):
+        if default is not None:
+            yield default.name.lower()
+        for nt in cls:
+            if nt == default or (skip and nt in skip):
+                continue
+            yield nt.name.lower()
 
 
 class NoiseError(Exception):
@@ -357,6 +374,36 @@ def highres_pyramid_noise_like(x, discount=0.7):
     return noise / noise.std()  # Scaled back to roughly unit variance
 
 
+def pyramid_noise_like(x, generator=None, device="cpu", discount=0.8):
+    size = x.size()
+    b, c, h, w = size
+    orig_h = h
+    orig_w = w
+    noise = torch.zeros(size=size, dtype=x.dtype, layout=x.layout, device=device)
+    r = 1
+    for i in range(5):
+        r *= 2  # Rather than always going 2x,
+        noise += (
+            torch.nn.functional.interpolate(
+                (
+                    torch.normal(
+                        mean=0,
+                        std=0.5**i,
+                        size=(b, c, h * r, w * r),
+                        dtype=x.dtype,
+                        layout=x.layout,
+                        generator=generator,
+                        device=device,
+                    )
+                ),
+                size=(orig_h, orig_w),
+                mode="nearest-exact",
+            )
+            * discount**i
+        )
+    return noise.to(device=x.device)
+
+
 def studentt_noise_like(x):
     from torch.distributions import StudentT
 
@@ -501,7 +548,7 @@ class NoiseSampler:
             else noise.mul_(self.factor)
         )
         if hasattr(noise, "to"):
-            return noise.to(dtype=self.dtype, device=self.device)
+            noise = noise.to(dtype=self.dtype, device=self.device)
         return noise
 
 
@@ -513,6 +560,7 @@ NOISE_SAMPLERS: dict[NoiseType, Callable] = {
     NoiseType.STUDENTT: NoiseSampler.simple(studentt_noise_like),
     NoiseType.PINK: NoiseSampler.simple(pink_noise_like),
     NoiseType.HIGHRES_PYRAMID: NoiseSampler.simple(highres_pyramid_noise_like),
+    NoiseType.PYRAMID: NoiseSampler.simple(pyramid_noise_like),
     NoiseType.RAINBOW_MILD: NoiseSampler.simple(
         lambda x: (green_noise_like(x) * 0.55 + rand_perlin_like(x) * 0.7) * 1.15,
     ),
@@ -522,18 +570,6 @@ NOISE_SAMPLERS: dict[NoiseType, Callable] = {
     NoiseType.LAPLACIAN: NoiseSampler.simple(laplacian_noise_like),
     NoiseType.POWER: NoiseSampler.simple(power_noise_like),
     NoiseType.GREEN_TEST: NoiseSampler.simple(green_noise_like),
-    # NoiseType.RAINBOW_MILD2: lambda x: lambda _s, _sn: (
-    #     green_noise_like(x) * 0.55 + uniform_noise_like(x) * 0.7
-    # )
-    # * 1.15,
-    # NoiseType.RAINBOW_INTENSE2: lambda x: lambda _s, _sn: (
-    #     green_noise_like(x) * 0.75 + uniform_noise_like(x) * 0.5
-    # )
-    # * 1.15,
-    # NoiseType.RAINBOW_INTENSE3: lambda x: lambda _s, _sn: (
-    #     green_noise_like(x) * 0.75 + highres_pyramid_noise_like(x) * 0.5
-    # )
-    # * 1.15,
 }
 
 
