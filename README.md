@@ -98,6 +98,13 @@ From a usage perspective, using positive alpha will tend to create a colorful ef
 
 Noise from the `SonarCustomNoise` node and `SonarPowerNoise` can be freely mixed.
 
+### `KRestartSamplerCustomNoise`
+
+If you have a recent enough version of [ComfyUI_restart_sampling](https://github.com/ssitu/ComfyUI_restart_sampling/)
+installed, you'll also get the `KRestartSamplerCustomNoise` node which is exactly the same as `KRestartSamplerCustom`
+except for adding an optional custom noise input.
+See the restart sampling repo for more information: https://github.com/ssitu/ComfyUI_restart_sampling
+
 ## Sonar Sampler Parameters
 
 Very abbreviated section. The init type can make a big difference. If you use `RANDOM` you can get away with setting `direction` to high values (like up to `2.25` or so) and absurdly low values (like `-30.0`). It's also possible to set `momentum` and `momentum_hist` to negative values, although whether it's a good idea...

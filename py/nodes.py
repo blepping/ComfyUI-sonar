@@ -583,3 +583,97 @@ class SamplerNodeConfigOverride:
             extra_args=extra_args,
             **kwargs,
         )
+
+
+try:
+    import custom_nodes.ComfyUI_restart_sampling as rs
+
+    if not hasattr(rs.restart_sampling, "DEFAULT_SEGMENTS"):
+        # Dumb test but this should only exist in restart sampling versions that
+        # support plugging in custom noise.
+        raise NotImplementedError  # noqa: TRY301
+
+    class KRestartSamplerCustomNoise:
+        @classmethod
+        def INPUT_TYPES(cls):
+            return {
+                "required": {
+                    "model": ("MODEL",),
+                    "add_noise": (["enable", "disable"],),
+                    "noise_seed": (
+                        "INT",
+                        {"default": 0, "min": 0, "max": 0xFFFFFFFFFFFFFFFF},
+                    ),
+                    "steps": ("INT", {"default": 20, "min": 1, "max": 10000}),
+                    "cfg": ("FLOAT", {"default": 8.0, "min": 0.0, "max": 100.0}),
+                    "sampler": ("SAMPLER",),
+                    "scheduler": (tuple(rs.restart_sampling.SCHEDULER_MAPPING.keys()),),
+                    "positive": ("CONDITIONING",),
+                    "negative": ("CONDITIONING",),
+                    "latent_image": ("LATENT",),
+                    "start_at_step": ("INT", {"default": 0, "min": 0, "max": 10000}),
+                    "end_at_step": ("INT", {"default": 10000, "min": 0, "max": 10000}),
+                    "return_with_leftover_noise": (["disable", "enable"],),
+                    "segments": (
+                        "STRING",
+                        {
+                            "default": rs.restart_sampling.DEFAULT_SEGMENTS,
+                            "multiline": False,
+                        },
+                    ),
+                    "restart_scheduler": (rs.nodes.get_supported_restart_schedulers(),),
+                    "chunked_mode": ("BOOLEAN", {"default": True}),
+                },
+                "optional": {
+                    "custom_noise_opt": ("SONAR_CUSTOM_NOISE",),
+                },
+            }
+
+        RETURN_TYPES = ("LATENT", "LATENT")
+        RETURN_NAMES = ("output", "denoised_output")
+        FUNCTION = "sample"
+        CATEGORY = "sampling"
+
+        def sample(
+            self,
+            model,
+            add_noise,
+            noise_seed,
+            steps,
+            cfg,
+            sampler,
+            scheduler,
+            positive,
+            negative,
+            latent_image,
+            start_at_step,
+            end_at_step,
+            return_with_leftover_noise,
+            segments,
+            restart_scheduler,
+            chunked_mode=False,
+            custom_noise_opt=None,
+        ):
+            return rs.restart_sampling.restart_sampling(
+                model,
+                noise_seed,
+                steps,
+                cfg,
+                sampler,
+                scheduler,
+                positive,
+                negative,
+                latent_image,
+                segments,
+                restart_scheduler,
+                disable_noise=add_noise == "disable",
+                step_range=(start_at_step, end_at_step),
+                force_full_denoise=return_with_leftover_noise != "enable",
+                output_only=False,
+                chunked_mode=chunked_mode,
+                custom_noise=custom_noise_opt.make_noise_sampler
+                if custom_noise_opt
+                else None,
+            )
+except (ImportError, NotImplementedError):
+    pass
