@@ -314,7 +314,8 @@ class SonarPowerNoiseNode(SonarCustomNoiseNodeBase):
 
         output_dir = folder_paths.get_temp_directory()
         prefix_append = "sonar_temp_" + "".join(
-            random.choice("abcdefghijklmnopqrstupvxyz") for x in range(5)  # noqa: S311
+            random.choice("abcdefghijklmnopqrstupvxyz")  # noqa: S311
+            for x in range(5)
         )
         full_output_folder, filename, counter, subfolder, _ = (
             folder_paths.get_save_image_path(prefix_append, output_dir)

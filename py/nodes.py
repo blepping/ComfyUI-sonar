@@ -8,6 +8,7 @@ import torch
 from comfy import samplers
 
 from . import noise
+from .noise import NoiseType
 from .sonar import (
     GuidanceConfig,
     GuidanceType,
@@ -24,13 +25,7 @@ class NoisyLatentLikeNode:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "noise_type": (
-                    tuple(
-                        t.name.lower()
-                        for t in noise.NoiseType
-                        if t is not noise.NoiseType.BROWNIAN
-                    ),
-                ),
+                "noise_type": (tuple(NoiseType.get_names(skip=(NoiseType.BROWNIAN,))),),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xFFFFFFFFFFFFFFFF}),
                 "latent": ("LATENT",),
                 "multiplier": ("FLOAT", {"default": 1.0}),
@@ -83,7 +78,7 @@ class NoisyLatentLikeNode:
             ns = custom_noise_opt.make_noise_sampler(latent_samples)
         else:
             ns = noise.get_noise_sampler(
-                noise.NoiseType[noise_type.upper()],
+                NoiseType[noise_type.upper()],
                 latent_samples,
                 None,
                 None,
@@ -164,13 +159,7 @@ class SonarCustomNoiseNode(SonarCustomNoiseNodeBase):
     def INPUT_TYPES(cls):
         result = super().INPUT_TYPES()
         result["required"] |= {
-            "noise_type": (
-                tuple(
-                    t.name.lower()
-                    for t in noise.NoiseType
-                    if t is not noise.NoiseType.BROWNIAN
-                ),
-            ),
+            "noise_type": (tuple(NoiseType.get_names()),),
         }
         return result
 
@@ -261,11 +250,7 @@ class SamplerNodeSonarBase:
                     },
                 ),
                 "rand_init_noise_type": (
-                    tuple(
-                        t.name.lower()
-                        for t in noise.NoiseType
-                        if t is not noise.NoiseType.BROWNIAN
-                    ),
+                    tuple(NoiseType.get_names(skip=(NoiseType.BROWNIAN,))),
                 ),
             },
             "optional": {
@@ -317,7 +302,7 @@ class SamplerNodeSonarEuler(SamplerNodeSonarBase):
             init=HistoryType[momentum_init.upper()],
             momentum_hist=momentum_hist,
             direction=direction,
-            rand_init_noise_type=noise.NoiseType[rand_init_noise_type.upper()],
+            rand_init_noise_type=NoiseType[rand_init_noise_type.upper()],
             guidance=guidance_cfg_opt,
         )
         return (
@@ -347,7 +332,7 @@ class SamplerNodeSonarEulerAncestral(SamplerNodeSonarEuler):
                         "round": False,
                     },
                 ),
-                "noise_type": (tuple(t.name.lower() for t in noise.NoiseType),),
+                "noise_type": (tuple(NoiseType.get_names()),),
             },
         )
         result["optional"].update(
@@ -375,8 +360,8 @@ class SamplerNodeSonarEulerAncestral(SamplerNodeSonarEuler):
             init=HistoryType[momentum_init.upper()],
             momentum_hist=momentum_hist,
             direction=direction,
-            rand_init_noise_type=noise.NoiseType[rand_init_noise_type.upper()],
-            noise_type=noise.NoiseType[noise_type.upper()],
+            rand_init_noise_type=NoiseType[rand_init_noise_type.upper()],
+            noise_type=NoiseType[noise_type.upper()],
             custom_noise=custom_noise_opt.clone() if custom_noise_opt else None,
             guidance=guidance_cfg_opt,
         )
@@ -408,7 +393,7 @@ class SamplerNodeSonarDPMPPSDE(SamplerNodeSonarEuler):
                         "round": False,
                     },
                 ),
-                "noise_type": (tuple(t.name.lower() for t in noise.NoiseType),),
+                "noise_type": (tuple(NoiseType.get_names(default=NoiseType.BROWNIAN)),),
             },
         )
         result["optional"].update(
@@ -436,8 +421,8 @@ class SamplerNodeSonarDPMPPSDE(SamplerNodeSonarEuler):
             init=HistoryType[momentum_init.upper()],
             momentum_hist=momentum_hist,
             direction=direction,
-            rand_init_noise_type=noise.NoiseType[rand_init_noise_type.upper()],
-            noise_type=noise.NoiseType[noise_type.upper()],
+            rand_init_noise_type=NoiseType[rand_init_noise_type.upper()],
+            noise_type=NoiseType[noise_type.upper()],
             custom_noise=custom_noise_opt.clone() if custom_noise_opt else None,
             guidance=guidance_cfg_opt,
         )
@@ -497,7 +482,7 @@ class SamplerNodeConfigOverride:
                 "sde_solver": (("midpoint", "heun"),),
             },
             "optional": {
-                "noise_type": (tuple(t.name.lower() for t in noise.NoiseType),),
+                "noise_type": (tuple(NoiseType.get_names()),),
                 "custom_noise_opt": ("SONAR_CUSTOM_NOISE",),
             },
         }
@@ -525,7 +510,7 @@ class SamplerNodeConfigOverride:
                 | {
                     "override_sampler_cfg": {
                         "sampler": sampler,
-                        "noise_type": noise.NoiseType[noise_type.upper()]
+                        "noise_type": NoiseType[noise_type.upper()]
                         if noise_type is not None
                         else None,
                         "custom_noise": custom_noise_opt,
@@ -598,3 +583,97 @@ class SamplerNodeConfigOverride:
             extra_args=extra_args,
             **kwargs,
         )
+
+
+try:
+    import custom_nodes.ComfyUI_restart_sampling as rs
+
+    if not hasattr(rs.restart_sampling, "DEFAULT_SEGMENTS"):
+        # Dumb test but this should only exist in restart sampling versions that
+        # support plugging in custom noise.
+        raise NotImplementedError  # noqa: TRY301
+
+    class KRestartSamplerCustomNoise:
+        @classmethod
+        def INPUT_TYPES(cls):
+            return {
+                "required": {
+                    "model": ("MODEL",),
+                    "add_noise": (["enable", "disable"],),
+                    "noise_seed": (
+                        "INT",
+                        {"default": 0, "min": 0, "max": 0xFFFFFFFFFFFFFFFF},
+                    ),
+                    "steps": ("INT", {"default": 20, "min": 1, "max": 10000}),
+                    "cfg": ("FLOAT", {"default": 8.0, "min": 0.0, "max": 100.0}),
+                    "sampler": ("SAMPLER",),
+                    "scheduler": (tuple(rs.restart_sampling.SCHEDULER_MAPPING.keys()),),
+                    "positive": ("CONDITIONING",),
+                    "negative": ("CONDITIONING",),
+                    "latent_image": ("LATENT",),
+                    "start_at_step": ("INT", {"default": 0, "min": 0, "max": 10000}),
+                    "end_at_step": ("INT", {"default": 10000, "min": 0, "max": 10000}),
+                    "return_with_leftover_noise": (["disable", "enable"],),
+                    "segments": (
+                        "STRING",
+                        {
+                            "default": rs.restart_sampling.DEFAULT_SEGMENTS,
+                            "multiline": False,
+                        },
+                    ),
+                    "restart_scheduler": (rs.nodes.get_supported_restart_schedulers(),),
+                    "chunked_mode": ("BOOLEAN", {"default": True}),
+                },
+                "optional": {
+                    "custom_noise_opt": ("SONAR_CUSTOM_NOISE",),
+                },
+            }
+
+        RETURN_TYPES = ("LATENT", "LATENT")
+        RETURN_NAMES = ("output", "denoised_output")
+        FUNCTION = "sample"
+        CATEGORY = "sampling"
+
+        def sample(
+            self,
+            model,
+            add_noise,
+            noise_seed,
+            steps,
+            cfg,
+            sampler,
+            scheduler,
+            positive,
+            negative,
+            latent_image,
+            start_at_step,
+            end_at_step,
+            return_with_leftover_noise,
+            segments,
+            restart_scheduler,
+            chunked_mode=False,
+            custom_noise_opt=None,
+        ):
+            return rs.restart_sampling.restart_sampling(
+                model,
+                noise_seed,
+                steps,
+                cfg,
+                sampler,
+                scheduler,
+                positive,
+                negative,
+                latent_image,
+                segments,
+                restart_scheduler,
+                disable_noise=add_noise == "disable",
+                step_range=(start_at_step, end_at_step),
+                force_full_denoise=return_with_leftover_noise != "enable",
+                output_only=False,
+                chunked_mode=chunked_mode,
+                custom_noise=custom_noise_opt.make_noise_sampler
+                if custom_noise_opt
+                else None,
+            )
+except (ImportError, NotImplementedError):
+    pass
