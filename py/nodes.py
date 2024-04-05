@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import abc
 import inspect
+from types import SimpleNamespace
 from typing import Any, Callable
 
 import torch
@@ -64,7 +65,7 @@ class NoisyLatentLikeNode:
                 model = model.model
             latent_scale_factor = model.latent_format.scale_factor
             max_denoise = samplers.Sampler().max_denoise(
-                samplers.wrap_model(model),
+                SimpleNamespace(inner_model=model),
                 sigmas,
             )
             multiplier *= (
