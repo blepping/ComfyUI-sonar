@@ -2,6 +2,10 @@
 
 Note, only relatively significant changes to user-visible functionality will be included here. Most recent changes at the top.
 
+## 20240506
+
+* Add `SonarModulatedNoise` and `SonarRepeatedNoise` nodes.
+
 ## 20240327
 
 * Fixed issue when using Sonar samplers in normal sampling nodes/via stuff like `KSamplerSelect`.

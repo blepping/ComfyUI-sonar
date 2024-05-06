@@ -98,12 +98,37 @@ From a usage perspective, using positive alpha will tend to create a colorful ef
 
 Noise from the `SonarCustomNoise` node and `SonarPowerNoise` can be freely mixed.
 
+### `SonarModulatedNoise`
+
+Experimental noise modulation based on code stolen from
+[ComfyUI-Extra-Samplers](https://github.com/Clybius/ComfyUI-Extra-Samplers). _Probably_ does not work correctly
+for normal sampling — I expect the modulation will be based on the tensor where the noise sampler was created
+rather than each step. However it may be useful for something like restart sampling noise
+(see `KRestartSamplerCustomNoise` below).
+
+*Note*: It's likely this node will be changed in the future.
+
+### `SonarRepeatedNoise`
+
+Experimental node to cache noise sampler results. Why would you want to do this? Some noise samplers are
+relatively slow (`pyramid` for example) or it may be slow to generate noise if you are mixing many types
+of noise. When `permute` is enabled, a random effect like flipping the noise or rolling it in some dimension
+will be chosen each time the noise sampler is called. I recommend leaving `permute` on. Note that repeated
+noise (especially with `permute` disabled) can be stronger than normal noise, so you may need to rescale to
+a value lower than `1.0` or decrease `s_noise` for the sampler.
+
+*Note*: It's likely this node will be changed in the future.
+
 ### `KRestartSamplerCustomNoise`
 
 If you have a recent enough version of [ComfyUI_restart_sampling](https://github.com/ssitu/ComfyUI_restart_sampling/)
 installed, you'll also get the `KRestartSamplerCustomNoise` node which is exactly the same as `KRestartSamplerCustom`
 except for adding an optional custom noise input.
 See the restart sampling repo for more information: https://github.com/ssitu/ComfyUI_restart_sampling
+
+### `RestartSamplerCustomNoise`
+
+As above, except this is the custom sampler version.
 
 ## Sonar Sampler Parameters
 

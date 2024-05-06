@@ -168,6 +168,65 @@ class SonarCustomNoiseNode(SonarCustomNoiseNodeBase):
         return noise.CustomNoiseItem
 
 
+class SonarModulatedNoiseNode:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "sonar_custom_noise": ("SONAR_CUSTOM_NOISE",),
+                "modulation_type": (
+                    (
+                        "intensity",
+                        "frequency",
+                        "spectral_signum",
+                        "none",
+                    ),
+                ),
+                "dims": ("INT", {"default": 3, "min": 1, "max": 3}),
+                "strength": ("FLOAT", {"default": 2.0, "min": -100.0, "max": 100.0}),
+            },
+        }
+
+    RETURN_TYPES = ("SONAR_CUSTOM_NOISE",)
+    CATEGORY = "advanced/noise"
+    FUNCTION = "go"
+
+    def go(self, sonar_custom_noise, modulation_type, dims, strength):
+        return (
+            noise.ModulatedNoise(
+                sonar_custom_noise.make_noise_sampler,
+                modulation_type=modulation_type,
+                modulation_strength=strength,
+                modulation_dims=dims,
+            ),
+        )
+
+
+class SonarRepeatedNoiseNode:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "sonar_custom_noise": ("SONAR_CUSTOM_NOISE",),
+                "repeat_length": ("INT", {"default": 8, "min": 1, "max": 100}),
+                "permute": ("BOOLEAN", {"default": True}),
+            },
+        }
+
+    RETURN_TYPES = ("SONAR_CUSTOM_NOISE",)
+    CATEGORY = "advanced/noise"
+    FUNCTION = "go"
+
+    def go(self, sonar_custom_noise, repeat_length, permute=True):
+        return (
+            noise.RepeatedNoise(
+                sonar_custom_noise.make_noise_sampler,
+                repeat_length,
+                permute=permute,
+            ),
+        )
+
+
 class GuidanceConfigNode:
     @classmethod
     def INPUT_TYPES(cls):
@@ -586,6 +645,20 @@ class SamplerNodeConfigOverride:
         )
 
 
+NODE_CLASS_MAPPINGS = {
+    "SamplerSonarEuler": SamplerNodeSonarEuler,
+    "SamplerSonarEulerA": SamplerNodeSonarEulerAncestral,
+    "SamplerSonarDPMPPSDE": SamplerNodeSonarDPMPPSDE,
+    "SamplerConfigOverride": SamplerNodeConfigOverride,
+    "NoisyLatentLike": NoisyLatentLikeNode,
+    "SonarCustomNoise": SonarCustomNoiseNode,
+    "SonarModulatedNoise": SonarModulatedNoiseNode,
+    "SonarRepeatedNoise": SonarRepeatedNoiseNode,
+    "SonarGuidanceConfig": GuidanceConfigNode,
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {}
+
 try:
     import custom_nodes.ComfyUI_restart_sampling as rs
 
@@ -597,6 +670,11 @@ try:
     class KRestartSamplerCustomNoise:
         @classmethod
         def INPUT_TYPES(cls):
+            get_normal_schedulers = getattr(
+                rs.nodes,
+                "get_supported_normal_schedulers",
+                rs.nodes.get_supported_restart_schedulers,
+            )
             return {
                 "required": {
                     "model": ("MODEL",),
@@ -608,7 +686,7 @@ try:
                     "steps": ("INT", {"default": 20, "min": 1, "max": 10000}),
                     "cfg": ("FLOAT", {"default": 8.0, "min": 0.0, "max": 100.0}),
                     "sampler": ("SAMPLER",),
-                    "scheduler": (tuple(rs.restart_sampling.SCHEDULER_MAPPING.keys()),),
+                    "scheduler": (get_normal_schedulers(),),
                     "positive": ("CONDITIONING",),
                     "negative": ("CONDITIONING",),
                     "latent_image": ("LATENT",),
@@ -676,5 +754,45 @@ try:
                 if custom_noise_opt
                 else None,
             )
+
+    NODE_CLASS_MAPPINGS["KRestartSamplerCustomNoise"] = KRestartSamplerCustomNoise
+
+    if not hasattr(rs.restart_sampling, "RestartSampler"):
+        # Dumb test part II: The Dumbening
+        raise NotImplementedError  # noqa: TRY301
+
+    class RestartSamplerCustomNoise:
+        @classmethod
+        def INPUT_TYPES(cls):
+            return {
+                "required": {
+                    "sampler": ("SAMPLER",),
+                    "chunked_mode": ("BOOLEAN", {"default": True}),
+                },
+                "optional": {
+                    "custom_noise_opt": ("SONAR_CUSTOM_NOISE",),
+                },
+            }
+
+        RETURN_TYPES = ("SAMPLER",)
+        FUNCTION = "go"
+        CATEGORY = "sampling/custom_sampling/samplers"
+
+        def go(self, sampler, chunked_mode, custom_noise_opt=None):
+            restart_options = {
+                "restart_chunked": chunked_mode,
+                "restart_wrapped_sampler": sampler,
+                "restart_custom_noise": None
+                if custom_noise_opt is None
+                else custom_noise_opt.make_noise_sampler,
+            }
+            restart_sampler = samplers.KSAMPLER(
+                rs.restart_sampling.RestartSampler.sampler_function,
+                extra_options=sampler.extra_options | restart_options,
+                inpaint_options=sampler.inpaint_options,
+            )
+            return (restart_sampler,)
+
+    NODE_CLASS_MAPPINGS["RestartSamplerCustomNoise"] = RestartSamplerCustomNoise
 except (ImportError, NotImplementedError):
     pass
