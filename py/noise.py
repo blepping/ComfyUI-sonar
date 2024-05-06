@@ -560,11 +560,12 @@ class RepeatedNoise:
     def clone(self):
         return RepeatedNoise(self.noise_sampler, self.repeat_length)
 
-    def make_noise_sampler(self, x, *args, seed=None, **kwargs):
-        ns = self.noise_sampler(x, *args, seed=seed, **kwargs)
+    def make_noise_sampler(self, x, *args, **kwargs):
+        ns = self.noise_sampler(x, *args, **kwargs)
         noise_items = []
         permute_options = 2
         u32_max = 0xFFFF_FFFF
+        seed = kwargs.get("seed")
         if seed is None:
             seed = torch.randint(
                 -u32_max,
