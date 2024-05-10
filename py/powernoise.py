@@ -12,6 +12,7 @@ from torch import Tensor
 
 from .nodes import SonarCustomNoiseNodeBase
 from .noise import CustomNoiseItemBase
+from .noise_generation import scale_noise
 
 # ruff: noqa: ANN003, FBT001, FBT002
 
@@ -110,6 +111,7 @@ class PowerNoiseItem(CustomNoiseItemBase):
         sigma_max: float | None,
         seed: int | None,
         cpu: bool = True,
+        normalized=True,
     ):
         shape = x.shape
         device = x.device
@@ -159,7 +161,7 @@ class PowerNoiseItem(CustomNoiseItemBase):
             if common_mode > 0.0:
                 noise = channel_mixer @ noise.swapaxes(0, 1).reshape(c, -1)
                 noise = noise.reshape(c, b, h, w).swapaxes(1, 0)
-            return noise.mul_(self.factor)
+            return scale_noise(noise, self.factor, normalized=normalized)
 
         return sampler
 
