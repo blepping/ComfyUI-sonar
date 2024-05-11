@@ -104,7 +104,8 @@ Experimental noise modulation based on code stolen from
 [ComfyUI-Extra-Samplers](https://github.com/Clybius/ComfyUI-Extra-Samplers). _Probably_ does not work correctly
 for normal sampling — I expect the modulation will be based on the tensor where the noise sampler was created
 rather than each step. However it may be useful for something like restart sampling noise
-(see `KRestartSamplerCustomNoise` below).
+(see `KRestartSamplerCustomNoise` below). You can also pass it a reference latent to modulate based on
+instead.
 
 *Note*: It's likely this node will be changed in the future.
 
@@ -115,9 +116,29 @@ relatively slow (`pyramid` for example) or it may be slow to generate noise if y
 of noise. When `permute` is enabled, a random effect like flipping the noise or rolling it in some dimension
 will be chosen each time the noise sampler is called. I recommend leaving `permute` on. Note that repeated
 noise (especially with `permute` disabled) can be stronger than normal noise, so you may need to rescale to
-a value lower than `1.0` or decrease `s_noise` for the sampler.
+a value lower than `1.0` or decrease `s_noise` for the sampler. You may also set the maximum number of
+times noise is reused by setting `max_recycle`.
 
 *Note*: It's likely this node will be changed in the future.
+
+### `SonarCompositeNoise`
+
+Allows compositing noise types based on a mask. Noise is mixed based on the strength of the mask at a location.
+For example, where the mask is 1.0 (max strength) you will get 100% `noise_src` and 0% `noise_dst`. Where the
+mask is 0.75 you will get 75% `noise_src` and 25% `noise_dst`.
+
+### `SonarScheduledNoise`
+
+Allows switching between noise types based on percentage of sampling (note: not percentage of steps). You
+don't have to specify the fallback noise type but instead of noise you'll just get zeros if you do that.
+Most of the time you'll want to connect something like gaussian noise at 1.0 strength there.
+
+### `SonarGuidedNoise`
+
+Works similarly as described in the [Guidance](#guidance) section below, however the guidance is applied
+to the raw noise. You can use `SonarScheduledNoise` to only apply guidance at certain times. Using `euler`
+mode seems considerably stronger than `linear`. The default value should be reasonable for `euler`, may need to be
+increased somewhat for `linear`.
 
 ### `KRestartSamplerCustomNoise`
 
