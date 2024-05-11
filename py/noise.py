@@ -210,9 +210,10 @@ class CompositeNoise(CustomNoiseItemBase):
         src_noise,
         normalize_dst,
         normalize_src,
+        normalize_result,
         mask,
     ):
-        super().__init(
+        super().__init__(
             factor,
             dst_noise=dst_noise.clone(),
             src_noise=src_noise.clone(),
@@ -260,7 +261,7 @@ class CompositeNoise(CustomNoiseItemBase):
             return scale_noise(
                 noise_dst.add_(noise_src),
                 factor,
-                normalize=normalize_result,
+                normalized=normalize_result,
             )
 
         return noise_sampler
@@ -785,6 +786,24 @@ NOISE_SAMPLERS: dict[NoiseType, Callable] = {
     ),
     NoiseType.PYRAMID_OLD_AREA: NoiseSampler.simple(
         lambda x: pyramid_old_noise_like(x, upscale_mode="area"),
+    ),
+    NoiseType.PYRAMID_DISCOUNT5: NoiseSampler.simple(
+        lambda x: pyramid_noise_like(x, discount=0.5),
+    ),
+    NoiseType.PYRAMID_MIX: NoiseSampler.simple(
+        lambda x: pyramid_noise_like(x, discount=0.6)
+        .mul_(0.2)
+        .add_(pyramid_noise_like(x, discount=0.6).mul_(-0.8)),
+    ),
+    NoiseType.PYRAMID_MIX_AREA: NoiseSampler.simple(
+        lambda x: pyramid_noise_like(x, discount=0.5, upscale_mode="area")
+        .mul_(0.2)
+        .add_(pyramid_noise_like(x, discount=0.5, upscale_mode="area").mul_(-0.8)),
+    ),
+    NoiseType.PYRAMID_MIX_BISLERP: NoiseSampler.simple(
+        lambda x: pyramid_noise_like(x, discount=0.5, upscale_mode="bislerp")
+        .mul_(0.2)
+        .add_(pyramid_noise_like(x, discount=0.5, upscale_mode="bislerp").mul_(-0.8)),
     ),
 }
 

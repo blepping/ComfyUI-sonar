@@ -21,6 +21,7 @@ class NoiseType(Enum):
     STUDENTT = auto()
     HIGHRES_PYRAMID = auto()
     PYRAMID = auto()
+    PYRAMID_MIX = auto()
     PINK = auto()
     LAPLACIAN = auto()
     POWER = auto()
@@ -34,6 +35,9 @@ class NoiseType(Enum):
     PYRAMID_OLD_AREA = auto()
     PYRAMID_AREA = auto()
     HIGHRES_PYRAMID_AREA = auto()
+    PYRAMID_DISCOUNT5 = auto()
+    PYRAMID_MIX_BISLERP = auto()
+    PYRAMID_MIX_AREA = auto()
 
     @classmethod
     def get_names(cls, default=None, skip=None):
@@ -376,10 +380,6 @@ def generate_1f_noise(tensor, alpha, k, generator=None):
 
 def pink_noise_like(x):
     return scale_noise(generate_1f_noise(x, 2.0, 1.0)).to(x.device)
-    # noise = generate_1f_noise(x, 2.0, 1.0)
-    # noise_mean = torch.mean(noise)
-    # noise_std = torch.std(noise)
-    # return noise.sub_(noise_mean).div_(noise_std).to(x.device)
 
 
 def laplacian_noise_like(x):
