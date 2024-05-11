@@ -49,19 +49,6 @@ class NoiseError(Exception):
     pass
 
 
-def _scale_noise(noise, factor=1.0, threshold_std_devs=2.5):
-    if factor != 1.0:
-        noise *= factor
-    mean, std = noise.mean().item(), noise.std().item()
-    threshold = threshold_std_devs / math.sqrt(noise.numel())
-    print(f"SCALE: mean={mean}, std={std}")
-    if abs(mean) > threshold:
-        noise -= mean
-    if abs(factor - std) > abs(threshold * factor):
-        noise /= std
-    return noise
-
-
 def scale_noise(noise, factor=1.0, normalized=True, threshold_std_devs=2.5):
     if not normalized:
         return noise.mul_(factor)

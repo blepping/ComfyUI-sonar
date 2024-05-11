@@ -22,12 +22,19 @@ class CustomNoiseItemBase(abc.ABC):
         for k, v in kwargs.items():
             setattr(self, k, v)
 
+    def clone_key(self, k):
+        return getattr(self, k)
+
     def clone(self):
-        return self.__class__(self.factor, **{k: getattr(self, k) for k in self.keys})
+        return self.__class__(self.factor, **{k: self.clone_key(k) for k in self.keys})
 
     def set_factor(self, factor):
         self.factor = factor
         return self
+
+    def get_normalize(self, k, default=None):
+        val = getattr(self, k)
+        return default if val is None else val
 
     @abc.abstractmethod
     def make_noise_sampler(
@@ -194,38 +201,49 @@ class NoiseSampler:
         return noise
 
 
-class CompositeNoise:
-    def __init__(self, factor, dst, src, normalize_src, normalize_dst, mask):
-        self.factor = factor
-        self.dst_noise_sampler = dst
-        self.src_noise_sampler = src
-        self.normalize_src = normalize_src
-        self.normalize_dst = normalize_dst
-        self.mask = mask
-
-    def clone(self):
-        return CompositeNoise(
-            self.factor,
-            self.dst_noise_sampler,
-            self.src_noise_sampler,
-            self.normalize_src,
-            self.normalize_dst,
-            self.mask.clone(),
+class CompositeNoise(CustomNoiseItemBase):
+    def __init__(
+        self,
+        factor,
+        *,
+        dst_noise,
+        src_noise,
+        normalize_dst,
+        normalize_src,
+        mask,
+    ):
+        super().__init(
+            factor,
+            dst_noise=dst_noise.clone(),
+            src_noise=src_noise.clone(),
+            normalize_dst=normalize_dst,
+            normalize_src=normalize_src,
+            normalize_result=normalize_result,
+            mask=mask.clone(),
         )
 
-    def set_factor(self, factor):
-        self.factor = factor
-        return self
+    def clone_key(self, k):
+        if k in ("mask", "src_noise", "dst_noise"):
+            return getattr(self, k).clone()
+        return super().clone_key(k)
 
     def make_noise_sampler(self, x, *args, normalized=True, **kwargs):
-        normalize_src = (
-            self.normalize_src if self.normalize_src is not None else normalized
+        normalize_src, normalize_dst, normalize_result = (
+            self.get_normalize(f"normalize_{k}", normalized)
+            for k in ("src", "dst", "result")
         )
-        normalize_dst = (
-            self.normalize_dst if self.normalize_dst is not None else normalized
+        nsd = self.dst_noise.make_noise_sampler(
+            x,
+            *args,
+            normalized=normalize_dst,
+            **kwargs,
         )
-        nsd = self.dst_noise_sampler(x, *args, normalized=False, **kwargs)
-        nss = self.src_noise_sampler(x, *args, normalized=False, **kwargs)
+        nss = self.src_noise.make_noise_sampler(
+            x,
+            *args,
+            normalized=normalize_src,
+            **kwargs,
+        )
         mask = self.mask.to(x.device, copy=True)
         mask = torch.nn.functional.interpolate(
             mask.reshape((-1, 1, *mask.shape[-2:])),
@@ -234,80 +252,74 @@ class CompositeNoise:
         )
         mask = comfy.utils.repeat_to_batch_size(mask, x.shape[0])
         imask = torch.ones_like(mask) - mask
+        factor = self.factor
 
         def noise_sampler(s, sn):
-            noise_dst = scale_noise(
-                nsd(s, sn),
-                self.factor,
-                normalized=normalize_dst,
-            ).mul_(
-                imask,
+            noise_dst = nsd(s, sn).mul_(imask)
+            noise_src = nss(s, sn).mul_(mask)
+            return scale_noise(
+                noise_dst.add_(noise_src),
+                factor,
+                normalize=normalize_result,
             )
-            noise_src = scale_noise(
-                nss(s, sn),
-                self.factor,
-                normalized=normalize_src,
-            ).mul_(mask)
-            return noise_dst.add_(noise_src)
 
         return noise_sampler
 
 
-class GuidedNoise:
+class GuidedNoise(CustomNoiseItemBase):
     def __init__(
         self,
         factor,
+        *,
         guidance_factor,
         ref_latent,
-        noise_sampler,
+        noise,
         method,
-        normalize,
-        normalize_ref,
+        normalize_noise,
+        normalize_result,
     ):
-        self.factor = factor
-        self.normalize = normalize
-        self.normalize_ref = normalize_ref
-        self.ref_latent = ref_latent
-        self.noise_sampler = noise_sampler
-        self.method = method
-        self.guidance_factor = guidance_factor
-
-    def clone(self):
-        return GuidedNoise(
-            self.factor,
-            self.guidance_factor,
-            self.ref_latent.clone(),
-            self.noise_sampler,
-            self.method,
-            self.normalize,
-            self.normalize_ref,
+        super().__init__(
+            factor,
+            normalize_noise=normalize_noise,
+            normalize_result=normalize_result,
+            ref_latent=ref_latent.clone(),
+            noise=noise.clone(),
+            method=method,
+            guidance_factor=guidance_factor,
         )
 
-    def set_factor(self, factor):
-        self.factor = factor
-        return self
+    def clone_key(self, k):
+        if k in ("noise", "ref_latent"):
+            return getattr(self, k).clone()
+        return super().clone_key(k)
 
     def make_noise_sampler(self, x, *args, normalized=True, **kwargs):
         from .sonar import SonarGuidanceMixin
 
-        normalize = self.normalize if self.normalize is not None else normalized
-        ns = self.noise_sampler(x, *args, normalized=False, **kwargs)
-        ref_latent = scale_noise(
-            self.ref_latent.to(x, copy=True),
-            normalized=self.normalize_ref,
+        factor, guidance_factor = self.factor, self.guidance_factor
+        normalize_noise, normalize_result = (
+            self.get_normalize(f"normalize_{k}", normalized)
+            for k in ("noise", "result")
         )
+        ns = self.noise.make_noise_sampler(
+            x,
+            *args,
+            normalized=normalize_noise,
+            **kwargs,
+        )
+        ref_latent = self.ref_latent.to(x, copy=True)
         match self.method:
             case "linear":
 
                 def noise_sampler(s, sn):
                     return scale_noise(
                         SonarGuidanceMixin.guidance_linear(
-                            scale_noise(ns(s, sn), normalized=normalize),
+                            ns(s, sn),
                             ref_latent,
-                            self.guidance_factor,
+                            guidance_factor,
                         ),
-                        self.factor,
-                        normalized=normalize,
+                        factor,
+                        normalized=normalize_result,
                     )
             case "euler":
 
@@ -316,93 +328,101 @@ class GuidedNoise:
                         SonarGuidanceMixin.guidance_euler(
                             s,
                             sn,
-                            scale_noise(ns(s, sn), normalized=normalize),
+                            ns(s, sn),
                             x,
                             ref_latent,
-                            self.guidance_factor,
+                            guidance_factor,
                         ),
-                        self.factor,
-                        normalized=normalize,
+                        factor,
+                        normalized=normalize_result,
                     )
 
         return noise_sampler
 
 
-class ScheduledNoise:
+class ScheduledNoise(CustomNoiseItemBase):
     def __init__(
         self,
         factor,
-        noise_sampler,
+        *,
+        noise,
         start_sigma,
         end_sigma,
         normalize,
-        fallback_noise_sampler=None,
+        fallback_noise=None,
     ):
-        self.factor = factor
-        self.noise_sampler = noise_sampler
-        self.start_sigma = start_sigma
-        self.end_sigma = end_sigma
-        self.normalize = normalize
-        self.fallback_noise_sampler = fallback_noise_sampler
-
-    def clone(self):
-        return ScheduledNoise(
-            self.factor,
-            self.noise_sampler,
-            self.start_sigma,
-            self.end_sigma,
-            self.normalize,
-            fallback_noise_sampler=self.fallback_noise_sampler,
+        super().__init__(
+            factor,
+            noise=noise.clone(),
+            start_sigma=start_sigma,
+            end_sigma=end_sigma,
+            normalize=normalize,
+            fallback_noise=None if fallback_noise is None else fallback_noise.clone(),
         )
 
-    def set_factor(self, factor):
-        self.factor = factor
-        return self
+    def clone_key(self, k):
+        if k == "noise":
+            return self.noise.clone()
+        if k == "fallback_noise":
+            return None if self.fallback_noise is None else self.fallback_noise.clone()
+        return super().clone_key(k)
 
     def make_noise_sampler(self, x, *args, normalized=True, **kwargs):
-        normalize = self.normalize if self.normalize is not None else normalized
-        ns = self.noise_sampler(x, *args, normalized=False, **kwargs)
-        if self.fallback_noise_sampler:
-            nsa = self.fallback_noise_sampler(x, *args, normalized=False, **kwargs)
+        factor = self.factor
+        start_sigma, end_sigma = self.start_sigma, self.end_sigma
+        normalize = self.get_normalize("normalize", normalized)
+        # normalize = self.normalize if self.normalize is not None else normalized
+        ns = self.noise.make_noise_sampler(x, *args, normalized=normalize, **kwargs)
+        if self.fallback_noise:
+            nsa = self.fallback_noise.make_noise_sampler(
+                x,
+                *args,
+                normalized=normalize,
+                **kwargs,
+            )
         else:
 
             def nsa(_s, _sn):
                 return torch.zeros_like(x)
 
         def noise_sampler(s, sn):
-            if s <= self.start_sigma and s >= self.end_sigma:
-                noise = ns(s, sn)
-            else:
-                noise = nsa(s, sn)
-            return scale_noise(noise, self.factor, normalized=normalize)
+            noise = (ns if end_sigma <= s <= start_sigma else nsa)(s, sn)
+            return scale_noise(noise, factor, normalized=False)
 
         return noise_sampler
 
 
-class RepeatedNoise:
-    def __init__(self, factor, noise_sampler, repeat_length, normalize, permute=True):
-        self.factor = factor
-        self.normalize = normalize
-        self.noise_sampler = noise_sampler
-        self.repeat_length = repeat_length
-        self.permute = permute
-
-    def clone(self):
-        return RepeatedNoise(
-            self.factor,
-            self.noise_sampler,
-            self.repeat_length,
-            self.normalize,
-            self.permute,
+class RepeatedNoise(CustomNoiseItemBase):
+    def __init__(
+        self,
+        factor,
+        *,
+        noise,
+        repeat_length,
+        max_recycle,
+        normalize,
+        permute=True,
+    ):
+        super().__init__(
+            factor,
+            normalize=normalize,
+            noise=noise.clone(),
+            repeat_length=repeat_length,
+            max_recycle=max_recycle,
+            permute=permute,
         )
 
-    def set_factor(self, factor):
-        self.factor = factor
-        return self
+    def clone_key(self, k):
+        if k == "noise":
+            return self.noise.clone()
+        return super().clone_key(k)
 
     def make_noise_sampler(self, x, *args, normalized=True, **kwargs):
-        normalize = self.normalize if self.normalize is not None else normalized
-        ns = self.noise_sampler(x, *args, normalized=False, **kwargs)
+        factor = self.factor
+        repeat_length, max_recycle = self.repeat_length, self.max_recycle
+        permute = self.permute
+        normalize = self.get_normalize("normalize", normalized)
+        ns = self.noise.make_noise_sampler(x, *args, normalized=normalize, **kwargs)
         noise_items = []
         permute_options = 2
         u32_max = 0xFFFF_FFFF
@@ -417,21 +437,36 @@ class RepeatedNoise:
             ).item()
         gen = torch.Generator(device="cpu")
         gen.manual_seed(seed)
+        last_idx = -1
 
         def noise_sampler(s, sn):
+            nonlocal last_idx
             rands = torch.randint(
                 u32_max,
                 (4,),
                 generator=gen,
                 dtype=torch.uint32,
             ).tolist()
-            if len(noise_items) < self.repeat_length:
+            skip_permute = False
+            if len(noise_items) < repeat_length:
                 idx = len(noise_items)
-                noise_items.append(ns(s, sn))
+                noise = ns(s, sn)
+                noise_items.append((1, noise))
+                skip_permute = True
             else:
-                idx = rands[0] % self.repeat_length
-            noise = noise_items[idx]
-            if not self.permute:
+                idx = rands[0] % repeat_length
+                if idx == last_idx:
+                    idx = (idx + 1) % repeat_length
+                count, noise = noise_items[idx]
+                if count >= max_recycle:
+                    noise = ns(s, sn)
+                    noise_items[idx] = (1, noise)
+                    skip_permute = True
+                else:
+                    noise_items[idx] = (count + 1, noise)
+
+            last_idx = idx
+            if skip_permute or not permute:
                 return noise.clone()
             noise_dims = len(noise.shape)
             match rands[1] % permute_options:
@@ -446,20 +481,21 @@ class RepeatedNoise:
                     dim = rands[2] % noise_dims
                     count = rands[3] % noise.shape[dim]
                     noise = torch.roll(noise, count, dims=(dim,)).clone()
-            return scale_noise(noise, self.factor, normalized=normalize)
+            return scale_noise(noise, factor, normalized=False)
 
         return noise_sampler
 
 
 # Modulated noise functions copied from https://github.com/Clybius/ComfyUI-Extra-Samplers
 # They probably don't work correctly for normal sampling.
-class ModulatedNoise:
+class ModulatedNoise(CustomNoiseItemBase):
     MODULATION_DIMS = (-3, (-2, -1), (-3, -2, -1))
 
     def __init__(
         self,
         factor,
-        noise_sampler,
+        *,
+        noise,
         normalize_result,
         normalize_noise,
         normalize_ref,
@@ -468,16 +504,19 @@ class ModulatedNoise:
         modulation_dims=3,
         ref_latent_opt=None,
     ):
-        self.factor = factor
-        self.normalize_result = normalize_result
-        self.normalize_noise = normalize_noise
-        self.normalize_ref = normalize_ref
-        self.noise_sampler = noise_sampler
-        self.modulation_dims = modulation_dims
-        self.type = modulation_type
-        self.strength = modulation_strength
-        self.ref_latent_opt = ref_latent_opt
-        match self.type:
+        super().__init__(
+            factor,
+            normalize_result=normalize_result,
+            normalize_noise=normalize_noise,
+            normalize_ref=normalize_ref,
+            noise=noise.clone(),
+            modulation_dims=modulation_dims,
+            modulation_type=modulation_type,
+            modulation_strength=modulation_strength,
+            ref_latent_opt=None if ref_latent_opt is None else ref_latent_opt.clone(),
+        )
+
+        match self.modulation_type:
             case "intensity":
                 self.modulation_function = self.intensity_based_multiplicative_noise
             case "frequency":
@@ -487,60 +526,63 @@ class ModulatedNoise:
             case _:
                 self.modulation_function = None
 
-    def clone(self):
-        return ModulatedNoise(
-            self.factor,
-            self.noise_sampler,
-            self.normalize_result,
-            self.normalize_noise,
-            self.normalize_ref,
-            self.type,
-            self.strength,
-            self.modulation_dims,
-            self.ref_latent_opt,
-        )
-
-    def set_factor(self, factor):
-        self.factor = factor
-        return self
+    def clone_key(self, k):
+        if k == "ref_latent_opt":
+            return None if self.ref_latent_opt is None else self.ref_latent_opt.clone()
+        if k == "noise":
+            return self.noise.clone()
+        return super().clone_key(k)
 
     def make_noise_sampler(self, x, *args, normalized=True, **kwargs):
-        normalize_result = (
-            self.normalize_result if self.normalize_result is not None else normalized
+        factor, strength = self.factor, self.modulation_strength
+        normalize_noise, normalize_result, normalize_ref = (
+            self.get_normalize(f"normalize_{k}", normalized)
+            for k in ("noise", "result", "ref")
         )
-        normalize_noise = (
-            self.normalize_noise if self.normalize_noise is not None else normalized
-        )
+
         dims = self.MODULATION_DIMS[self.modulation_dims - 1]
-        ns = self.noise_sampler(x, *args, **kwargs)
         if not self.modulation_function:
+            ns = self.noise.make_noise_sampler(
+                x,
+                *args,
+                normalized=normalize_result or normalize_noise,
+                **kwargs,
+            )
 
             def noise_sampler(s, sn):
-                return scale_noise(
-                    ns(s, sn),
-                    self.factor,
-                    normalized=normalize_result or normalize_noise,
-                )
+                return scale_noise(ns(s, sn), factor, normalized=False)
 
             return noise_sampler
 
-        ref_latent = None
-        if self.ref_latent_opt is not None:
-            ref_latent = self.ref_latent_opt.to(x, copy=True)
+        ns = self.noise.make_noise_sampler(
+            x,
+            *args,
+            normalized=normalize_noise,
+            **kwargs,
+        )
+
+        ref_latent = (
+            None
+            if self.ref_latent_opt is None
+            else self.ref_latent_opt.to(x, copy=True)
+        )
+        modulation_function = self.modulation_function
 
         def noise_sampler(s, sn):
-            noise = self.modulation_function(
+            _sigma_down, sigma_up = sampling.get_ancestral_step(s, sn, eta=1.0)
+            print("SIGMA UP", sigma_up, "--", s, sn)
+            noise = modulation_function(
                 scale_noise(
-                    x if self.ref_latent_opt is None else ref_latent,
-                    normalized=self.normalize_ref,
+                    x if ref_latent is None else ref_latent,
+                    normalized=normalize_ref,
                 ),
-                scale_noise(ns(s, sn), normalized=normalize_noise),
+                ns(s, sn),
                 1.0,  # s_noise
-                1.0,  # sigma_up
-                self.strength,
+                sigma_up,
+                strength,
                 dims,
             )
-            return scale_noise(noise, self.factor, normalized=normalize_result)
+            return scale_noise(noise, factor, normalized=normalize_result)
 
         return noise_sampler
 
