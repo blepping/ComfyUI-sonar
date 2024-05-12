@@ -19,14 +19,14 @@ from .noise_generation import scale_noise
 
 class PowerNoiseItem(CustomNoiseItemBase):
     def __init__(self, factor, *, channel_correlation, **kwargs):
-        channel_correlation = torch.tensor(
-            tuple(float(val) for val in channel_correlation.split(",")),
-            device="cpu",
-            dtype=torch.float,
-        ).clamp(0.0, 1.0)
-        super().__init__(factor, **kwargs)
+        if isinstance(channel_correlation, str):
+            channel_correlation = torch.tensor(
+                tuple(float(val) for val in channel_correlation.split(",")),
+                device="cpu",
+                dtype=torch.float,
+            ).clamp(0.0, 1.0)
+        super().__init__(factor, channel_correlation=channel_correlation, **kwargs)
         self.max_freq = max(self.max_freq, self.min_freq)
-        self.channel_correlation = channel_correlation
 
     def make_filter(self, shape, oversample=4, rel_bw=0.125):
         """Construct a band-pass * 1/f^alpha filter in rfft space."""
