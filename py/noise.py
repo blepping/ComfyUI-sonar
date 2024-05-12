@@ -10,6 +10,7 @@ import torch
 from comfy.k_diffusion import sampling
 from torch import Tensor
 
+from . import external
 from .noise_generation import *
 
 # ruff: noqa: D412, D413, D417, D212, D407, ANN002, ANN003, FBT001, FBT002, S311
@@ -372,7 +373,6 @@ class ScheduledNoise(CustomNoiseItemBase):
         factor = self.factor
         start_sigma, end_sigma = self.start_sigma, self.end_sigma
         normalize = self.get_normalize("normalize", normalized)
-        # normalize = self.normalize if self.normalize is not None else normalized
         ns = self.noise.make_noise_sampler(x, *args, normalized=normalize, **kwargs)
         if self.fallback_noise:
             nsa = self.fallback_noise.make_noise_sampler(
@@ -571,7 +571,6 @@ class ModulatedNoise(CustomNoiseItemBase):
 
         def noise_sampler(s, sn):
             _sigma_down, sigma_up = sampling.get_ancestral_step(s, sn, eta=1.0)
-            print("SIGMA UP", sigma_up, "--", s, sn)
             noise = modulation_function(
                 scale_noise(
                     x if ref_latent is None else ref_latent,
@@ -748,6 +747,163 @@ class ModulatedNoise(CustomNoiseItemBase):
         )  # Apply IFFT along Height and Width dimensions
 
         return inverse_transformed.real.to(additive_noise.device)
+
+
+class RandomNoise(CustomNoiseItemBase):
+    def __init__(self, factor, *, noise, mix_count, normalize):
+        if len(noise.items) == 0:
+            raise ValueError("RandomNoise requires ta least one noise item")
+        super().__init__(
+            factor,
+            noise=noise.clone(),
+            mix_count=mix_count,
+            normalize=normalize,
+        )
+
+    def clone_key(self, k):
+        if k == "noise":
+            return self.noise.clone()
+        return super().clone_key(k)
+
+    def make_noise_sampler(self, x, *args, normalized=True, **kwargs):
+        factor = self.factor
+        noise_samplers = tuple(
+            ni.make_noise_sampler(x, *args, normalized=False, **kwargs)
+            for ni in self.noise.items
+        )
+        num_samplers = len(noise_samplers)
+        mix_count = min(self.mix_count, num_samplers)
+        normalize = self.get_normalize("normalize", normalized or mix_count > 1)
+
+        if mix_count == 1:
+
+            def noise_sampler(s, sn):
+                idx = torch.randint(num_samplers, (1,)).item()
+                return scale_noise(
+                    noise_samplers[idx](s, sn),
+                    factor,
+                    normalized=normalize,
+                )
+
+            return noise_sampler
+
+        def noise_sampler(s, sn):
+            seen = set()
+            while len(seen) < mix_count:
+                idx = torch.randint(num_samplers, (1,)).item()
+                if idx in seen:
+                    continue
+                seen.add(idx)
+            idxs = tuple(seen)
+            noise = noise_samplers[idxs[0]](s, sn)
+            for i in idxs[1:]:
+                noise += noise_samplers[i](s, sn)
+            return scale_noise(noise, factor, normalized=normalize)
+
+        return noise_sampler
+
+
+if "bleh" in external.MODULES:
+    bleh = external.MODULES["bleh"]
+    BLU = bleh.py.latent_utils
+
+    class BlendFilterNoise(CustomNoiseItemBase):
+        def __init__(
+            self,
+            factor,
+            *,
+            noise,
+            blend_mode,
+            ffilter,
+            ffilter_scale,
+            ffilter_strength,
+            ffilter_threshold,
+            enhance_mode,
+            enhance_strength,
+            affect,
+            normalize_result,
+            normalize_noise,
+        ):
+            if len(noise.items) == 0:
+                raise ValueError("BlendFilterNoise requires ta least one noise item")
+            super().__init__(
+                factor,
+                noise=noise.clone(),
+                blend_mode=blend_mode,
+                ffilter=ffilter,
+                ffilter_scale=ffilter_scale,
+                ffilter_strength=ffilter_strength,
+                ffilter_threshold=ffilter_threshold,
+                enhance_mode=enhance_mode,
+                enhance_strength=enhance_strength,
+                affect=affect,
+                normalize_result=normalize_result,
+                normalize_noise=normalize_noise,
+            )
+
+        def clone_key(self, k):
+            if k == "noise":
+                return self.noise.clone()
+            return super().clone_key(k)
+
+        def apply_effects(self, noise, sigma):
+            if self.ffilter:
+                noise = BLU.ffilter(
+                    noise,
+                    self.ffilter_threshold,
+                    self.ffilter_scale,
+                    self.ffilter,
+                    self.ffilter_strength,
+                )
+            if self.enhance_mode != "none" and self.enhance_strength != 0:
+                noise = BLU.enhance_tensor(
+                    noise,
+                    self.enhance_mode,
+                    self.enhance_strength,
+                    sigma=sigma,
+                    skip_multiplier=0,
+                    adjust_scale=False,
+                )
+            return noise
+
+        def make_noise_sampler(self, x, *args, normalized=True, **kwargs):
+            factor = self.factor
+            noise_items = self.noise.items
+            noise_samplers = tuple(
+                ni.make_noise_sampler(x, *args, normalized=False, **kwargs)
+                for ni in noise_items
+            )
+            num_samplers = len(noise_samplers)
+            normalize_noise = self.get_normalize(
+                "normalize_noise",
+                normalized or num_samplers > 1,
+            )
+            normalize_result = self.get_normalize("normalize_result", normalized)
+            noise_effects = self.affect in ("noise", "both")
+            result_effects = self.affect in ("result", "both")
+            noise_init = torch.zeros_like(x)
+
+            def noise_sampler(s, sn):
+                noise = noise_init.clone()
+                for ni, ns in zip(noise_items, noise_samplers):
+                    curr_noise = scale_noise(ns(s, sn), normalized=normalize_noise)
+                    if noise_effects:
+                        curr_noise = self.apply_effects(curr_noise, s)
+                    if self.blend_mode == "simple_add":
+                        noise += curr_noise.mul_(ni.factor)
+                    else:
+                        noise = BLU.BLENDING_MODES[self.blend_mode](
+                            noise,
+                            curr_noise,
+                            ni.factor,
+                        )
+                del curr_noise
+                noise = scale_noise(noise, factor, normalized=normalize_result)
+                if result_effects:
+                    noise = self.apply_effects(noise, s)
+                return noise
+
+            return noise_sampler
 
 
 NOISE_SAMPLERS: dict[NoiseType, Callable] = {

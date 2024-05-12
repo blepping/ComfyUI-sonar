@@ -8,7 +8,7 @@ from typing import Any, Callable
 import torch
 from comfy import samplers
 
-from . import noise
+from . import external, noise
 from .noise import NoiseType
 from .noise_generation import scale_noise
 from .sonar import (
@@ -109,7 +109,7 @@ class SonarCustomNoiseNodeBase(abc.ABC):
         raise NotImplementedError
 
     @classmethod
-    def INPUT_TYPES(cls, include_rescale=True, include_chain=True):
+    def INPUT_TYPES(cls, *, include_rescale=True, include_chain=True):
         result = {
             "required": {
                 "factor": (
@@ -298,7 +298,6 @@ class SonarScheduledNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeM
         normalize,
         fallback_sonar_custom_noise=None,
     ):
-        normalize = None if normalize == "default" else normalize == "forced"
         ms = model.get_model_object("model_sampling")
         start_sigma = ms.percent_to_sigma(start_percent)
         end_sigma = ms.percent_to_sigma(end_percent)
@@ -404,6 +403,36 @@ class SonarGuidedNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMixi
             method=method,
             normalize_noise=self.get_normalize(normalize_noise),
             normalize_result=self.get_normalize(normalize_result),
+        )
+
+
+class SonarRandomNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMixin):
+    @classmethod
+    def INPUT_TYPES(cls):
+        result = super().INPUT_TYPES(include_rescale=False, include_chain=False)
+        result["required"] |= {
+            "sonar_custom_noise": ("SONAR_CUSTOM_NOISE",),
+            "mix_count": ("INT", {"default": 1, "min": 1, "max": 100}),
+            "normalize": (("default", "forced", "disabled"),),
+        }
+
+        return result
+
+    def get_item_class(self):
+        return noise.RandomNoise
+
+    def go(
+        self,
+        factor,
+        sonar_custom_noise,
+        mix_count,
+        normalize,
+    ):
+        return super().go(
+            factor,
+            noise=sonar_custom_noise,
+            mix_count=mix_count,
+            normalize=self.get_normalize(normalize),
         )
 
 
@@ -838,18 +867,105 @@ NODE_CLASS_MAPPINGS = {
     "SonarRepeatedNoise": SonarRepeatedNoiseNode,
     "SonarScheduledNoise": SonarScheduledNoiseNode,
     "SonarGuidedNoise": SonarGuidedNoiseNode,
+    "SonarRandomNoise": SonarRandomNoiseNode,
     "SonarGuidanceConfig": GuidanceConfigNode,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {}
 
-try:
-    import custom_nodes.ComfyUI_restart_sampling as rs
 
-    if not hasattr(rs.restart_sampling, "DEFAULT_SEGMENTS"):
-        # Dumb test but this should only exist in restart sampling versions that
-        # support plugging in custom noise.
-        raise NotImplementedError  # noqa: TRY301
+if "bleh" in external.MODULES:
+    bleh = external.MODULES["bleh"]
+    bleh_latentutils = bleh.py.latent_utils
+
+    class SonarBlendFilterNoiseNode(
+        SonarCustomNoiseNodeBase,
+        SonarNormalizeNoiseNodeMixin,
+    ):
+        @classmethod
+        def INPUT_TYPES(cls):
+            result = super().INPUT_TYPES(include_rescale=False, include_chain=False)
+            result["required"] |= {
+                "sonar_custom_noise": ("SONAR_CUSTOM_NOISE",),
+                "blend_mode": (
+                    ("simple_add", *bleh_latentutils.BLENDING_MODES.keys()),
+                ),
+                "ffilter": (tuple(bleh_latentutils.FILTER_PRESETS.keys()),),
+                "ffilter_custom": ("STRING", {"default": ""}),
+                "ffilter_scale": (
+                    "FLOAT",
+                    {"default": 1.0, "min": -100.0, "max": 100.0},
+                ),
+                "ffilter_strength": (
+                    "FLOAT",
+                    {"default": 0.0, "min": -100.0, "max": 100.0},
+                ),
+                "ffilter_threshold": (
+                    "INT",
+                    {"default": 1, "min": 1, "max": 32},
+                ),
+                "enhance_mode": (("none", *bleh_latentutils.ENHANCE_METHODS),),
+                "enhance_strength": (
+                    "FLOAT",
+                    {"default": 0.0, "min": -100.0, "max": 100.0},
+                ),
+                "affect": (("result", "noise", "both"),),
+                "normalize_result": (("default", "forced", "disabled"),),
+                "normalize_noise": (("default", "forced", "disabled"),),
+            }
+            return result
+
+        def get_item_class(self):
+            return noise.BlendFilterNoise
+
+        def go(
+            self,
+            factor,
+            sonar_custom_noise,
+            blend_mode,
+            ffilter,
+            ffilter_custom,
+            ffilter_scale,
+            ffilter_strength,
+            ffilter_threshold,
+            enhance_mode,
+            enhance_strength,
+            affect,
+            normalize_result,
+            normalize_noise,
+        ):
+            import ast
+
+            ffilter_custom = ffilter_custom.strip()
+            normalize_result = (
+                None if normalize_result == "default" else normalize_result == "forced"
+            )
+            normalize_noise = (
+                None if normalize_noise == "default" else normalize_noise == "forced"
+            )
+            if ffilter_custom:
+                ffilter = ast.literal_eval(f"[{ffilter_custom}]")
+            else:
+                ffilter = bleh_latentutils.FILTER_PRESETS[ffilter]
+            return super().go(
+                factor,
+                noise=sonar_custom_noise.rescaled(1.0),
+                blend_mode=blend_mode,
+                ffilter=ffilter,
+                ffilter_scale=ffilter_scale,
+                ffilter_strength=ffilter_strength,
+                ffilter_threshold=ffilter_threshold,
+                enhance_mode=enhance_mode,
+                enhance_strength=enhance_strength,
+                affect=affect,
+                normalize_noise=self.get_normalize(normalize_noise),
+                normalize_result=self.get_normalize(normalize_result),
+            )
+
+    NODE_CLASS_MAPPINGS["SonarBlendFilterNoise"] = SonarBlendFilterNoiseNode
+
+if "restart" in external.MODULES:
+    rs = external.MODULES["restart"]
 
     class KRestartSamplerCustomNoise:
         @classmethod
@@ -941,42 +1057,38 @@ try:
 
     NODE_CLASS_MAPPINGS["KRestartSamplerCustomNoise"] = KRestartSamplerCustomNoise
 
-    if not hasattr(rs.restart_sampling, "RestartSampler"):
-        # Dumb test part II: The Dumbening
-        raise NotImplementedError  # noqa: TRY301
+    if hasattr(rs.restart_sampling, "RestartSampler"):
 
-    class RestartSamplerCustomNoise:
-        @classmethod
-        def INPUT_TYPES(cls):
-            return {
-                "required": {
-                    "sampler": ("SAMPLER",),
-                    "chunked_mode": ("BOOLEAN", {"default": True}),
-                },
-                "optional": {
-                    "custom_noise_opt": ("SONAR_CUSTOM_NOISE",),
-                },
-            }
+        class RestartSamplerCustomNoise:
+            @classmethod
+            def INPUT_TYPES(cls):
+                return {
+                    "required": {
+                        "sampler": ("SAMPLER",),
+                        "chunked_mode": ("BOOLEAN", {"default": True}),
+                    },
+                    "optional": {
+                        "custom_noise_opt": ("SONAR_CUSTOM_NOISE",),
+                    },
+                }
 
-        RETURN_TYPES = ("SAMPLER",)
-        FUNCTION = "go"
-        CATEGORY = "sampling/custom_sampling/samplers"
+            RETURN_TYPES = ("SAMPLER",)
+            FUNCTION = "go"
+            CATEGORY = "sampling/custom_sampling/samplers"
 
-        def go(self, sampler, chunked_mode, custom_noise_opt=None):
-            restart_options = {
-                "restart_chunked": chunked_mode,
-                "restart_wrapped_sampler": sampler,
-                "restart_custom_noise": None
-                if custom_noise_opt is None
-                else custom_noise_opt.make_noise_sampler,
-            }
-            restart_sampler = samplers.KSAMPLER(
-                rs.restart_sampling.RestartSampler.sampler_function,
-                extra_options=sampler.extra_options | restart_options,
-                inpaint_options=sampler.inpaint_options,
-            )
-            return (restart_sampler,)
+            def go(self, sampler, chunked_mode, custom_noise_opt=None):
+                restart_options = {
+                    "restart_chunked": chunked_mode,
+                    "restart_wrapped_sampler": sampler,
+                    "restart_custom_noise": None
+                    if custom_noise_opt is None
+                    else custom_noise_opt.make_noise_sampler,
+                }
+                restart_sampler = samplers.KSAMPLER(
+                    rs.restart_sampling.RestartSampler.sampler_function,
+                    extra_options=sampler.extra_options | restart_options,
+                    inpaint_options=sampler.inpaint_options,
+                )
+                return (restart_sampler,)
 
-    NODE_CLASS_MAPPINGS["RestartSamplerCustomNoise"] = RestartSamplerCustomNoise
-except (ImportError, NotImplementedError):
-    pass
+        NODE_CLASS_MAPPINGS["RestartSamplerCustomNoise"] = RestartSamplerCustomNoise

@@ -4,6 +4,7 @@ sonar.add_samplers()
 
 NODE_CLASS_MAPPINGS = nodes.NODE_CLASS_MAPPINGS | {
     "SonarPowerNoise": powernoise.SonarPowerNoiseNode,
+    "SonarPowerFilterNoise": powernoise.SonarPowerFilterNoiseNode,
 }
 NODE_DISPLAY_NAME_MAPPINGS = nodes.NODE_DISPLAY_NAME_MAPPINGS
 

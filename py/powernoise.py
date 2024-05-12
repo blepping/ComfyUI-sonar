@@ -10,7 +10,7 @@ from comfy.k_diffusion.sampling import BrownianTreeNoiseSampler
 from PIL import Image
 from torch import Tensor
 
-from .nodes import SonarCustomNoiseNodeBase
+from .nodes import SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMixin
 from .noise import CustomNoiseItemBase
 from .noise_generation import scale_noise
 
@@ -104,30 +104,16 @@ class PowerNoiseItem(CustomNoiseItemBase):
             op = torch.lerp(flat, op, self.mix, out=op)
         return op.sqrt_()
 
-    def make_noise_sampler(
+    def make_noise_sampler_internal(
         self,
         x: Tensor,
-        sigma_min: float | None,
-        sigma_max: float | None,
-        seed: int | None,
-        cpu: bool = True,
+        noise_sampler,
+        filter_rfft,
         normalized=True,
     ):
         shape = x.shape
         device = x.device
         time_brownian = self.time_brownian
-        if self.time_brownian:
-            if sigma_min is None:
-                raise ValueError(
-                    "time correlated brownian mode is valid only for stochastic samplers",
-                )
-            brownian_tree = BrownianTreeNoiseSampler(
-                x,
-                sigma_min,
-                sigma_max,
-                seed=seed,
-                cpu=cpu,
-            )
 
         common_mode = self.common_mode
         if common_mode > 0.0:
@@ -140,18 +126,11 @@ class PowerNoiseItem(CustomNoiseItemBase):
             )
             channel_mixer = channel_mixer.sqrt().to(device, non_blocking=True)
 
-        filter_rfft = self.make_filter(shape).to(device, non_blocking=True)
-
         def sampler(sigma, sigma_next):
-            if time_brownian:
-                noise = brownian_tree(sigma, sigma_next).to(device)
-                noise_rfft = torch.fft.rfft2(noise, norm="ortho")
-            else:
-                noise_rfft = torch.randn(
-                    (*shape[:-1], filter_rfft.shape[-1]),
-                    dtype=torch.complex64,
-                    device=device,
-                )
+            noise = noise_sampler(sigma, sigma_next).to(device)
+            noise_rfft = (
+                torch.fft.rfft2(noise, norm="ortho") if time_brownian else noise
+            )
             noise = torch.fft.irfft2(
                 noise_rfft.mul_(filter_rfft),
                 s=shape[-2:],
@@ -164,6 +143,45 @@ class PowerNoiseItem(CustomNoiseItemBase):
             return scale_noise(noise, self.factor, normalized=normalized)
 
         return sampler
+
+    def make_noise_sampler(
+        self,
+        x: Tensor,
+        sigma_min: float | None,
+        sigma_max: float | None,
+        seed: int | None,
+        cpu: bool = True,
+        normalized=True,
+    ):
+        shape, device = x.shape, x.device
+        filter_rfft = self.make_filter(shape).to(device, non_blocking=True)
+        if self.time_brownian:
+            if sigma_min is None:
+                raise ValueError(
+                    "time correlated brownian mode is valid only for stochastic samplers",
+                )
+            noise_sampler = BrownianTreeNoiseSampler(
+                x,
+                sigma_min,
+                sigma_max,
+                seed=seed,
+                cpu=cpu,
+            )
+        else:
+
+            def noise_sampler(_s, _sn):
+                return torch.randn(
+                    (*shape[:-1], filter_rfft.shape[-1]),
+                    dtype=torch.complex64,
+                    device=device,
+                )
+
+        return self.make_noise_sampler_internal(
+            x,
+            noise_sampler,
+            filter_rfft,
+            normalized=normalized,
+        )
 
     def preview(self, size=(128, 128)):
         filter_rfft = self.make_filter(size, oversample=1)
@@ -209,10 +227,55 @@ def rfft2_to_fft2(x):
     return torch.cat([x_l, x_r], dim=-1)
 
 
+class PowerFilterNoiseItem(PowerNoiseItem):
+    def __init__(self, factor, *, noise, normalize_noise, normalize_result, **kwargs):
+        super().__init__(
+            factor,
+            noise=noise.clone(),
+            normalize_noise=normalize_noise,
+            normalize_result=normalize_result,
+            **kwargs,
+        )
+
+    def clone_key(self, k):
+        if k == "noise":
+            return self.noise.clone()
+        return super().clone_key(k)
+
+    def make_noise_sampler(
+        self,
+        x: Tensor,
+        sigma_min: float | None,
+        sigma_max: float | None,
+        seed: int | None,
+        cpu: bool = True,
+        normalized=True,
+    ):
+        shape, device = x.shape, x.device
+        normalize_noise = self.get_normalize("normalize_noise", False)  # noqa: FBT003
+        normalize_result = self.get_normalize("normalize_result", normalized)
+        filter_rfft = self.make_filter(shape).to(device, non_blocking=True)
+        noise_sampler = self.noise.make_noise_sampler(
+            x,
+            sigma_min,
+            sigma_max,
+            seed,
+            cpu,
+            normalized=normalize_noise,
+        )
+
+        return self.make_noise_sampler_internal(
+            x,
+            noise_sampler,
+            filter_rfft,
+            normalized=normalize_result,
+        )
+
+
 class SonarPowerNoiseNode(SonarCustomNoiseNodeBase):
     @classmethod
-    def INPUT_TYPES(cls):
-        result = super().INPUT_TYPES()
+    def INPUT_TYPES(cls, *args: list, **kwargs: dict):
+        result = super().INPUT_TYPES(*args, **kwargs)
         result["required"] |= {
             "time_brownian": ("BOOLEAN", {"default": False}),
             "alpha": (
@@ -312,7 +375,7 @@ class SonarPowerNoiseNode(SonarCustomNoiseNodeBase):
             return result
         if preview == "no_mix":
             kwargs["mix"] = 1.0
-        img = PowerNoiseItem(**kwargs).preview()
+        img = self.get_item_class()(**kwargs).preview()
 
         output_dir = folder_paths.get_temp_directory()
         prefix_append = "sonar_temp_" + "".join(
@@ -334,3 +397,38 @@ class SonarPowerNoiseNode(SonarCustomNoiseNodeBase):
             },
             "result": result,
         }
+
+
+class SonarPowerFilterNoiseNode(SonarPowerNoiseNode, SonarNormalizeNoiseNodeMixin):
+    @classmethod
+    def INPUT_TYPES(cls):
+        result = super().INPUT_TYPES(include_rescale=False, include_chain=False)
+        del result["required"]["time_brownian"]
+        result["required"] |= {
+            "sonar_custom_noise": ("SONAR_CUSTOM_NOISE",),
+            "normalize_result": (("default", "forced", "disabled"),),
+            "normalize_noise": (("default", "forced", "disabled"),),
+        }
+        return result
+
+    def get_item_class(self):
+        return PowerFilterNoiseItem
+
+    def go(
+        self,
+        factor,
+        sonar_custom_noise,
+        normalize_noise,
+        normalize_result,
+        preview="none",
+        **kwargs: dict,
+    ):
+        return super().go(
+            factor=factor,
+            noise=sonar_custom_noise,
+            normalize_noise=self.get_normalize(normalize_noise),
+            normalize_result=self.get_normalize(normalize_result),
+            preview=preview,
+            time_brownian=True,
+            **kwargs,
+        )

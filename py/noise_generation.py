@@ -53,18 +53,16 @@ class NoiseError(Exception):
     pass
 
 
-def scale_noise(noise, factor=1.0, normalized=True, threshold_std_devs=2.5):
+def scale_noise(noise, factor=1.0, *, normalized=True, threshold_std_devs=2.5):
     if not normalized:
-        return noise.mul_(factor)
+        return noise.mul_(factor) if factor != 1 else noise
     mean, std = noise.mean().item(), noise.std().item()
     threshold = threshold_std_devs / math.sqrt(noise.numel())
     if abs(mean) > threshold:
         noise -= mean
     if abs(1.0 - std) > threshold:
         noise /= std
-    if factor != 1.0:
-        noise *= factor
-    return noise
+    return noise.mul_(factor) if factor != 1 else noise
 
 
 def get_positions(block_shape: tuple[int, int]) -> Tensor:
