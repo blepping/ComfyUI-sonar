@@ -18,9 +18,15 @@ from .noise_generation import scale_noise
 
 
 class PowerNoiseItem(CustomNoiseItemBase):
-    def __init__(self, factor, **kwargs):
+    def __init__(self, factor, *, channel_correlation, **kwargs):
+        channel_correlation = torch.tensor(
+            tuple(float(val) for val in channel_correlation.split(",")),
+            device="cpu",
+            dtype=torch.float,
+        ).clamp(0.0, 1.0)
         super().__init__(factor, **kwargs)
         self.max_freq = max(self.max_freq, self.min_freq)
+        self.channel_correlation = channel_correlation
 
     def make_filter(self, shape, oversample=4, rel_bw=0.125):
         """Construct a band-pass * 1/f^alpha filter in rfft space."""
@@ -115,16 +121,26 @@ class PowerNoiseItem(CustomNoiseItemBase):
         device = x.device
         time_brownian = self.time_brownian
 
-        common_mode = self.common_mode
+        common_mode = min(self.common_mode, 1.0)
         if common_mode > 0.0:
             b, c, h, w = shape
-            torch.eye(c, c)
-            channel_mixer = torch.lerp(
-                torch.eye(c, c),
-                torch.ones(c, c) / c,
-                common_mode,
+            correlation_count = c * (c - 1) // 2
+            channel_correlation = self.channel_correlation[:correlation_count]
+            channel_correlation = torch.cat(
+                (
+                    channel_correlation * self.common_mode,
+                    torch.full(
+                        (correlation_count - channel_correlation.numel(),),
+                        self.common_mode,
+                    ),
+                ),
             )
-            channel_mixer = channel_mixer.sqrt().to(device, non_blocking=True)
+            channel_mixer = torch.eye(c)
+            channel_mixer[*torch.tril_indices(c, c, offset=-1)] = channel_correlation
+            channel_mixer = torch.linalg.cholesky(channel_mixer).to(
+                device,
+                non_blocking=True,
+            )
 
         def sampler(sigma, sigma_next):
             noise = noise_sampler(sigma, sigma_next).to(device)
@@ -356,6 +372,14 @@ class SonarPowerNoiseNode(SonarCustomNoiseNodeBase):
                     "max": 1.0,
                     "step": 0.001,
                     "round": False,
+                },
+            ),
+            "channel_correlation": (
+                "STRING",
+                {
+                    "default": "1, 1, 1, 1, 1, 1",
+                    "multiline": False,
+                    "dynamicPrompts": False,
                 },
             ),
             "preview": (["none", "no_mix", "mix"],),
