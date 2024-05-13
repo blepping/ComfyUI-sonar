@@ -21,7 +21,11 @@ class PowerNoiseItem(CustomNoiseItemBase):
     def __init__(self, factor, *, channel_correlation, **kwargs):
         if isinstance(channel_correlation, str):
             channel_correlation = torch.tensor(
-                tuple(float(val) for val in channel_correlation.split(",")),
+                tuple(
+                    float(val)
+                    for val in (val.strip() for val in channel_correlation.split(","))
+                    if val
+                ),
                 device="cpu",
                 dtype=torch.float,
             )
@@ -203,19 +207,27 @@ class PowerNoiseItem(CustomNoiseItemBase):
             normalized=normalized,
         )
 
-    def preview(self, size=(128, 128)):
+    def preview(self, size=(128, 128), noise=None):
         filter_rfft = self.make_filter(size, oversample=1)
         filter_fft = rfft2_to_fft2(filter_rfft)
-        noise = torch.fft.irfft2(
-            filter_rfft
-            * torch.randn(
-                filter_rfft.shape,
-                dtype=torch.complex64,
-                generator=torch.Generator().manual_seed(0),
-            ),
-            s=size,
-            norm="ortho",
-        )
+        if noise is None:
+            noise = torch.fft.irfft2(
+                filter_rfft
+                * torch.randn(
+                    filter_rfft.shape,
+                    dtype=torch.complex64,
+                    generator=torch.Generator().manual_seed(0),
+                ),
+                s=size,
+                norm="ortho",
+            )
+        else:
+            noise_rfft = torch.fft.rfft2(noise, norm="ortho")
+            noise = torch.fft.irfft2(
+                noise_rfft.mul_(filter_rfft),
+                s=noise.shape[-2:],
+                norm="ortho",
+            )
         kernel = torch.fft.irfft2(filter_rfft, s=size, norm="ortho")
         kernel = kernel.roll((size[0] // 2, size[1] // 2), (-2, -1))
         img = (
@@ -290,6 +302,21 @@ class PowerFilterNoiseItem(PowerNoiseItem):
             filter_rfft,
             normalized=normalize_result,
         )
+
+    def preview(self, size=(128, 128)):
+        if getattr(self, "preview_type", None) != "custom":
+            return super().preview(size=size)
+        torch.manual_seed(0)
+        x = torch.randn(size, dtype=torch.float, device="cpu")
+        ns = self.noise.make_noise_sampler(
+            x[None, None, ...],
+            0.0,
+            14.0,
+            0,
+            True,  # noqa: FBT003
+            normalized=True,
+        )
+        return super().preview(size=size, noise=ns(14.0, 10.0))
 
 
 class SonarPowerNoiseNode(SonarCustomNoiseNodeBase):
@@ -386,7 +413,7 @@ class SonarPowerNoiseNode(SonarCustomNoiseNodeBase):
                     "dynamicPrompts": False,
                 },
             ),
-            "preview": (["none", "no_mix", "mix"],),
+            "preview": (("none", "no_mix", "mix"),),
         }
         return result
 
@@ -403,7 +430,7 @@ class SonarPowerNoiseNode(SonarCustomNoiseNodeBase):
             return result
         if preview == "no_mix":
             kwargs["mix"] = 1.0
-        img = self.get_item_class()(**kwargs).preview()
+        img = self.get_item_class()(preview_type=preview, **kwargs).preview()
 
         output_dir = folder_paths.get_temp_directory()
         prefix_append = "sonar_temp_" + "".join(
@@ -437,6 +464,7 @@ class SonarPowerFilterNoiseNode(SonarPowerNoiseNode, SonarNormalizeNoiseNodeMixi
             "normalize_result": (("default", "forced", "disabled"),),
             "normalize_noise": (("default", "forced", "disabled"),),
         }
+        result["required"]["preview"] = ((*result["required"]["preview"][0], "custom"),)
         return result
 
     def get_item_class(self):
