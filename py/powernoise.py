@@ -24,7 +24,7 @@ class PowerNoiseItem(CustomNoiseItemBase):
                 tuple(float(val) for val in channel_correlation.split(",")),
                 device="cpu",
                 dtype=torch.float,
-            ).clamp(0.0, 1.0)
+            )
         super().__init__(factor, channel_correlation=channel_correlation, **kwargs)
         self.max_freq = max(self.max_freq, self.min_freq)
 
@@ -137,10 +137,14 @@ class PowerNoiseItem(CustomNoiseItemBase):
             )
             channel_mixer = torch.eye(c)
             channel_mixer[*torch.tril_indices(c, c, offset=-1)] = channel_correlation
-            channel_mixer = torch.linalg.cholesky(channel_mixer).to(
-                device,
-                non_blocking=True,
-            )
+            channel_mixer += channel_mixer.tril(-1).mT
+            channel_mixer = torch.linalg.ldl_factor(channel_mixer).LD
+            dc = torch.diagonal_copy(channel_mixer)
+            torch.diagonal(channel_mixer)[:] = 1.0
+            channel_mixer *= dc.clamp_min(0).sqrt().unsqueeze(0)
+            del dc
+            channel_mixer /= channel_mixer.norm(dim=1, keepdim=True)
+            channel_mixer = channel_mixer.to(device, non_blocking=True)
 
         def sampler(sigma, sigma_next):
             noise = noise_sampler(sigma, sigma_next).to(device)
@@ -368,8 +372,8 @@ class SonarPowerNoiseNode(SonarCustomNoiseNodeBase):
                 "FLOAT",
                 {
                     "default": 0.0,
-                    "min": 0.0,
-                    "max": 1.0,
+                    "min": -100.0,
+                    "max": 100.0,
                     "step": 0.001,
                     "round": False,
                 },
