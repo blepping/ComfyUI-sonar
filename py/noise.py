@@ -448,12 +448,12 @@ class RepeatedNoise(CustomNoiseItemBase):
                 generator=gen,
                 dtype=torch.uint32,
             ).tolist()
-            skip_permute = False
+            skip_permute = permute == "disabled"
             if len(noise_items) < repeat_length:
                 idx = len(noise_items)
                 noise = ns(s, sn)
                 noise_items.append((1, noise))
-                skip_permute = True
+                skip_permute = permute != "always"
             else:
                 idx = rands[0] % repeat_length
                 if idx == last_idx:
@@ -462,22 +462,25 @@ class RepeatedNoise(CustomNoiseItemBase):
                 if count >= max_recycle:
                     noise = ns(s, sn)
                     noise_items[idx] = (1, noise)
-                    skip_permute = True
+                    skip_permute = permute != "always"
                 else:
                     noise_items[idx] = (count + 1, noise)
 
             last_idx = idx
-            if skip_permute or not permute:
+            if skip_permute:
                 return noise.clone()
             noise_dims = len(noise.shape)
             match rands[1] % permute_options:
                 case 0:
-                    if rands[2] <= u32_max // 10:
-                        # 10% of the time we return the original tensor instead of flipping
+                    if rands[2] <= u32_max // 5:
+                        # 10% of the time we return the original tensor instead of flipping or inverting
                         noise = noise.clone()
+                        if rands[2] & 1 == 1:
+                            noise *= -1.0
                     else:
-                        dim = -1 + (rands[2] % (noise_dims + 1))
-                        noise = torch.flip(noise, (dim,))
+                        dims = tuple({rands[2] % noise_dims, rands[3] % noise_dims})
+                        noise = torch.flip(noise, dims)
+
                 case 1:
                     dim = rands[2] % noise_dims
                     count = rands[3] % noise.shape[dim]

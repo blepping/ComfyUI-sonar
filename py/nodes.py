@@ -245,7 +245,7 @@ class SonarRepeatedNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMi
             "repeat_length": ("INT", {"default": 8, "min": 1, "max": 100}),
             "max_recycle": ("INT", {"default": 1000, "min": 1, "max": 1000}),
             "normalize": (("default", "forced", "disabled"),),
-            "permute": ("BOOLEAN", {"default": True}),
+            "permute": (("enabled", "disabled", "always"),),
         }
         return result
 
@@ -749,6 +749,7 @@ class SamplerNodeConfigOverride:
                     },
                 ),
                 "sde_solver": (("midpoint", "heun"),),
+                "cpu_noise": ("BOOLEAN", {"default": True}),
             },
             "optional": {
                 "noise_type": (tuple(NoiseType.get_names()),),
@@ -769,6 +770,7 @@ class SamplerNodeConfigOverride:
         s_churn,
         r,
         sde_solver,
+        cpu_noise=True,
         noise_type=None,
         custom_noise_opt=None,
     ):
@@ -788,6 +790,7 @@ class SamplerNodeConfigOverride:
                         "s_churn": s_churn,
                         "r": r,
                         "solver_type": sde_solver,
+                        "cpu_noise": cpu_noise,
                     },
                 },
                 inpaint_options=sampler.inpaint_options | {},
@@ -812,10 +815,11 @@ class SamplerNodeConfigOverride:
         if extra_args is None:
             extra_args = {}
         cfg = override_sampler_cfg
-        sampler, noise_type, custom_noise = (
+        sampler, noise_type, custom_noise, cpu = (
             cfg["sampler"],
             cfg.get("noise_type"),
             cfg.get("custom_noise"),
+            cfg.get("cpu_noise", True),
         )
         sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
         seed = extra_args.get("seed")
@@ -825,6 +829,7 @@ class SamplerNodeConfigOverride:
                 sigma_min,
                 sigma_max,
                 seed=seed,
+                cpu=cpu,
             )
         elif noise_type is not None:
             noise_sampler = noise.get_noise_sampler(
@@ -833,7 +838,7 @@ class SamplerNodeConfigOverride:
                 sigma_min,
                 sigma_max,
                 seed=seed,
-                cpu=True,
+                cpu=cpu,
                 normalized=True,
             )
         sig = inspect.signature(sampler.sampler_function)

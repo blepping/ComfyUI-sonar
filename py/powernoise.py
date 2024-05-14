@@ -4,7 +4,9 @@ import math
 import os
 import random
 
+import comfy
 import folder_paths
+import latent_preview
 import torch
 from comfy.k_diffusion.sampling import BrownianTreeNoiseSampler
 from PIL import Image
@@ -16,32 +18,150 @@ from .noise_generation import scale_noise
 
 # ruff: noqa: ANN003, FBT001, FBT002
 
+PREVIEW_FORMAT = comfy.latent_formats.SD15()
 
-class PowerNoiseItem(CustomNoiseItemBase):
-    def __init__(self, factor, *, channel_correlation, **kwargs):
-        if isinstance(channel_correlation, str):
-            channel_correlation = torch.tensor(
-                tuple(
-                    float(val)
-                    for val in (val.strip() for val in channel_correlation.split(","))
-                    if val
+
+class ChannelMixer:
+    def __init__(self, channel_count, common_mode, channel_correlation):
+        self.channel_count = channel_count
+        self.common_mode = common_mode
+        self.channel_correlation = channel_correlation
+        self.mixer = self.build() if common_mode is not None else None
+
+    def build(self):
+        c = self.channel_count
+        common_mode = self.common_mode
+        correlation_count = c * (c - 1) // 2
+        channel_correlation = self.channel_correlation[:correlation_count]
+        channel_correlation = torch.cat(
+            (
+                channel_correlation * common_mode,
+                torch.full(
+                    (correlation_count - channel_correlation.numel(),),
+                    common_mode,
                 ),
-                device="cpu",
-                dtype=torch.float,
-            )
-        super().__init__(factor, channel_correlation=channel_correlation, **kwargs)
-        self.max_freq = max(self.max_freq, self.min_freq)
+            ),
+        )
+        channel_mixer = torch.eye(c)
+        channel_mixer[*torch.tril_indices(c, c, offset=-1)] = channel_correlation
+        channel_mixer += channel_mixer.tril(-1).mT
+        channel_mixer = torch.linalg.ldl_factor(channel_mixer).LD
+        dc = torch.diagonal_copy(channel_mixer)
+        torch.diagonal(channel_mixer)[:] = 1.0
+        channel_mixer *= dc.clamp_min(0).sqrt().unsqueeze(0)
+        channel_mixer /= channel_mixer.norm(dim=1, keepdim=True)
+        return channel_mixer
 
-    def make_filter(self, shape, oversample=4, rel_bw=0.125):
-        """Construct a band-pass * 1/f^alpha filter in rfft space."""
+    def to(self, *args: list, **kwargs: dict):
+        if self.mixer is not None:
+            self.mixer = self.mixer.to(*args, **kwargs)
+        return self
+
+    def apply(self, noise, shape, copy=False):
+        if self.mixer is None:
+            return noise if not copy else noise.clone()
+        b, c, h, w = shape
+        if c != self.channel_count:
+            raise ValueError("Channel count mismatch")
+        noise = self.mixer @ noise.swapaxes(0, 1).reshape(c, -1)
+        return noise.reshape(c, b, h, w).swapaxes(1, 0)
+
+    def __call__(self, *args: list, **kwargs: dict):
+        return self.apply(*args, **kwargs)
+
+
+class PowerFilter:
+    def __init__(
+        self,
+        *,
+        min_freq=0.0,
+        max_freq=0.7071,
+        stretch=1.0,
+        rotate=0.0,
+        pnorm=2.0,
+        alpha=0.0,
+        rel_bw=0.125,
+        oversample=4,
+        compose_with: None | PowerFilter = None,
+        compose_mode="max",
+    ):
+        self.min_freq = min_freq
+        self.max_freq = max(max_freq, min_freq)
+        self.stretch = stretch
+        self.rotate = rotate
+        self.pnorm = pnorm
+        self.alpha = alpha
+        self.rel_bw = rel_bw
+        self.oversample = oversample
+        self.compose_with = compose_with
+        self.compose_mode = compose_mode
+
+    def copy(self):
+        fargs = {
+            k: getattr(self, k)
+            for k in (
+                "min_freq",
+                "max_freq",
+                "stretch",
+                "rotate",
+                "pnorm",
+                "alpha",
+                "rel_bw",
+                "oversample",
+                "compose_mode",
+            )
+        }
+        fargs["compose_with"] = (
+            self.compose_with.copy() if self.compose_with is not None else None
+        )
+        return self.__class__(**fargs)
+
+    @classmethod
+    def compose(cls, a, b, compose_mode="max"):
+        if a.shape != b.shape:
+            raise ValueError("Filter compose size mismatch!")
+        cf = {
+            "max": torch.max,
+            "min": torch.min,
+            "add": torch.add,
+            "sub": torch.sub,
+            "mul": torch.mul,
+        }.get(compose_mode, torch.max)
+        return cf(a, b).clamp_(min=0.0)
+
+    @classmethod
+    def normalize(cls, op, shape, mix=1.0, normalization_factor=1.0, skip_sqrt=False):
         height, width = shape[-2:]
         hfreq_bins = width // 2 + 1
 
         # Flat unit gain frequency response
-        if self.mix < 1.0:
+        if mix < 1.0:
             flat = torch.ones(1, 1, height, hfreq_bins)
-        if self.mix <= 0.0:
-            return flat
+            if mix <= 0.0:
+                return flat
+        if normalization_factor != 0:
+            # Scale to unit power gain, then mix flat filter
+            mean_pow_gain = op.mean()
+            if mean_pow_gain <= 0.0:
+                # don't fail catastrophically when something broke
+                return flat
+            op *= torch.lerp(
+                torch.scalar_tensor(1.0),
+                torch.scalar_tensor(1.0 / mean_pow_gain),
+                normalization_factor,
+            )
+        if mix < 1.0:
+            op = torch.lerp(flat, op, mix, out=op)
+        return op.sqrt_() if normalization_factor != 0 and not skip_sqrt else op
+
+    def build(self, shape, override_oversample=None, composed=True):
+        """Construct a band-pass * 1/f^alpha filter in rfft space."""
+        oversample = (
+            override_oversample if override_oversample is not None else self.oversample
+        )
+        rel_bw = self.rel_bw
+        height, width = shape[-2:]
+        hfreq_bins = width // 2 + 1
 
         # Start with an over-sampled fftshift(rfft2freq()) grid. uses complex
         # numbers for convenient 2d rotation (unrelated to the fft complex phase
@@ -103,16 +223,68 @@ class PowerNoiseItem(CustomNoiseItemBase):
             # In general, the mean offset should be kept as is, sampled from
             # N(0, 1 / sqrt(H*W) ). However, gain goes to inf when alpha>0.
             op[..., 0, 0] = 0
+        if composed and self.compose_with is not None:
+            return self.compose(
+                op,
+                self.compose_with.build(shape, override_oversample=override_oversample),
+                self.compose_mode,
+            )
+        return op
 
-        # Scale to unit power gain, then mix flat filter
-        mean_pow_gain = op.mean()
-        if mean_pow_gain <= 0.0:
-            # don't fail catastrophically when something broke
-            return flat
-        op *= 1.0 / mean_pow_gain
-        if self.mix < 1.0:
-            op = torch.lerp(flat, op, self.mix, out=op)
-        return op.sqrt_()
+    def preview(self, size=(128, 128), mix=1.0, normalization_factor=1.0, raw=False):
+        shape = (1, 4, *size)
+        filter_rfft = self.__class__.normalize(
+            self.build(size, override_oversample=1),
+            shape,
+            mix=mix,
+            normalization_factor=normalization_factor,
+        )
+        filter_fft = rfft2_to_fft2(filter_rfft)
+        kernel = torch.fft.irfft2(filter_rfft, s=size, norm="ortho")
+        kernel = kernel.roll((size[0] // 2, size[1] // 2), (-2, -1))
+        img = (
+            filter_fft.mul_(1 / 3).tanh_().mul_(256.0),
+            kernel.mul_(1 / 3).tanh_().add_(1.0).mul_(128.0),
+        )
+        if raw:
+            return img
+        img = torch.cat(img, dim=-1).clamp(0, 255).to(torch.uint8)
+        return Image.fromarray(img[0, 0].numpy())
+
+
+class PowerNoiseItem(CustomNoiseItemBase):
+    def __init__(self, factor, *, channel_correlation, power_filter=None, **kwargs):
+        if isinstance(channel_correlation, str):
+            channel_correlation = torch.tensor(
+                tuple(
+                    float(val)
+                    for val in (val.strip() for val in channel_correlation.split(","))
+                    if val
+                ),
+                device="cpu",
+                dtype=torch.float,
+            )
+        if power_filter is None:
+            fargs = {
+                k: kwargs.pop(k)
+                for k in ("min_freq", "max_freq", "stretch", "rotate", "pnorm", "alpha")
+                if k in kwargs
+            }
+            power_filter = PowerFilter(**fargs)
+        super().__init__(
+            factor,
+            power_filter=power_filter,
+            channel_correlation=channel_correlation,
+            **kwargs,
+        )
+
+    def make_filter(self, shape, oversample=None):
+        return PowerFilter.normalize(
+            self.power_filter.build(shape, override_oversample=oversample),
+            shape,
+            mix=self.mix,
+            normalization_factor=getattr(self, "filter_norm_factor", 1.0),
+        )
 
     def make_noise_sampler_internal(
         self,
@@ -125,30 +297,11 @@ class PowerNoiseItem(CustomNoiseItemBase):
         device = x.device
         time_brownian = self.time_brownian
 
-        common_mode = min(self.common_mode, 1.0)
-        if common_mode > 0.0:
-            b, c, h, w = shape
-            correlation_count = c * (c - 1) // 2
-            channel_correlation = self.channel_correlation[:correlation_count]
-            channel_correlation = torch.cat(
-                (
-                    channel_correlation * self.common_mode,
-                    torch.full(
-                        (correlation_count - channel_correlation.numel(),),
-                        self.common_mode,
-                    ),
-                ),
-            )
-            channel_mixer = torch.eye(c)
-            channel_mixer[*torch.tril_indices(c, c, offset=-1)] = channel_correlation
-            channel_mixer += channel_mixer.tril(-1).mT
-            channel_mixer = torch.linalg.ldl_factor(channel_mixer).LD
-            dc = torch.diagonal_copy(channel_mixer)
-            torch.diagonal(channel_mixer)[:] = 1.0
-            channel_mixer *= dc.clamp_min(0).sqrt().unsqueeze(0)
-            del dc
-            channel_mixer /= channel_mixer.norm(dim=1, keepdim=True)
-            channel_mixer = channel_mixer.to(device, non_blocking=True)
+        channel_mixer = ChannelMixer(
+            shape[1],
+            self.common_mode,
+            self.channel_correlation,
+        ).to(device, non_blocking=True)
 
         def sampler(sigma, sigma_next):
             noise = noise_sampler(sigma, sigma_next).to(device)
@@ -160,10 +313,7 @@ class PowerNoiseItem(CustomNoiseItemBase):
                 s=shape[-2:],
                 norm="ortho",
             )
-
-            if common_mode > 0.0:
-                noise = channel_mixer @ noise.swapaxes(0, 1).reshape(c, -1)
-                noise = noise.reshape(c, b, h, w).swapaxes(1, 0)
+            noise = channel_mixer(noise, shape)
             return scale_noise(noise, self.factor, normalized=normalized)
 
         return sampler
@@ -209,7 +359,6 @@ class PowerNoiseItem(CustomNoiseItemBase):
 
     def preview(self, size=(128, 128), noise=None):
         filter_rfft = self.make_filter(size, oversample=1)
-        filter_fft = rfft2_to_fft2(filter_rfft)
         if noise is None:
             noise = torch.fft.irfft2(
                 filter_rfft
@@ -228,15 +377,17 @@ class PowerNoiseItem(CustomNoiseItemBase):
                 s=noise.shape[-2:],
                 norm="ortho",
             )
-        kernel = torch.fft.irfft2(filter_rfft, s=size, norm="ortho")
-        kernel = kernel.roll((size[0] // 2, size[1] // 2), (-2, -1))
+        filter_preview = self.power_filter.preview(
+            size=size,
+            normalization_factor=getattr(self, "filter_norm_factor", 1.0),
+            raw=True,
+        )
         img = (
             torch.cat(
-                [
-                    filter_fft.mul_(1 / 3).tanh_().mul_(256.0),
-                    kernel.mul_(1 / 3).tanh_().add_(1.0).mul_(128.0),
+                (
+                    *filter_preview,
                     noise.mul_(1 / 3).tanh_().add_(1.0).mul_(128.0),
-                ],
+                ),
                 dim=-1,
             )
             .clamp(0, 255)
@@ -307,16 +458,30 @@ class PowerFilterNoiseItem(PowerNoiseItem):
         if getattr(self, "preview_type", None) != "custom":
             return super().preview(size=size)
         torch.manual_seed(0)
-        x = torch.randn(size, dtype=torch.float, device="cpu")
+        x = torch.randn((1, 4, *size), dtype=torch.float, device="cpu")
         ns = self.noise.make_noise_sampler(
-            x[None, None, ...],
+            x,
             0.0,
             14.0,
             0,
             True,  # noqa: FBT003
-            normalized=True,
+            normalized=self.normalize_noise is True,
         )
-        return super().preview(size=size, noise=ns(14.0, 10.0))
+        filtered_ns = self.make_noise_sampler_internal(
+            x,
+            ns,
+            self.make_filter(x.shape),
+            self.normalize_result in (True, None),
+        )
+        filtered_noise = filtered_ns(14.0, 10.0)
+        previewer = latent_preview.get_previewer(None, PREVIEW_FORMAT)
+        default_preview = super().preview(size=size).convert("RGB")
+        preview = previewer.decode_latent_to_preview(filtered_noise.cpu())
+        default_preview.paste(
+            preview.resize((size[-1], size[-2])),
+            box=(size[-1] * 2, 0),
+        )
+        return default_preview
 
 
 class SonarPowerNoiseNode(SonarCustomNoiseNodeBase):
@@ -458,9 +623,29 @@ class SonarPowerFilterNoiseNode(SonarPowerNoiseNode, SonarNormalizeNoiseNodeMixi
     @classmethod
     def INPUT_TYPES(cls):
         result = super().INPUT_TYPES(include_rescale=False, include_chain=False)
-        del result["required"]["time_brownian"]
+        for k in (
+            "min_freq",
+            "max_freq",
+            "stretch",
+            "rotate",
+            "pnorm",
+            "alpha",
+            "time_brownian",
+        ):
+            del result["required"][k]
         result["required"] |= {
             "sonar_custom_noise": ("SONAR_CUSTOM_NOISE",),
+            "sonar_power_filter": ("SONAR_POWER_FILTER",),
+            "filter_norm_factor": (
+                "FLOAT",
+                {
+                    "default": 1.0,
+                    "min": 0.0,
+                    "max": 1.0,
+                    "step": 0.1,
+                    "round": False,
+                },
+            ),
             "normalize_result": (("default", "forced", "disabled"),),
             "normalize_noise": (("default", "forced", "disabled"),),
         }
@@ -474,6 +659,8 @@ class SonarPowerFilterNoiseNode(SonarPowerNoiseNode, SonarNormalizeNoiseNodeMixi
         self,
         factor,
         sonar_custom_noise,
+        sonar_power_filter,
+        filter_norm_factor,
         normalize_noise,
         normalize_result,
         preview="none",
@@ -486,5 +673,123 @@ class SonarPowerFilterNoiseNode(SonarPowerNoiseNode, SonarNormalizeNoiseNodeMixi
             normalize_result=self.get_normalize(normalize_result),
             preview=preview,
             time_brownian=True,
+            power_filter=sonar_power_filter,
+            filter_norm_factor=filter_norm_factor,
             **kwargs,
+        )
+
+
+class SonarPowerFilterNode:
+    RETURN_TYPES = ("SONAR_POWER_FILTER",)
+    CATEGORY = "advanced/noise"
+    FUNCTION = "go"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "alpha": (
+                    "FLOAT",
+                    {
+                        "default": 0.0,
+                        "min": -5.0,
+                        "max": 5.0,
+                        "step": 0.001,
+                        "round": False,
+                    },
+                ),
+                "max_freq": (
+                    "FLOAT",
+                    {
+                        "default": 0.7071,
+                        "min": 0.0,
+                        "max": 0.7071,
+                        "step": 0.001,
+                        "round": False,
+                    },
+                ),
+                "min_freq": (
+                    "FLOAT",
+                    {
+                        "default": 0.0,
+                        "min": 0.0,
+                        "max": 0.7071,
+                        "step": 0.001,
+                        "round": False,
+                    },
+                ),
+                "stretch": (
+                    "FLOAT",
+                    {
+                        "default": 1.0,
+                        "min": 0.01,
+                        "max": 100,
+                        "step": 0.1,
+                        "round": False,
+                    },
+                ),
+                "rotate": (
+                    "FLOAT",
+                    {
+                        "default": 0,
+                        "min": -90,
+                        "max": 90,
+                        "step": 5,
+                        "round": False,
+                    },
+                ),
+                "pnorm": (
+                    "FLOAT",
+                    {
+                        "default": 2,
+                        "min": 0.125,
+                        "max": 100,
+                        "step": 0.1,
+                        "round": False,
+                    },
+                ),
+                "oversample": ("INT", {"default": 4, "min": 1, "max": 128}),
+                "blur": (
+                    "FLOAT",
+                    {
+                        "default": 0.125,
+                        "min": -10.0,
+                        "max": 10.0,
+                        "step": 0.01,
+                        "round": False,
+                    },
+                ),
+                "compose_mode": (("max", "min", "add", "sub", "mul"),),
+            },
+            "optional": {
+                "power_filter_opt": ("SONAR_POWER_FILTER",),
+            },
+        }
+
+    def go(
+        self,
+        min_freq=0.0,
+        max_freq=0.7071,
+        stretch=1.0,
+        rotate=0.0,
+        pnorm=2.0,
+        alpha=0.0,
+        blur=0.125,
+        oversample=4,
+        compose_mode="max",
+        power_filter_opt=None,
+    ):
+        return (
+            PowerFilter(
+                min_freq=min_freq,
+                max_freq=max_freq,
+                stretch=stretch,
+                rotate=rotate,
+                pnorm=pnorm,
+                alpha=alpha,
+                rel_bw=blur,
+                oversample=oversample,
+                compose_mode=compose_mode,
+                compose_with=power_filter_opt,
+            ),
         )
