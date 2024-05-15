@@ -461,8 +461,8 @@ class PowerFilterNoiseItem(PowerNoiseItem):
         x = torch.randn((1, 4, *size), dtype=torch.float, device="cpu")
         ns = self.noise.make_noise_sampler(
             x,
-            0.0,
-            14.0,
+            torch.scalar_tensor(0.0),
+            torch.scalar_tensor(14.0),
             0,
             True,  # noqa: FBT003
             normalized=self.normalize_noise is True,
@@ -473,7 +473,10 @@ class PowerFilterNoiseItem(PowerNoiseItem):
             self.make_filter(x.shape),
             self.normalize_result in (True, None),
         )
-        filtered_noise = filtered_ns(14.0, 10.0)
+        filtered_noise = filtered_ns(
+            torch.scalar_tensor(14.0),
+            torch.scalar_tensor(10.0),
+        )
         previewer = latent_preview.get_previewer(None, PREVIEW_FORMAT)
         default_preview = super().preview(size=size).convert("RGB")
         preview = previewer.decode_latent_to_preview(filtered_noise.cpu())

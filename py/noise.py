@@ -310,6 +310,13 @@ class GuidedNoise(CustomNoiseItemBase):
             **kwargs,
         )
         ref_latent = self.ref_latent.to(x, copy=True)
+        if ref_latent.shape[-2:] != x.shape[-2:]:
+            ref_latent = torch.nn.functional.interpolate(
+                ref_latent,
+                size=x.shape[-2:],
+                mode="bicubic",
+                align_corners=True,
+            )
         match self.method:
             case "linear":
 
