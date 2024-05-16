@@ -21,6 +21,29 @@ from .noise_generation import scale_noise
 PREVIEW_FORMAT = comfy.latent_formats.SD15()
 
 
+def make_preview_result(img, result, prefix="sonar_temp"):
+    output_dir = folder_paths.get_temp_directory()
+    prefix_append = f"{prefix}_" + "".join(
+        random.choice("abcdefghijklmnopqrstupvxyz")  # noqa: S311
+        for x in range(5)
+    )
+    full_output_folder, filename, counter, subfolder, _ = (
+        folder_paths.get_save_image_path(prefix_append, output_dir)
+    )
+    filename = f"{filename}_{counter:05}_.png"
+    file_path = os.path.join(full_output_folder, filename)  # noqa: PTH118
+    img.save(file_path, compress_level=1)
+
+    return {
+        "ui": {
+            "images": [
+                {"filename": filename, "subfolder": subfolder, "type": "temp"},
+            ],
+        },
+        "result": result,
+    }
+
+
 class ChannelMixer:
     def __init__(self, channel_count, common_mode, channel_correlation):
         self.channel_count = channel_count
@@ -80,6 +103,7 @@ class PowerFilter:
         rotate=0.0,
         pnorm=2.0,
         alpha=0.0,
+        scale=1.0,
         rel_bw=0.125,
         oversample=4,
         compose_with: None | PowerFilter = None,
@@ -91,12 +115,13 @@ class PowerFilter:
         self.rotate = rotate
         self.pnorm = pnorm
         self.alpha = alpha
+        self.scale = scale
         self.rel_bw = rel_bw
         self.oversample = oversample
         self.compose_with = compose_with
         self.compose_mode = compose_mode
 
-    def copy(self):
+    def clone(self):
         fargs = {
             k: getattr(self, k)
             for k in (
@@ -106,13 +131,14 @@ class PowerFilter:
                 "rotate",
                 "pnorm",
                 "alpha",
+                "scale",
                 "rel_bw",
                 "oversample",
                 "compose_mode",
             )
         }
         fargs["compose_with"] = (
-            self.compose_with.copy() if self.compose_with is not None else None
+            self.compose_with.clone() if self.compose_with is not None else None
         )
         return self.__class__(**fargs)
 
@@ -130,7 +156,7 @@ class PowerFilter:
         return cf(a, b).clamp_(min=0.0)
 
     @classmethod
-    def normalize(cls, op, shape, mix=1.0, normalization_factor=1.0, skip_sqrt=False):
+    def normalize(cls, op, shape, mix=1.0, normalization_factor=1.0):
         height, width = shape[-2:]
         hfreq_bins = width // 2 + 1
 
@@ -140,19 +166,14 @@ class PowerFilter:
             if mix <= 0.0:
                 return flat
         if normalization_factor != 0:
-            # Scale to unit power gain, then mix flat filter
-            mean_pow_gain = op.mean()
-            if mean_pow_gain <= 0.0:
-                # don't fail catastrophically when something broke
-                return flat
             op *= torch.lerp(
                 torch.scalar_tensor(1.0),
-                torch.scalar_tensor(1.0 / mean_pow_gain),
+                1.0 / op.square().mean().sqrt(),
                 normalization_factor,
             )
         if mix < 1.0:
             op = torch.lerp(flat, op, mix, out=op)
-        return op.sqrt_() if normalization_factor != 0 and not skip_sqrt else op
+        return op
 
     def build(self, shape, override_oversample=None, composed=True):
         """Construct a band-pass * 1/f^alpha filter in rfft space."""
@@ -223,6 +244,8 @@ class PowerFilter:
             # In general, the mean offset should be kept as is, sampled from
             # N(0, 1 / sqrt(H*W) ). However, gain goes to inf when alpha>0.
             op[..., 0, 0] = 0
+        if self.scale != 1.0:
+            op *= self.scale
         if composed and self.compose_with is not None:
             return self.compose(
                 op,
@@ -599,27 +622,7 @@ class SonarPowerNoiseNode(SonarCustomNoiseNodeBase):
         if preview == "no_mix":
             kwargs["mix"] = 1.0
         img = self.get_item_class()(preview_type=preview, **kwargs).preview()
-
-        output_dir = folder_paths.get_temp_directory()
-        prefix_append = "sonar_temp_" + "".join(
-            random.choice("abcdefghijklmnopqrstupvxyz")  # noqa: S311
-            for x in range(5)
-        )
-        full_output_folder, filename, counter, subfolder, _ = (
-            folder_paths.get_save_image_path(prefix_append, output_dir)
-        )
-        filename = f"{filename}_{counter:05}_.png"
-        file_path = os.path.join(full_output_folder, filename)  # noqa: PTH118
-        img.save(file_path, compress_level=1)
-
-        return {
-            "ui": {
-                "images": [
-                    {"filename": filename, "subfolder": subfolder, "type": "temp"},
-                ],
-            },
-            "result": result,
-        }
+        return make_preview_result(img, result)
 
 
 class SonarPowerFilterNoiseNode(SonarPowerNoiseNode, SonarNormalizeNoiseNodeMixin):
@@ -762,6 +765,16 @@ class SonarPowerFilterNode:
                         "round": False,
                     },
                 ),
+                "scale": (
+                    "FLOAT",
+                    {
+                        "default": 1,
+                        "min": -100.0,
+                        "max": 100.0,
+                        "step": 0.1,
+                        "round": False,
+                    },
+                ),
                 "compose_mode": (("max", "min", "add", "sub", "mul"),),
             },
             "optional": {
@@ -779,6 +792,7 @@ class SonarPowerFilterNode:
         alpha=0.0,
         blur=0.125,
         oversample=4,
+        scale=1.0,
         compose_mode="max",
         power_filter_opt=None,
     ):
@@ -790,9 +804,26 @@ class SonarPowerFilterNode:
                 rotate=rotate,
                 pnorm=pnorm,
                 alpha=alpha,
+                scale=scale,
                 rel_bw=blur,
                 oversample=oversample,
                 compose_mode=compose_mode,
                 compose_with=power_filter_opt,
             ),
         )
+
+
+class SonarPreviewFilterNode:
+    RETURN_TYPES = ("SONAR_POWER_FILTER",)
+    CATEGORY = "advanced/noise"
+    FUNCTION = "go"
+    OUTPUT_NODE = True
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {"sonar_power_filter": ("SONAR_POWER_FILTER",)}}
+
+    def go(self, sonar_power_filter):
+        filt = sonar_power_filter.clone()
+        filt.preview_type = "custom"
+        return make_preview_result(filt.preview(size=(512, 512)), (filt,))
