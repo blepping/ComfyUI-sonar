@@ -75,22 +75,31 @@ class NoisyLatentLikeNode:
                 )
                 / latent_scale_factor
             )
+        if sigmas is not None and sigmas.numel() > 1:
+            sigma_min, sigma_max = sigmas[0], sigmas[-1]
+            sigma, sigma_next = sigmas[0], sigmas[1]
+        else:
+            sigma_min, sigma_max, sigma, sigma_next = (None,) * 4
         latent_samples = latent["samples"]
         if custom_noise_opt is not None:
-            ns = custom_noise_opt.make_noise_sampler(latent_samples)
+            ns = custom_noise_opt.make_noise_sampler(
+                latent_samples,
+                sigma_min=sigma_min,
+                sigma_max=sigma_max,
+            )
         else:
             ns = noise.get_noise_sampler(
                 NoiseType[noise_type.upper()],
                 latent_samples,
-                None,
-                None,
+                sigma_min,
+                sigma_max,
                 seed=seed,
                 cpu=True,
             )
         randst = torch.random.get_rng_state()
         try:
             torch.random.manual_seed(seed)
-            result = ns(None, None)
+            result = ns(sigma, sigma_next)
         finally:
             torch.random.set_rng_state(randst)
         result = scale_noise(result, multiplier, normalized=True)
