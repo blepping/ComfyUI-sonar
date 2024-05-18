@@ -254,7 +254,15 @@ class PowerFilter:
             )
         return op
 
-    def preview(self, size=(128, 128), mix=1.0, normalization_factor=1.0, raw=False):
+    def preview(
+        self,
+        size=(128, 128),
+        mix=1.0,
+        normalization_factor=1.0,
+        raw=False,
+        kernel_gain=1 / 3,
+        filter_gain=1 / 3,
+    ):
         shape = (1, 4, *size)
         filter_rfft = self.__class__.normalize(
             self.build(size, override_oversample=1),
@@ -266,8 +274,8 @@ class PowerFilter:
         kernel = torch.fft.irfft2(filter_rfft, s=size, norm="ortho")
         kernel = kernel.roll((size[0] // 2, size[1] // 2), (-2, -1))
         img = (
-            filter_fft.mul_(1 / 3).tanh_().mul_(256.0),
-            kernel.mul_(1 / 3).tanh_().add_(1.0).mul_(128.0),
+            filter_fft.mul_(filter_gain).tanh_().mul_(256.0),
+            kernel.mul_(kernel_gain).tanh_().add_(1.0).mul_(128.0),
         )
         if raw:
             return img
@@ -380,7 +388,13 @@ class PowerNoiseItem(CustomNoiseItemBase):
             normalized=normalized,
         )
 
-    def preview(self, size=(128, 128), noise=None):
+    def preview(
+        self,
+        size=(128, 128),
+        noise=None,
+        kernel_gain=1 / 3,
+        filter_gain=1 / 3,
+    ):
         filter_rfft = self.make_filter(size, oversample=1)
         if noise is None:
             noise = torch.fft.irfft2(
@@ -403,6 +417,8 @@ class PowerNoiseItem(CustomNoiseItemBase):
         filter_preview = self.power_filter.preview(
             size=size,
             normalization_factor=getattr(self, "filter_norm_factor", 1.0),
+            filter_gain=filter_gain,
+            kernel_gain=kernel_gain,
             raw=True,
         )
         img = (
@@ -821,9 +837,48 @@ class SonarPreviewFilterNode:
 
     @classmethod
     def INPUT_TYPES(cls):
-        return {"required": {"sonar_power_filter": ("SONAR_POWER_FILTER",)}}
+        return {
+            "required": {
+                "sonar_power_filter": ("SONAR_POWER_FILTER",),
+                "filter_gain": (
+                    "FLOAT",
+                    {
+                        "default": 1 / 3,
+                        "min": 0.0,
+                        "max": 1000000.0,
+                        "step": 0.1,
+                        "round": False,
+                    },
+                ),
+                "kernel_gain": (
+                    "FLOAT",
+                    {
+                        "default": 1 / 3,
+                        "min": 0.0,
+                        "max": 1000000.0,
+                        "step": 0.1,
+                        "round": False,
+                    },
+                ),
+                "preview_size": (("384x256", "256x384", "256x256"),),
+            },
+        }
 
-    def go(self, sonar_power_filter):
+    def go(
+        self,
+        sonar_power_filter,
+        filter_gain=1 / 3,
+        kernel_gain=1 / 3,
+        preview_size="256x256",
+    ):
         filt = sonar_power_filter.clone()
         filt.preview_type = "custom"
-        return make_preview_result(filt.preview(size=(512, 512)), (filt,))
+        preview_size = tuple(int(val) for val in preview_size.split("x", 1))
+        return make_preview_result(
+            filt.preview(
+                size=(preview_size[1], preview_size[0]),
+                filter_gain=filter_gain,
+                kernel_gain=kernel_gain,
+            ),
+            (filt,),
+        )
