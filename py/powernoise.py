@@ -265,7 +265,7 @@ class PowerFilter:
     ):
         shape = (1, 4, *size)
         filter_rfft = self.__class__.normalize(
-            self.build(size, override_oversample=1),
+            self.build(size),
             shape,
             mix=mix,
             normalization_factor=normalization_factor,
@@ -860,7 +860,18 @@ class SonarPreviewFilterNode:
                         "round": False,
                     },
                 ),
-                "preview_size": (("384x256", "256x384", "256x256"),),
+                "preview_size": (
+                    (
+                        "384x256",
+                        "256x384",
+                        "256x256",
+                        "768x512",
+                        "512x768",
+                        "768x768",
+                        "128x127",
+                        "127x128",
+                    ),
+                ),
             },
         }
 
