@@ -104,7 +104,7 @@ class NoisyLatentLikeNode:
             torch.random.set_rng_state(randst)
         result = scale_noise(result, multiplier, normalized=True)
         if add_to_latent:
-            result += latent_samples.to(result.device)
+            result += latent_samples.to(result)
         return ({"samples": result},)
 
 
@@ -759,6 +759,7 @@ class SamplerNodeConfigOverride:
                 ),
                 "sde_solver": (("midpoint", "heun"),),
                 "cpu_noise": ("BOOLEAN", {"default": True}),
+                "normalize": ("BOOLEAN", {"default": True}),
             },
             "optional": {
                 "noise_type": (tuple(NoiseType.get_names()),),
@@ -782,6 +783,7 @@ class SamplerNodeConfigOverride:
         cpu_noise=True,
         noise_type=None,
         custom_noise_opt=None,
+        normalize=True,
     ):
         return (
             samplers.KSAMPLER(
@@ -800,6 +802,7 @@ class SamplerNodeConfigOverride:
                         "r": r,
                         "solver_type": sde_solver,
                         "cpu_noise": cpu_noise,
+                        "normalize": normalize,
                     },
                 },
                 inpaint_options=sampler.inpaint_options | {},
@@ -824,11 +827,12 @@ class SamplerNodeConfigOverride:
         if extra_args is None:
             extra_args = {}
         cfg = override_sampler_cfg
-        sampler, noise_type, custom_noise, cpu = (
+        sampler, noise_type, custom_noise, cpu, normalize = (
             cfg["sampler"],
             cfg.get("noise_type"),
             cfg.get("custom_noise"),
             cfg.get("cpu_noise", True),
+            cfg.get("normalize", True),
         )
         sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
         seed = extra_args.get("seed")
@@ -839,6 +843,7 @@ class SamplerNodeConfigOverride:
                 sigma_max,
                 seed=seed,
                 cpu=cpu,
+                normalized=normalize,
             )
         elif noise_type is not None:
             noise_sampler = noise.get_noise_sampler(
@@ -848,7 +853,7 @@ class SamplerNodeConfigOverride:
                 sigma_max,
                 seed=seed,
                 cpu=cpu,
-                normalized=True,
+                normalized=normalize,
             )
         sig = inspect.signature(sampler.sampler_function)
         params = sig.parameters
@@ -963,7 +968,7 @@ if "bleh" in external.MODULES:
                 ffilter = bleh_latentutils.FILTER_PRESETS[ffilter]
             return super().go(
                 factor,
-                noise=sonar_custom_noise.rescaled(1.0),
+                noise=sonar_custom_noise.clone(),
                 blend_mode=blend_mode,
                 ffilter=ffilter,
                 ffilter_scale=ffilter_scale,

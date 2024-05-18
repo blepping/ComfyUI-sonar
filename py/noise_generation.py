@@ -54,7 +54,7 @@ class NoiseError(Exception):
 
 
 def scale_noise(noise, factor=1.0, *, normalized=True, threshold_std_devs=2.5):
-    if not normalized:
+    if not normalized or noise.numel() == 0:
         return noise.mul_(factor) if factor != 1 else noise
     mean, std = noise.mean().item(), noise.std().item()
     threshold = threshold_std_devs / math.sqrt(noise.numel())
@@ -371,7 +371,7 @@ def generate_1f_noise(tensor, alpha, k, generator=None):
         A tensor with the same shape as `tensor` containing 1/f noise.
     """
     fft = torch.fft.fft2(tensor)
-    freq = torch.arange(1, fft.numel() + 1, dtype=torch.float)
+    freq = torch.arange(1, len(fft) + 1, dtype=torch.float)
     spectral_density = k / freq**alpha
     return torch.randn(tensor.shape, generator=generator) * spectral_density
 
@@ -399,8 +399,8 @@ def power_noise_like(tensor, alpha=2, k=1):  # This doesn't work properly right 
     """
     tensor = torch.randn_like(tensor)
     fft = torch.fft.fft2(tensor)
-    freq = torch.arange(1, fft.numel() + 1, dtype=torch.float).reshape(
-        (fft.numel(),) + (1,) * (tensor.dim() - 1),
+    freq = torch.arange(1, len(fft) + 1, dtype=torch.float).reshape(
+        (len(fft),) + (1,) * (tensor.dim() - 1),
     )
     spectral_density = k / freq**alpha
     noise = torch.rand(tensor.shape).mul_(spectral_density)

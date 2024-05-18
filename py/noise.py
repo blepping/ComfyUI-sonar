@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import abc
-import functools as fun
-import operator as op
 from typing import Callable
 
 import comfy
@@ -34,7 +32,7 @@ class CustomNoiseItemBase(abc.ABC):
         return self
 
     def get_normalize(self, k, default=None):
-        val = getattr(self, k)
+        val = getattr(self, k, None)
         return default if val is None else val
 
     @abc.abstractmethod
@@ -74,7 +72,7 @@ class CustomNoiseItem(CustomNoiseItemBase):
             seed=seed,
             cpu=cpu,
             factor=self.factor,
-            normalized=normalized,
+            normalized=self.get_normalize("normalize", normalized),
         )
 
 
@@ -131,13 +129,14 @@ class CustomNoiseChain:
         factor = self.factor
 
         def noise_sampler(sigma, sigma_next):
-            result = fun.reduce(
-                op.add,
-                (ns(sigma, sigma_next) for ns in noise_samplers),
-            )
-            if normalized:
-                return scale_noise(result, factor)
-            return result.mul_(factor)
+            result = None
+            for ns in noise_samplers:
+                noise = ns(sigma, sigma_next)
+                if result is None:
+                    result = noise
+                else:
+                    result += noise
+            return scale_noise(result, factor, normalized=normalized)
 
         return noise_sampler
 
@@ -155,6 +154,11 @@ class NoiseSampler:
         normalized=False,
         factor: float = 1.0,
     ):
+        self.factor = factor
+        self.normalized = normalized
+        self.transform = transform
+        self.device = x.device
+        self.dtype = x.dtype
         try:
             self.noise_sampler = make_noise_sampler(
                 x,
@@ -166,14 +170,10 @@ class NoiseSampler:
                 else None,
                 seed=seed,
                 cpu=cpu,
+                normalized=normalized,
             )
-        except TypeError:
+        except TypeError as _exc:
             self.noise_sampler = make_noise_sampler(x)
-        self.factor = factor
-        self.normalized = normalized
-        self.transform = transform
-        self.device = x.device
-        self.dtype = x.dtype
 
     @classmethod
     def simple(cls, f):
@@ -192,11 +192,7 @@ class NoiseSampler:
             self.transform(torch.as_tensor(s)) if s is not None else s for s in args
         )
         noise = self.noise_sampler(*args, **kwargs)
-        noise = (
-            scale_noise(noise, self.factor)
-            if self.normalized
-            else noise.mul_(self.factor)
-        )
+        noise = scale_noise(noise, self.factor, normalized=self.normalized)
         if hasattr(noise, "to"):
             noise = noise.to(dtype=self.dtype, device=self.device)
         return noise
@@ -380,12 +376,12 @@ class ScheduledNoise(CustomNoiseItemBase):
         factor = self.factor
         start_sigma, end_sigma = self.start_sigma, self.end_sigma
         normalize = self.get_normalize("normalize", normalized)
-        ns = self.noise.make_noise_sampler(x, *args, normalized=normalize, **kwargs)
+        ns = self.noise.make_noise_sampler(x, *args, normalized=False, **kwargs)
         if self.fallback_noise:
             nsa = self.fallback_noise.make_noise_sampler(
                 x,
                 *args,
-                normalized=normalize,
+                normalized=False,
                 **kwargs,
             )
         else:
@@ -395,7 +391,7 @@ class ScheduledNoise(CustomNoiseItemBase):
 
         def noise_sampler(s, sn):
             noise = (ns if end_sigma <= s <= start_sigma else nsa)(s, sn)
-            return scale_noise(noise, factor, normalized=False)
+            return scale_noise(noise, factor, normalized=normalize)
 
         return noise_sampler
 
@@ -430,7 +426,7 @@ class RepeatedNoise(CustomNoiseItemBase):
         repeat_length, max_recycle = self.repeat_length, self.max_recycle
         permute = self.permute
         normalize = self.get_normalize("normalize", normalized)
-        ns = self.noise.make_noise_sampler(x, *args, normalized=normalize, **kwargs)
+        ns = self.noise.make_noise_sampler(x, *args, normalized=False, **kwargs)
         noise_items = []
         permute_options = 2
         u32_max = 0xFFFF_FFFF
@@ -492,7 +488,7 @@ class RepeatedNoise(CustomNoiseItemBase):
                     dim = rands[2] % noise_dims
                     count = rands[3] % noise.shape[dim]
                     noise = torch.roll(noise, count, dims=(dim,)).clone()
-            return scale_noise(noise, factor, normalized=False)
+            return scale_noise(noise, factor, normalized=normalize)
 
         return noise_sampler
 

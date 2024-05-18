@@ -6,19 +6,26 @@ from .external import MODULES as EXTERNAL_MODULES
 from .powernoise import PowerFilter
 
 
-def ffilter(x, pfilter, normalization_factor=1.0):
-    filter_rfft = PowerFilter.normalize(
-        pfilter.build(x.shape),
-        x.shape,
-        normalization_factor=normalization_factor,
-    ).to(device="cpu")
-    x_rfft = torch.fft.rfft2(x.to(torch.float32), norm="ortho").to(device="cpu")
+def ffilter(x, pfilter, normalization_factor=1.0, cfg_idx=None, filter_cache=None):
+    cache_key = None
+    if filter_cache is not None and cfg_idx is not None:
+        cache_key = (cfg_idx, x.shape[-2:])
+        filter_rfft = filter_cache.get(cache_key)
+    if filter_rfft is None:
+        filter_rfft = PowerFilter.normalize(
+            pfilter.build(x.shape),
+            x.shape,
+            normalization_factor=normalization_factor,
+        ).to(x.device, non_blocking=True)
+    if cache_key:
+        filter_cache[cache_key] = filter_rfft
+    x_rfft = torch.fft.rfft2(x.to(torch.float32), norm="ortho")
     x_filt = torch.fft.irfft2(
         x_rfft.mul_(filter_rfft),
         s=x.shape[-2:],
         norm="ortho",
     )
-    return x_filt.to(x.device, x.dtype)
+    return x_filt.to(x.dtype, non_blocking=True)
 
 
 class FreeUExtremeConfigNode:
@@ -138,6 +145,7 @@ class FreeUExtremeConfig:
             if (
                 cfg.start >= 1
                 or cfg.end <= 0
+                or cfg.blend == 0
                 or not (cfg.stage_1 or cfg.stage_2 or cfg.stage_3)
             ):
                 continue
@@ -158,7 +166,10 @@ class FreeUExtremeNode:
     @classmethod
     def INPUT_TYPES(cls):
         return {
-            "required": {"model": ("MODEL",)},
+            "required": {
+                "model": ("MODEL",),
+                "cpu_fft": ("BOOLEAN", {"default": False}),
+            },
             "optional": {
                 "input_config": ("FRUX_CONFIG",),
                 "middle_config": ("FRUX_CONFIG",),
@@ -166,7 +177,14 @@ class FreeUExtremeNode:
             },
         }
 
-    def go(self, model, input_config=None, middle_config=None, output_config=None):
+    def go(
+        self,
+        model,
+        cpu_fft,
+        input_config=None,
+        middle_config=None,
+        output_config=None,
+    ):
         model_channels = model.model.model_config.unet_config["model_channels"]
         stages = {model_channels * 4: 1, model_channels * 2: 2, model_channels: 3}
         icfg = [] if input_config is None else input_config.get_config_list()
@@ -179,6 +197,7 @@ class FreeUExtremeNode:
             if "bleh" not in EXTERNAL_MODULES
             else EXTERNAL_MODULES["bleh"].py.latent_utils.BLENDING_MODES
         )
+        filter_cache = {}
 
         # Hidden mean function modified from https://github.com/WASasquatch/FreeU_Advanced
         def hidden_mean(h):
@@ -198,7 +217,7 @@ class FreeUExtremeNode:
 
             if stage is None:
                 return x
-            for ci in cfg:
+            for idx, ci in enumerate(cfg):
                 if pct < ci.start or pct > ci.end:
                     continue
                 if not getattr(ci, f"stage_{stage}"):
@@ -214,12 +233,26 @@ class FreeUExtremeNode:
                 xslice = x[:, slice_offs : slice_offs + slice_size]
                 filt = getattr(ci, "sonar_power_filter", None)
                 if filt is not None:
-                    xslice = ffilter(xslice, filt, normalization_factor=ci.filter_norm)
+                    if cpu_fft:
+                        xslice = xslice.to("cpu")
+                    xslice = ffilter(
+                        xslice,
+                        filt,
+                        normalization_factor=ci.filter_norm,
+                        cfg_idx=idx,
+                        filter_cache=filter_cache,
+                    )
+                    if cpu_fft:
+                        xslice = xslice.to(x.device)
                 xslice = xslice * scale
-                x[:, slice_offs : slice_offs + slice_size] = blend_ops[ci.blend_mode](
-                    x[:, slice_offs : slice_offs + slice_size],
-                    xslice,
-                    ci.blend,
+                x[:, slice_offs : slice_offs + slice_size] = (
+                    xslice
+                    if ci.blend == 1.0
+                    else blend_ops[ci.blend_mode](
+                        x[:, slice_offs : slice_offs + slice_size],
+                        xslice,
+                        ci.blend,
+                    )
                 )
                 if ci.final:
                     break
