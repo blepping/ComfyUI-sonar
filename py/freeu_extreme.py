@@ -28,6 +28,13 @@ def ffilter(x, pfilter, normalization_factor=1.0, cfg_idx=None, filter_cache=Non
     return x_filt.to(x.dtype, non_blocking=True)
 
 
+BLEND_OPS = (
+    {"lerp": torch.lerp}
+    if "bleh" not in EXTERNAL_MODULES
+    else EXTERNAL_MODULES["bleh"].py.latent_utils.BLENDING_MODES
+)
+
+
 class FreeUExtremeConfigNode:
     RETURN_TYPES = ("FRUX_CONFIG",)
     FUNCTION = "go"
@@ -84,9 +91,9 @@ class FreeUExtremeConfigNode:
                 "filter_norm": (
                     "FLOAT",
                     {
-                        "default": 1.0,
-                        "min": 0.0,
-                        "max": 1.0,
+                        "default": 0.0,
+                        "min": -10.0,
+                        "max": 10.0,
                         "step": 0.1,
                         "round": False,
                     },
@@ -111,13 +118,7 @@ class FreeUExtremeConfigNode:
                         "round": False,
                     },
                 ),
-                "blend_mode": (
-                    ("lerp",)
-                    if "bleh" not in EXTERNAL_MODULES
-                    else tuple(
-                        EXTERNAL_MODULES["bleh"].py.latent_utils.BLENDING_MODES.keys(),
-                    ),
-                ),
+                "blend_mode": (tuple(BLEND_OPS.keys()),),
                 "hidden_mean": ("BOOLEAN", {"default": True}),
                 "final": ("BOOLEAN", {"default": True}),
             },
@@ -132,15 +133,66 @@ class FreeUExtremeConfigNode:
 
 
 class FreeUExtremeConfig:
-    def __init__(self, **kwargs: dict):
-        self._keys = tuple(kwargs.keys())
-        for k, v in kwargs.items():
-            setattr(self, k, v)
+    _keys = (
+        "target",
+        "stage_1",
+        "stage_2",
+        "stage_3",
+        "start",
+        "end",
+        "slice",
+        "slice_offset",
+        "filter_norm",
+        "scale",
+        "blend",
+        "blend_mode",
+        "hidden_mean",
+        "final",
+        "sonar_power_filter",
+        "frux_config",
+    )
+
+    def __init__(
+        self,
+        *,
+        target,
+        stage_1=False,
+        stage_2=False,
+        stage_3=False,
+        start=0.0,
+        end=1.0,
+        slice=1.0,  # noqa: A002
+        slice_offset=0.0,
+        filter_norm=1.0,
+        scale=1.0,
+        blend=1.0,
+        blend_mode=None,
+        hidden_mean=True,
+        final=True,
+        sonar_power_filter=None,
+        frux_config=None,
+    ):
+        self.target = target
+        self.stage_1 = stage_1
+        self.stage_2 = stage_2
+        self.stage_3 = stage_3
+        self.start = start
+        self.end = end
+        self.slice = slice
+        self.slice_offset = slice_offset
+        self.filter_norm = filter_norm
+        self.scale = scale
+        self.blend = blend
+        self.blend_mode = blend_mode
+        self.hidden_mean = hidden_mean
+        self.final = final
+        self.sonar_power_filter = sonar_power_filter
+        self.frux_config = frux_config
 
     def get_config_list(self):
         result = [self]
         curr = self
-        while cfg := getattr(curr, "frux_config", None):
+        while cfg := curr.frux_config:
             curr = cfg
             if (
                 cfg.start >= 1
@@ -153,7 +205,76 @@ class FreeUExtremeConfig:
         result.reverse()
         return result
 
-    def __str__(self):  # noqa: D105
+    # Hidden mean function modified from https://github.com/WASasquatch/FreeU_Advanced
+    def get_scale(self, h: torch.Tensor) -> torch.Tensor:
+        if not self.hidden_mean:
+            return self.scale
+        hmean = h.mean(1).unsqueeze(1)
+        hmax, hmin = (
+            op(hmean.view(hmean.shape[0], -1), dim=-1, keepdim=True)[0]
+            for op in (torch.max, torch.min)
+        )
+        hmean -= hmin.unsqueeze(2).unsqueeze(3)
+        hmean /= (hmax - hmin).unsqueeze(2).unsqueeze(3)
+        return 1.0 + (self.scale - 1.0) * hmean
+
+    def check_match(self, pct, stage, is_skip=False):
+        if pct < self.start or pct > self.end:
+            return False
+        if not getattr(self, f"stage_{stage}"):
+            return False
+        if self.target not in ("skip" if is_skip else "backbone", "both"):
+            return False
+        return True
+
+    def apply(self, idx, x, filter_cache, cpu_fft=False):
+        batch, features, height, width = x.shape
+        scale = self.get_scale(x)
+        slice_size = int(features * self.slice)
+        slice_offs = int(features * self.slice_offset)
+
+        xslice = (
+            self.apply_filter(
+                idx,
+                x[:, slice_offs : slice_offs + slice_size],
+                filter_cache,
+                cpu_fft=cpu_fft,
+            )
+            * scale
+        )
+        x[:, slice_offs : slice_offs + slice_size] = (
+            xslice
+            if self.blend == 1.0
+            else BLEND_OPS[self.blend_mode](
+                x[:, slice_offs : slice_offs + slice_size],
+                xslice,
+                self.blend,
+            )
+        )
+        return x
+
+    def apply_filter(self, idx, xslice, filter_cache, cpu_fft=False):
+        filt = self.sonar_power_filter
+        if filt is None:
+            return xslice
+        device = xslice.device
+        if cpu_fft:
+            xslice = xslice.to("cpu")
+        xslice = ffilter(
+            xslice,
+            filt,
+            normalization_factor=self.filter_norm,
+            cfg_idx=idx,
+            filter_cache=filter_cache,
+        )
+        if cpu_fft:
+            xslice = xslice.to(device)
+        return xslice
+
+    def clone(self):
+        return self.__class__(**{k: getattr(self, k) for k in self._keys})
+
+    def __repr__(self):  # noqa: D105
         meh = {k: getattr(self, k) for k in self._keys}
         return f"<FRUXConfig: {meh}>"
 
@@ -187,89 +308,37 @@ class FreeUExtremeNode:
     ):
         model_channels = model.model.model_config.unet_config["model_channels"]
         stages = {model_channels * 4: 1, model_channels * 2: 2, model_channels: 3}
-        icfg = [] if input_config is None else input_config.get_config_list()
-        mcfg = [] if middle_config is None else middle_config.get_config_list()
-        ocfg = [] if output_config is None else output_config.get_config_list()
+        icfg, mcfg, ocfg = (
+            () if cfg is None else cfg.get_config_list()
+            for cfg in (input_config, middle_config, output_config)
+        )
         m = model.clone()
         ms = m.get_model_object("model_sampling")
-        blend_ops = (
-            {"lerp": torch.lerp}
-            if "bleh" not in EXTERNAL_MODULES
-            else EXTERNAL_MODULES["bleh"].py.latent_utils.BLENDING_MODES
-        )
         filter_cache = {}
 
-        # Hidden mean function modified from https://github.com/WASasquatch/FreeU_Advanced
-        def hidden_mean(h):
-            hmean = h.mean(1).unsqueeze(1)
-            hmax, hmin = (
-                op(hmean.view(hmean.shape[0], -1), dim=-1, keepdim=True)[0]
-                for op in (torch.max, torch.min)
-            )
-            hmean -= hmin.unsqueeze(2).unsqueeze(3)
-            hmean /= (hmax - hmin).unsqueeze(2).unsqueeze(3)
-            return hmean
-
-        def handler(_typ, stage, cfg, x, toptions, is_skip=False):
-            batch, features, height, width = x.shape
-            sigma = toptions["sigmas"].max().detach().cpu()
-            pct = 1.0 - (ms.timestep(sigma) / 999.0)
-
+        def handler(_typ, h_shape, cfg, x, toptions, is_skip=False):
+            stage = stages.get(h_shape[1])
             if stage is None:
                 return x
+            sigma = toptions["sigmas"].max().detach().cpu()
+            pct = 1.0 - (ms.timestep(sigma) / 999.0)
             for idx, ci in enumerate(cfg):
-                if pct < ci.start or pct > ci.end:
+                if not ci.check_match(pct, stage, is_skip):
                     continue
-                if not getattr(ci, f"stage_{stage}"):
-                    continue
-                if ci.target not in ("skip" if is_skip else "backbone", "both"):
-                    continue
-                scale = ci.scale
-                if ci.hidden_mean:
-                    scale = 1.0 + (scale - 1.0) * hidden_mean(x)
-                slice_size = int(features * ci.slice)
-                slice_offs = int(features * ci.slice_offset)
-
-                xslice = x[:, slice_offs : slice_offs + slice_size]
-                filt = getattr(ci, "sonar_power_filter", None)
-                if filt is not None:
-                    if cpu_fft:
-                        xslice = xslice.to("cpu")
-                    xslice = ffilter(
-                        xslice,
-                        filt,
-                        normalization_factor=ci.filter_norm,
-                        cfg_idx=idx,
-                        filter_cache=filter_cache,
-                    )
-                    if cpu_fft:
-                        xslice = xslice.to(x.device)
-                xslice = xslice * scale
-                x[:, slice_offs : slice_offs + slice_size] = (
-                    xslice
-                    if ci.blend == 1.0
-                    else blend_ops[ci.blend_mode](
-                        x[:, slice_offs : slice_offs + slice_size],
-                        xslice,
-                        ci.blend,
-                    )
-                )
+                x = ci.apply(idx, x, filter_cache, cpu_fft=cpu_fft)
                 if ci.final:
                     break
             return x
 
         def in_patch(h, toptions):
-            stage = stages.get(h.shape[1])
-            return handler("input", stage, icfg, h, toptions)
+            return handler("input", h.shape, icfg, h, toptions)
 
         def mid_patch(h, toptions):
-            stage = stages.get(h.shape[1])
-            return handler("middle", stage, mcfg, h, toptions)
+            return handler("middle", h.shape, mcfg, h, toptions)
 
         def out_patch(h, hsp, toptions):
-            stage = stages.get(h.shape[1])
-            h = handler("output", stage, ocfg, h, toptions)
-            hsp = handler("output", stage, ocfg, hsp, toptions, is_skip=True)
+            h = handler("output", h.shape, ocfg, h, toptions)
+            hsp = handler("output", h.shape, ocfg, hsp, toptions, is_skip=True)
             return h, hsp
 
         if icfg:

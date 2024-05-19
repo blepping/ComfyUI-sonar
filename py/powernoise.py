@@ -446,7 +446,7 @@ def rfft2_to_fft2(x):
     x_l = torch.flip(x_l.conj(), dims=(-2, -1))
     if height & 1 == 0:
         x_l = x_l.roll(1, -2)
-    return torch.cat([x_l, x_r], dim=-1)
+    return torch.cat((x_l, x_r), dim=-1)
 
 
 class PowerFilterNoiseItem(PowerNoiseItem):
@@ -860,11 +860,22 @@ class SonarPreviewFilterNode:
                         "round": False,
                     },
                 ),
+                "norm_factor": (
+                    "FLOAT",
+                    {
+                        "default": 1.0,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.1,
+                        "round": False,
+                    },
+                ),
                 "preview_size": (
                     (
+                        "128x128",
+                        "256x256",
                         "384x256",
                         "256x384",
-                        "256x256",
                         "768x512",
                         "512x768",
                         "768x768",
@@ -880,6 +891,7 @@ class SonarPreviewFilterNode:
         sonar_power_filter,
         filter_gain=1 / 3,
         kernel_gain=1 / 3,
+        norm_factor=1.0,
         preview_size="256x256",
     ):
         filt = sonar_power_filter.clone()
@@ -890,6 +902,7 @@ class SonarPreviewFilterNode:
                 size=(preview_size[1], preview_size[0]),
                 filter_gain=filter_gain,
                 kernel_gain=kernel_gain,
+                normalization_factor=norm_factor,
             ),
             (filt,),
         )

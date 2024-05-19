@@ -170,7 +170,6 @@ class NoiseSampler:
                 else None,
                 seed=seed,
                 cpu=cpu,
-                normalized=normalized,
             )
         except TypeError as _exc:
             self.noise_sampler = make_noise_sampler(x)
