@@ -123,8 +123,8 @@ class FreeUExtremeConfigNode:
                 "final": ("BOOLEAN", {"default": True}),
             },
             "optional": {
-                "sonar_power_filter": ("SONAR_POWER_FILTER",),
-                "frux_config": ("FRUX_CONFIG",),
+                "sonar_power_filter_opt": ("SONAR_POWER_FILTER",),
+                "frux_config_opt": ("FRUX_CONFIG",),
             },
         }
 
@@ -169,8 +169,8 @@ class FreeUExtremeConfig:
         blend_mode=None,
         hidden_mean=True,
         final=True,
-        sonar_power_filter=None,
-        frux_config=None,
+        sonar_power_filter_opt=None,
+        frux_config_opt=None,
     ):
         self.target = target
         self.stage_1 = stage_1
@@ -186,8 +186,8 @@ class FreeUExtremeConfig:
         self.blend_mode = blend_mode
         self.hidden_mean = hidden_mean
         self.final = final
-        self.sonar_power_filter = sonar_power_filter
-        self.frux_config = frux_config
+        self.sonar_power_filter = sonar_power_filter_opt
+        self.frux_config = frux_config_opt
 
     def get_config_list(self):
         result = [self]
