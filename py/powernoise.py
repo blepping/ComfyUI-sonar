@@ -69,8 +69,10 @@ class ChannelMixer:
                 ),
             ),
         )
-        channel_mixer = torch.eye(c)
-        channel_mixer[*torch.tril_indices(c, c, offset=-1)] = channel_correlation
+        channel_mixer = torch.eye(c).index_put_(
+            tuple(torch.tril_indices(c, c, offset=-1)),
+            channel_correlation,
+        )
         channel_mixer += channel_mixer.tril(-1).mT
         channel_mixer = torch.linalg.ldl_factor(channel_mixer).LD
         dc = torch.diagonal_copy(channel_mixer)
