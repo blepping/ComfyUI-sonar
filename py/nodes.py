@@ -8,8 +8,9 @@ from typing import Any, Callable
 import torch
 from comfy import samplers
 
-from . import noise
+from . import external, noise
 from .noise import NoiseType
+from .noise_generation import scale_noise
 from .sonar import (
     GuidanceConfig,
     GuidanceType,
@@ -74,39 +75,51 @@ class NoisyLatentLikeNode:
                 )
                 / latent_scale_factor
             )
+        if sigmas is not None and sigmas.numel() > 1:
+            sigma_min, sigma_max = sigmas[0], sigmas[-1]
+            sigma, sigma_next = sigmas[0], sigmas[1]
+        else:
+            sigma_min, sigma_max, sigma, sigma_next = (None,) * 4
         latent_samples = latent["samples"]
         if custom_noise_opt is not None:
-            ns = custom_noise_opt.make_noise_sampler(latent_samples)
+            ns = custom_noise_opt.make_noise_sampler(
+                latent_samples,
+                sigma_min=sigma_min,
+                sigma_max=sigma_max,
+            )
         else:
             ns = noise.get_noise_sampler(
                 NoiseType[noise_type.upper()],
                 latent_samples,
-                None,
-                None,
+                sigma_min,
+                sigma_max,
                 seed=seed,
                 cpu=True,
             )
         randst = torch.random.get_rng_state()
         try:
             torch.random.manual_seed(seed)
-            result = ns(None, None)
+            result = ns(sigma, sigma_next)
         finally:
             torch.random.set_rng_state(randst)
-        if multiplier != 1.0:
-            result *= multiplier
+        result = scale_noise(result, multiplier, normalized=True)
         if add_to_latent:
-            result += latent_samples.to(result.device)
+            result += latent_samples.to(result)
         return ({"samples": result},)
 
 
 class SonarCustomNoiseNodeBase(abc.ABC):
+    RETURN_TYPES = ("SONAR_CUSTOM_NOISE",)
+    CATEGORY = "advanced/noise"
+    FUNCTION = "go"
+
     @abc.abstractmethod
     def get_item_class(self):
         raise NotImplementedError
 
     @classmethod
-    def INPUT_TYPES(cls):
-        return {
+    def INPUT_TYPES(cls, *, include_rescale=True, include_chain=True):
+        result = {
             "required": {
                 "factor": (
                     "FLOAT",
@@ -118,6 +131,11 @@ class SonarCustomNoiseNodeBase(abc.ABC):
                         "round": False,
                     },
                 ),
+            },
+            "optional": {},
+        }
+        if include_rescale:
+            result["required"] |= {
                 "rescale": (
                     "FLOAT",
                     {
@@ -128,20 +146,17 @@ class SonarCustomNoiseNodeBase(abc.ABC):
                         "round": False,
                     },
                 ),
-            },
-            "optional": {
+            }
+        if include_chain:
+            result["optional"] |= {
                 "sonar_custom_noise_opt": ("SONAR_CUSTOM_NOISE",),
-            },
-        }
-
-    RETURN_TYPES = ("SONAR_CUSTOM_NOISE",)
-    CATEGORY = "advanced/noise"
-    FUNCTION = "go"
+            }
+        return result
 
     def go(
         self,
-        factor,
-        rescale,
+        factor=1.0,
+        rescale=0.0,
         sonar_custom_noise_opt=None,
         **kwargs: dict[str, Any],
     ):
@@ -168,62 +183,265 @@ class SonarCustomNoiseNode(SonarCustomNoiseNodeBase):
         return noise.CustomNoiseItem
 
 
-class SonarModulatedNoiseNode:
+class SonarNormalizeNoiseNodeMixin:
+    @staticmethod
+    def get_normalize(val: str) -> None | bool:
+        return None if val == "default" else val == "forced"
+
+
+class SonarModulatedNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMixin):
     @classmethod
     def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "sonar_custom_noise": ("SONAR_CUSTOM_NOISE",),
-                "modulation_type": (
-                    (
-                        "intensity",
-                        "frequency",
-                        "spectral_signum",
-                        "none",
-                    ),
+        result = super().INPUT_TYPES(include_rescale=False, include_chain=False)
+        result["required"] |= {
+            "sonar_custom_noise": ("SONAR_CUSTOM_NOISE",),
+            "modulation_type": (
+                (
+                    "intensity",
+                    "frequency",
+                    "spectral_signum",
+                    "none",
                 ),
-                "dims": ("INT", {"default": 3, "min": 1, "max": 3}),
-                "strength": ("FLOAT", {"default": 2.0, "min": -100.0, "max": 100.0}),
-            },
-        }
-
-    RETURN_TYPES = ("SONAR_CUSTOM_NOISE",)
-    CATEGORY = "advanced/noise"
-    FUNCTION = "go"
-
-    def go(self, sonar_custom_noise, modulation_type, dims, strength):
-        return (
-            noise.ModulatedNoise(
-                sonar_custom_noise.make_noise_sampler,
-                modulation_type=modulation_type,
-                modulation_strength=strength,
-                modulation_dims=dims,
             ),
+            "dims": ("INT", {"default": 3, "min": 1, "max": 3}),
+            "strength": ("FLOAT", {"default": 2.0, "min": -100.0, "max": 100.0}),
+            "normalize_result": (("default", "forced", "disabled"),),
+            "normalize_noise": (("default", "forced", "disabled"),),
+            "normalize_ref": (
+                "BOOLEAN",
+                {"default": True},
+            ),
+        }
+        result["optional"] |= {"ref_latent_opt": ("LATENT",)}
+        return result
+
+    def get_item_class(self):
+        return noise.ModulatedNoise
+
+    def go(
+        self,
+        factor,
+        sonar_custom_noise,
+        modulation_type,
+        dims,
+        strength,
+        normalize_result,
+        normalize_noise,
+        normalize_ref,
+        ref_latent_opt=None,
+    ):
+        if ref_latent_opt is not None:
+            ref_latent_opt = ref_latent_opt["samples"].clone()
+        return super().go(
+            factor,
+            noise=sonar_custom_noise,
+            modulation_type=modulation_type,
+            modulation_dims=dims,
+            modulation_strength=strength,
+            normalize_result=self.get_normalize(normalize_result),
+            normalize_noise=self.get_normalize(normalize_noise),
+            normalize_ref=self.get_normalize(normalize_ref),
+            ref_latent_opt=ref_latent_opt,
         )
 
 
-class SonarRepeatedNoiseNode:
+class SonarRepeatedNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMixin):
     @classmethod
     def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "sonar_custom_noise": ("SONAR_CUSTOM_NOISE",),
-                "repeat_length": ("INT", {"default": 8, "min": 1, "max": 100}),
-                "permute": ("BOOLEAN", {"default": True}),
-            },
+        result = super().INPUT_TYPES(include_rescale=False, include_chain=False)
+        result["required"] |= {
+            "sonar_custom_noise": ("SONAR_CUSTOM_NOISE",),
+            "repeat_length": ("INT", {"default": 8, "min": 1, "max": 100}),
+            "max_recycle": ("INT", {"default": 1000, "min": 1, "max": 1000}),
+            "normalize": (("default", "forced", "disabled"),),
+            "permute": (("enabled", "disabled", "always"),),
+        }
+        return result
+
+    def get_item_class(self):
+        return noise.RepeatedNoise
+
+    def go(
+        self,
+        factor,
+        sonar_custom_noise,
+        repeat_length,
+        max_recycle,
+        normalize,
+        permute=True,
+    ):
+        return super().go(
+            factor,
+            noise=sonar_custom_noise,
+            repeat_length=repeat_length,
+            max_recycle=max_recycle,
+            normalize=self.get_normalize(normalize),
+            permute=permute,
+        )
+
+
+class SonarScheduledNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMixin):
+    @classmethod
+    def INPUT_TYPES(cls):
+        result = super().INPUT_TYPES(include_rescale=False, include_chain=False)
+        result["required"] |= {
+            "model": ("MODEL",),
+            "sonar_custom_noise": ("SONAR_CUSTOM_NOISE",),
+            "start_percent": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0}),
+            "end_percent": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0}),
+            "normalize": (("default", "forced", "disabled"),),
+        }
+        result["optional"] |= {"fallback_sonar_custom_noise": ("SONAR_CUSTOM_NOISE",)}
+        return result
+
+    def get_item_class(self):
+        return noise.ScheduledNoise
+
+    def go(
+        self,
+        model,
+        factor,
+        sonar_custom_noise,
+        start_percent,
+        end_percent,
+        normalize,
+        fallback_sonar_custom_noise=None,
+    ):
+        ms = model.get_model_object("model_sampling")
+        start_sigma = ms.percent_to_sigma(start_percent)
+        end_sigma = ms.percent_to_sigma(end_percent)
+        return super().go(
+            factor,
+            noise=sonar_custom_noise,
+            start_sigma=start_sigma,
+            end_sigma=end_sigma,
+            normalize=self.get_normalize(normalize),
+            fallback_noise=fallback_sonar_custom_noise,
+        )
+
+
+class SonarCompositeNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMixin):
+    @classmethod
+    def INPUT_TYPES(cls):
+        result = super().INPUT_TYPES(include_rescale=False, include_chain=False)
+        result["required"] |= {
+            "sonar_custom_noise_dst": ("SONAR_CUSTOM_NOISE",),
+            "sonar_custom_noise_src": ("SONAR_CUSTOM_NOISE",),
+            "normalize_dst": (("default", "forced", "disabled"),),
+            "normalize_src": (("default", "forced", "disabled"),),
+            "normalize_result": (("default", "forced", "disabled"),),
+            "mask": ("MASK",),
+        }
+        return result
+
+    def get_item_class(self):
+        return noise.CompositeNoise
+
+    def go(
+        self,
+        factor,
+        sonar_custom_noise_dst,
+        sonar_custom_noise_src,
+        normalize_src,
+        normalize_dst,
+        normalize_result,
+        mask,
+    ):
+        return super().go(
+            factor,
+            dst_noise=sonar_custom_noise_dst,
+            src_noise=sonar_custom_noise_src,
+            normalize_dst=self.get_normalize(normalize_src),
+            normalize_src=self.get_normalize(normalize_dst),
+            normalize_result=self.get_normalize(normalize_result),
+            mask=mask,
+        )
+
+
+class SonarGuidedNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMixin):
+    @classmethod
+    def INPUT_TYPES(cls):
+        result = super().INPUT_TYPES(include_rescale=False, include_chain=False)
+        result["required"] |= {
+            "latent": ("LATENT",),
+            "sonar_custom_noise": ("SONAR_CUSTOM_NOISE",),
+            "method": (("euler", "linear"),),
+            "guidance_factor": (
+                "FLOAT",
+                {
+                    "default": 0.0125,
+                    "min": -100.0,
+                    "max": 100.0,
+                    "step": 0.001,
+                    "round": False,
+                },
+            ),
+            "normalize_noise": (("default", "forced", "disabled"),),
+            "normalize_result": (("default", "forced", "disabled"),),
+            "normalize_ref": (
+                "BOOLEAN",
+                {"default": True},
+            ),
+        }
+        return result
+
+    def get_item_class(self):
+        return noise.GuidedNoise
+
+    def go(
+        self,
+        factor,
+        latent,
+        sonar_custom_noise,
+        normalize_noise,
+        normalize_result,
+        normalize_ref=True,
+        method="euler",
+        guidance_factor=0.5,
+    ):
+        from .sonar import SonarGuidanceMixin
+
+        return super().go(
+            factor,
+            ref_latent=scale_noise(
+                SonarGuidanceMixin.prepare_ref_latent(latent["samples"].clone()),
+                normalized=normalize_ref,
+            ),
+            guidance_factor=guidance_factor,
+            noise=sonar_custom_noise.clone(),
+            method=method,
+            normalize_noise=self.get_normalize(normalize_noise),
+            normalize_result=self.get_normalize(normalize_result),
+        )
+
+
+class SonarRandomNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMixin):
+    @classmethod
+    def INPUT_TYPES(cls):
+        result = super().INPUT_TYPES(include_rescale=False, include_chain=False)
+        result["required"] |= {
+            "sonar_custom_noise": ("SONAR_CUSTOM_NOISE",),
+            "mix_count": ("INT", {"default": 1, "min": 1, "max": 100}),
+            "normalize": (("default", "forced", "disabled"),),
         }
 
-    RETURN_TYPES = ("SONAR_CUSTOM_NOISE",)
-    CATEGORY = "advanced/noise"
-    FUNCTION = "go"
+        return result
 
-    def go(self, sonar_custom_noise, repeat_length, permute=True):
-        return (
-            noise.RepeatedNoise(
-                sonar_custom_noise.make_noise_sampler,
-                repeat_length,
-                permute=permute,
-            ),
+    def get_item_class(self):
+        return noise.RandomNoise
+
+    def go(
+        self,
+        factor,
+        sonar_custom_noise,
+        mix_count,
+        normalize,
+    ):
+        return super().go(
+            factor,
+            noise=sonar_custom_noise,
+            mix_count=mix_count,
+            normalize=self.get_normalize(normalize),
         )
 
 
@@ -540,6 +758,8 @@ class SamplerNodeConfigOverride:
                     },
                 ),
                 "sde_solver": (("midpoint", "heun"),),
+                "cpu_noise": ("BOOLEAN", {"default": True}),
+                "normalize": ("BOOLEAN", {"default": True}),
             },
             "optional": {
                 "noise_type": (tuple(NoiseType.get_names()),),
@@ -560,8 +780,10 @@ class SamplerNodeConfigOverride:
         s_churn,
         r,
         sde_solver,
+        cpu_noise=True,
         noise_type=None,
         custom_noise_opt=None,
+        normalize=True,
     ):
         return (
             samplers.KSAMPLER(
@@ -579,6 +801,8 @@ class SamplerNodeConfigOverride:
                         "s_churn": s_churn,
                         "r": r,
                         "solver_type": sde_solver,
+                        "cpu_noise": cpu_noise,
+                        "normalize": normalize,
                     },
                 },
                 inpaint_options=sampler.inpaint_options | {},
@@ -603,10 +827,12 @@ class SamplerNodeConfigOverride:
         if extra_args is None:
             extra_args = {}
         cfg = override_sampler_cfg
-        sampler, noise_type, custom_noise = (
+        sampler, noise_type, custom_noise, cpu, normalize = (
             cfg["sampler"],
             cfg.get("noise_type"),
             cfg.get("custom_noise"),
+            cfg.get("cpu_noise", True),
+            cfg.get("normalize", True),
         )
         sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
         seed = extra_args.get("seed")
@@ -616,6 +842,8 @@ class SamplerNodeConfigOverride:
                 sigma_min,
                 sigma_max,
                 seed=seed,
+                cpu=cpu,
+                normalized=normalize,
             )
         elif noise_type is not None:
             noise_sampler = noise.get_noise_sampler(
@@ -624,7 +852,8 @@ class SamplerNodeConfigOverride:
                 sigma_min,
                 sigma_max,
                 seed=seed,
-                cpu=True,
+                cpu=cpu,
+                normalized=normalize,
             )
         sig = inspect.signature(sampler.sampler_function)
         params = sig.parameters
@@ -649,23 +878,113 @@ NODE_CLASS_MAPPINGS = {
     "SamplerSonarEuler": SamplerNodeSonarEuler,
     "SamplerSonarEulerA": SamplerNodeSonarEulerAncestral,
     "SamplerSonarDPMPPSDE": SamplerNodeSonarDPMPPSDE,
+    "SonarGuidanceConfig": GuidanceConfigNode,
     "SamplerConfigOverride": SamplerNodeConfigOverride,
     "NoisyLatentLike": NoisyLatentLikeNode,
     "SonarCustomNoise": SonarCustomNoiseNode,
+    "SonarCompositeNoise": SonarCompositeNoiseNode,
     "SonarModulatedNoise": SonarModulatedNoiseNode,
     "SonarRepeatedNoise": SonarRepeatedNoiseNode,
-    "SonarGuidanceConfig": GuidanceConfigNode,
+    "SonarScheduledNoise": SonarScheduledNoiseNode,
+    "SonarGuidedNoise": SonarGuidedNoiseNode,
+    "SonarRandomNoise": SonarRandomNoiseNode,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {}
 
-try:
-    import custom_nodes.ComfyUI_restart_sampling as rs
 
-    if not hasattr(rs.restart_sampling, "DEFAULT_SEGMENTS"):
-        # Dumb test but this should only exist in restart sampling versions that
-        # support plugging in custom noise.
-        raise NotImplementedError  # noqa: TRY301
+if "bleh" in external.MODULES:
+    bleh = external.MODULES["bleh"]
+    bleh_latentutils = bleh.py.latent_utils
+
+    class SonarBlendFilterNoiseNode(
+        SonarCustomNoiseNodeBase,
+        SonarNormalizeNoiseNodeMixin,
+    ):
+        @classmethod
+        def INPUT_TYPES(cls):
+            result = super().INPUT_TYPES(include_rescale=False, include_chain=False)
+            result["required"] |= {
+                "sonar_custom_noise": ("SONAR_CUSTOM_NOISE",),
+                "blend_mode": (
+                    ("simple_add", *bleh_latentutils.BLENDING_MODES.keys()),
+                ),
+                "ffilter": (tuple(bleh_latentutils.FILTER_PRESETS.keys()),),
+                "ffilter_custom": ("STRING", {"default": ""}),
+                "ffilter_scale": (
+                    "FLOAT",
+                    {"default": 1.0, "min": -100.0, "max": 100.0},
+                ),
+                "ffilter_strength": (
+                    "FLOAT",
+                    {"default": 0.0, "min": -100.0, "max": 100.0},
+                ),
+                "ffilter_threshold": (
+                    "INT",
+                    {"default": 1, "min": 1, "max": 32},
+                ),
+                "enhance_mode": (("none", *bleh_latentutils.ENHANCE_METHODS),),
+                "enhance_strength": (
+                    "FLOAT",
+                    {"default": 0.0, "min": -100.0, "max": 100.0},
+                ),
+                "affect": (("result", "noise", "both"),),
+                "normalize_result": (("default", "forced", "disabled"),),
+                "normalize_noise": (("default", "forced", "disabled"),),
+            }
+            return result
+
+        def get_item_class(self):
+            return noise.BlendFilterNoise
+
+        def go(
+            self,
+            factor,
+            sonar_custom_noise,
+            blend_mode,
+            ffilter,
+            ffilter_custom,
+            ffilter_scale,
+            ffilter_strength,
+            ffilter_threshold,
+            enhance_mode,
+            enhance_strength,
+            affect,
+            normalize_result,
+            normalize_noise,
+        ):
+            import ast
+
+            ffilter_custom = ffilter_custom.strip()
+            normalize_result = (
+                None if normalize_result == "default" else normalize_result == "forced"
+            )
+            normalize_noise = (
+                None if normalize_noise == "default" else normalize_noise == "forced"
+            )
+            if ffilter_custom:
+                ffilter = ast.literal_eval(f"[{ffilter_custom}]")
+            else:
+                ffilter = bleh_latentutils.FILTER_PRESETS[ffilter]
+            return super().go(
+                factor,
+                noise=sonar_custom_noise.clone(),
+                blend_mode=blend_mode,
+                ffilter=ffilter,
+                ffilter_scale=ffilter_scale,
+                ffilter_strength=ffilter_strength,
+                ffilter_threshold=ffilter_threshold,
+                enhance_mode=enhance_mode,
+                enhance_strength=enhance_strength,
+                affect=affect,
+                normalize_noise=self.get_normalize(normalize_noise),
+                normalize_result=self.get_normalize(normalize_result),
+            )
+
+    NODE_CLASS_MAPPINGS["SonarBlendFilterNoise"] = SonarBlendFilterNoiseNode
+
+if "restart" in external.MODULES:
+    rs = external.MODULES["restart"]
 
     class KRestartSamplerCustomNoise:
         @classmethod
@@ -757,42 +1076,38 @@ try:
 
     NODE_CLASS_MAPPINGS["KRestartSamplerCustomNoise"] = KRestartSamplerCustomNoise
 
-    if not hasattr(rs.restart_sampling, "RestartSampler"):
-        # Dumb test part II: The Dumbening
-        raise NotImplementedError  # noqa: TRY301
+    if hasattr(rs.restart_sampling, "RestartSampler"):
 
-    class RestartSamplerCustomNoise:
-        @classmethod
-        def INPUT_TYPES(cls):
-            return {
-                "required": {
-                    "sampler": ("SAMPLER",),
-                    "chunked_mode": ("BOOLEAN", {"default": True}),
-                },
-                "optional": {
-                    "custom_noise_opt": ("SONAR_CUSTOM_NOISE",),
-                },
-            }
+        class RestartSamplerCustomNoise:
+            @classmethod
+            def INPUT_TYPES(cls):
+                return {
+                    "required": {
+                        "sampler": ("SAMPLER",),
+                        "chunked_mode": ("BOOLEAN", {"default": True}),
+                    },
+                    "optional": {
+                        "custom_noise_opt": ("SONAR_CUSTOM_NOISE",),
+                    },
+                }
 
-        RETURN_TYPES = ("SAMPLER",)
-        FUNCTION = "go"
-        CATEGORY = "sampling/custom_sampling/samplers"
+            RETURN_TYPES = ("SAMPLER",)
+            FUNCTION = "go"
+            CATEGORY = "sampling/custom_sampling/samplers"
 
-        def go(self, sampler, chunked_mode, custom_noise_opt=None):
-            restart_options = {
-                "restart_chunked": chunked_mode,
-                "restart_wrapped_sampler": sampler,
-                "restart_custom_noise": None
-                if custom_noise_opt is None
-                else custom_noise_opt.make_noise_sampler,
-            }
-            restart_sampler = samplers.KSAMPLER(
-                rs.restart_sampling.RestartSampler.sampler_function,
-                extra_options=sampler.extra_options | restart_options,
-                inpaint_options=sampler.inpaint_options,
-            )
-            return (restart_sampler,)
+            def go(self, sampler, chunked_mode, custom_noise_opt=None):
+                restart_options = {
+                    "restart_chunked": chunked_mode,
+                    "restart_wrapped_sampler": sampler,
+                    "restart_custom_noise": None
+                    if custom_noise_opt is None
+                    else custom_noise_opt.make_noise_sampler,
+                }
+                restart_sampler = samplers.KSAMPLER(
+                    rs.restart_sampling.RestartSampler.sampler_function,
+                    extra_options=sampler.extra_options | restart_options,
+                    inpaint_options=sampler.inpaint_options,
+                )
+                return (restart_sampler,)
 
-    NODE_CLASS_MAPPINGS["RestartSamplerCustomNoise"] = RestartSamplerCustomNoise
-except (ImportError, NotImplementedError):
-    pass
+        NODE_CLASS_MAPPINGS["RestartSamplerCustomNoise"] = RestartSamplerCustomNoise

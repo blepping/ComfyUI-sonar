@@ -2,6 +2,17 @@
 
 Note, only relatively significant changes to user-visible functionality will be included here. Most recent changes at the top.
 
+## 20240521
+
+Mega update! Many new features, documentation reorganized.
+
+* Add `SonarScheduledNoise`, `SonarCompositeNoise`, `SonarGuidedNoise`, `SonarRandomNoise` nodes. See [Advanced Noise Nodes](docs/advanced_noise_nodes.md).
+* Add `SonarPowerFilterNoise`, `SonarPowerFilter`, `SonarPreviewFilter` nodes. See [Advanced Power Noise](docs/advanced_power_noise.md).
+* Add `FreeUExtreme`, `FreeUExtremeConfig` nodes. See [FreeU Extreme](docs/frux.md).
+* Replace `pyramid` noise type with a (hopefully) more correct implementation. You can use `pyramid_old` for the previous behavior.
+* Add more noise types and variations.
+* The `NoisyLatentLike` node now allows using brownian noise if you connect a model and sigmas.
+
 ## 20240506
 
 * Add `SonarModulatedNoise` and `SonarRepeatedNoise` nodes.

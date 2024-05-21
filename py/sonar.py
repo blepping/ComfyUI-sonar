@@ -83,6 +83,7 @@ class SonarBase:
                 sigma_max,
                 seed=seed,
                 cpu=True,
+                normalized=True,
             )
         self.noise_sampler = noise_sampler
         return noise_sampler
@@ -103,6 +104,7 @@ class SonarBase:
                 None,
                 seed=self.extra_args.get("seed"),
                 cpu=True,
+                normalized=True,
             )
             self.history_d = ns(None, None)
         else:
@@ -160,34 +162,42 @@ class SonarGuidanceMixin:
         if self.ref_latent.device != x.device:
             self.ref_latent = self.ref_latent.to(device=x.device)
         if self.guidance.guidance_type == GuidanceType.LINEAR:
-            return self.guidance_linear(x)
+            return self.guidance_linear(x, self.ref_latent, self.guidance.factor)
         if self.guidance.guidance_type == GuidanceType.EULER:
-            return self.guidance_euler(step_index, x, denoised)
+            sigma, sigma_next = self.sigmas[step_index], self.sigmas[step_index + 1]
+            return self.guidance_euler(
+                sigma,
+                sigma_next,
+                x,
+                denoised,
+                self.ref_latent,
+                self.guidance.factor,
+            )
         raise ValueError("Sonar: Guidance: Unknown guidance type")
 
+    @staticmethod
     def guidance_euler(
-        self,
-        step_index: int,
+        sigma: Tensor,
+        sigma_next: Tensor,
         x: Tensor,
         denoised: Tensor,
-    ):
+        ref_latent: Tensor,
+        factor: float = 0.2,
+    ) -> Tensor:
         avg_t = denoised.mean(dim=[1, 2, 3], keepdim=True)
         std_t = denoised.std(dim=[1, 2, 3], keepdim=True)
-        ref_img_shift = self.ref_latent * std_t + avg_t
-        sigma, sigma_next = self.sigmas[step_index], self.sigmas[step_index + 1]
+        ref_img_shift = ref_latent * std_t + avg_t
 
         d = sampling.to_d(x, sigma, ref_img_shift)
-        dt = (sigma_next - sigma) * self.guidance.factor
+        dt = (sigma_next - sigma) * factor
         return x + d * dt
 
-    def guidance_linear(
-        self,
-        x: Tensor,
-    ):
+    @staticmethod
+    def guidance_linear(x: Tensor, ref_latent: Tensor, factor: float = 0.2) -> Tensor:
         avg_t = x.mean(dim=[1, 2, 3], keepdim=True)
         std_t = x.std(dim=[1, 2, 3], keepdim=True)
-        ref_img_shift = self.ref_latent * std_t + avg_t
-        return (1.0 - self.guidance.factor) * x + self.guidance.factor * ref_img_shift
+        ref_img_shift = ref_latent * std_t + avg_t
+        return (1.0 - factor) * x + factor * ref_img_shift
 
 
 class SonarWithGuidance(SonarBase, SonarGuidanceMixin):
