@@ -1,3 +1,7 @@
+# Initial implementation by https://github.com/elias-gaeros/
+# He also provided a lot of help with refactoring and other improvements. Thanks!
+# (But if anything is broken in here, I'm almost certainly the one to blame.)
+
 from __future__ import annotations
 
 import math

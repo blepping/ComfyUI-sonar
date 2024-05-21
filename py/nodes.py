@@ -878,6 +878,7 @@ NODE_CLASS_MAPPINGS = {
     "SamplerSonarEuler": SamplerNodeSonarEuler,
     "SamplerSonarEulerA": SamplerNodeSonarEulerAncestral,
     "SamplerSonarDPMPPSDE": SamplerNodeSonarDPMPPSDE,
+    "SonarGuidanceConfig": GuidanceConfigNode,
     "SamplerConfigOverride": SamplerNodeConfigOverride,
     "NoisyLatentLike": NoisyLatentLikeNode,
     "SonarCustomNoise": SonarCustomNoiseNode,
@@ -887,7 +888,6 @@ NODE_CLASS_MAPPINGS = {
     "SonarScheduledNoise": SonarScheduledNoiseNode,
     "SonarGuidedNoise": SonarGuidedNoiseNode,
     "SonarRandomNoise": SonarRandomNoiseNode,
-    "SonarGuidanceConfig": GuidanceConfigNode,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {}
