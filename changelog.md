@@ -2,6 +2,12 @@
 
 Note, only relatively significant changes to user-visible functionality will be included here. Most recent changes at the top.
 
+## 20240823
+
+* Added descriptions and tooltips for most nodes.
+* Added `repeat_batch` parameter to `NoisyLatentLike` node.
+* Added a `SONAR_CUSTOM_NOISE to NOISE` node to allow converting from Sonar's custom noise type to the built in ComfyUI `NOISE` (used by `SamplerCustomAdvanced` and possibly other nodes).
+
 ## 20240521
 
 Mega update! Many new features, documentation reorganized.

@@ -36,6 +36,7 @@ BLEND_OPS = (
 
 
 class FreeUExtremeConfigNode:
+    DESCRIPTION = "Allows setting configuration for FreeU Extreme."
     RETURN_TYPES = ("FRUX_CONFIG",)
     FUNCTION = "go"
     CATEGORY = "model_patches"
@@ -44,10 +45,33 @@ class FreeUExtremeConfigNode:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "stage_1": ("BOOLEAN", {"default": True}),
-                "stage_2": ("BOOLEAN", {"default": False}),
-                "stage_3": ("BOOLEAN", {"default": False}),
-                "target": (("backbone", "skip", "both"),),
+                "stage_1": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": "Controls whether this configuration applies to stage 1.",
+                    },
+                ),
+                "stage_2": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "tooltip": "Controls whether this configuration applies to stage 2.",
+                    },
+                ),
+                "stage_3": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "tooltip": "Controls whether this configuration applies to stage 3.",
+                    },
+                ),
+                "target": (
+                    ("backbone", "skip", "both"),
+                    {
+                        "tooltip": "Controls whether this filter applies to backbone or skip layers (or both).",
+                    },
+                ),
                 "start": (
                     "FLOAT",
                     {
@@ -56,6 +80,7 @@ class FreeUExtremeConfigNode:
                         "max": 1.0,
                         "step": 0.1,
                         "round": False,
+                        "tooltip": "Start time as percentage of sampling this configuration applies to. Inclusive.",
                     },
                 ),
                 "end": (
@@ -66,6 +91,7 @@ class FreeUExtremeConfigNode:
                         "max": 1.0,
                         "step": 0.1,
                         "round": False,
+                        "tooltip": "End time as percentage of sampling this configuration applies to. Inclusive.",
                     },
                 ),
                 "slice": (
@@ -76,6 +102,7 @@ class FreeUExtremeConfigNode:
                         "max": 1.0,
                         "step": 0.1,
                         "round": False,
+                        "tooltip": "Percentage of the layer the FreeU effect is applied to.",
                     },
                 ),
                 "slice_offset": (
@@ -86,6 +113,7 @@ class FreeUExtremeConfigNode:
                         "max": 1.0,
                         "step": 0.1,
                         "round": False,
+                        "tooltip": "Offset as a percentage the layer is applied to. For example if slice is 0.25 and slice_offset is 0.25 then the filter will apply to the range 25% through 50%.",
                     },
                 ),
                 "filter_norm": (
@@ -96,6 +124,7 @@ class FreeUExtremeConfigNode:
                         "max": 10.0,
                         "step": 0.1,
                         "round": False,
+                        "tooltip": "Normalization factor applied to the filter. 1.0 means 100% normalized.",
                     },
                 ),
                 "scale": (
@@ -106,6 +135,7 @@ class FreeUExtremeConfigNode:
                         "max": 100.0,
                         "step": 0.1,
                         "round": False,
+                        "tooltip": "Strength of the effects applied by this configuration.",
                     },
                 ),
                 "blend": (
@@ -116,19 +146,48 @@ class FreeUExtremeConfigNode:
                         "max": 10.0,
                         "step": 0.1,
                         "round": False,
+                        "tooltip": "Blends the filtered result based on the specified strength where 1.0 means 100% filtered.",
                     },
                 ),
-                "blend_mode": (tuple(BLEND_OPS.keys()),),
-                "hidden_mean": ("BOOLEAN", {"default": True}),
-                "final": ("BOOLEAN", {"default": True}),
+                "blend_mode": (
+                    tuple(BLEND_OPS.keys()),
+                    {
+                        "tooltip": "Mode used when blending. Generally only has an effect when blend is set to values other than 0 or 1",
+                    },
+                ),
+                "hidden_mean": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": "You can think of this as FreeU V2 mode.",
+                    },
+                ),
+                "final": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": "When enabled, other configurations won't be considered if this one matched. Otherwise, multiple configurations/filter effects can be stacked.",
+                    },
+                ),
             },
             "optional": {
-                "sonar_power_filter_opt": ("SONAR_POWER_FILTER",),
-                "frux_config_opt": ("FRUX_CONFIG",),
+                "sonar_power_filter_opt": (
+                    "SONAR_POWER_FILTER",
+                    {
+                        "tooltip": "Optionally attach a Power Filter here to set filtering parameters.",
+                    },
+                ),
+                "frux_config_opt": (
+                    "FRUX_CONFIG",
+                    {
+                        "tooltip": "Optionally attach another configuration node here.",
+                    },
+                ),
             },
         }
 
-    def go(self, **kwargs: dict):
+    @classmethod
+    def go(cls, **kwargs: dict):
         return (FreeUExtremeConfig(**kwargs),)
 
 
@@ -223,12 +282,10 @@ class FreeUExtremeConfig:
             return False
         if not getattr(self, f"stage_{stage}"):
             return False
-        if self.target not in ("skip" if is_skip else "backbone", "both"):
-            return False
-        return True
+        return not self.target not in {"skip" if is_skip else "backbone", "both"}
 
     def apply(self, idx, x, filter_cache, cpu_fft=False):
-        batch, features, height, width = x.shape
+        _batch, features, _height, _width = x.shape
         scale = self.get_scale(x)
         slice_size = int(features * self.slice)
         slice_offs = int(features * self.slice_offset)
@@ -280,6 +337,7 @@ class FreeUExtremeConfig:
 
 
 class FreeUExtremeNode:
+    DESCRIPTION = "Main FreeU Extreme node. Allows patching a model with the FreeU (V2) effect with more control."
     RETURN_TYPES = ("MODEL",)
     FUNCTION = "go"
     CATEGORY = "model_patches"
@@ -288,18 +346,45 @@ class FreeUExtremeNode:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "model": ("MODEL",),
-                "cpu_fft": ("BOOLEAN", {"default": False}),
+                "model": (
+                    "MODEL",
+                    {
+                        "tooltip": "Model to patch.",
+                    },
+                ),
+                "cpu_fft": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "tooltip": "Controls whether to perform FFT calculations on the CPU. May be necessary for some GPUs that don't have native support for FFT operations at the cost of performance.",
+                    },
+                ),
             },
             "optional": {
-                "input_config": ("FRUX_CONFIG",),
-                "middle_config": ("FRUX_CONFIG",),
-                "output_config": ("FRUX_CONFIG",),
+                "input_config": (
+                    "FRUX_CONFIG",
+                    {
+                        "tooltip": "Allows specifying configuration for input blocks.",
+                    },
+                ),
+                "middle_config": (
+                    "FRUX_CONFIG",
+                    {
+                        "tooltip": "Allows specifying configuration for middle blocks.",
+                    },
+                ),
+                "output_config": (
+                    "FRUX_CONFIG",
+                    {
+                        "tooltip": "Allows specifying configuration for output blocks.",
+                    },
+                ),
             },
         }
 
+    @classmethod
     def go(
-        self,
+        cls,
         model,
         cpu_fft,
         input_config=None,

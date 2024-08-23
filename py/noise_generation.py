@@ -133,7 +133,7 @@ def perlin_noise_tensor(
         step -- smooth step function [0, 1] -> [0, 1] (default: `smooth_step`)
 
     Raises:
-        Exception: if position and vector shapes do not match
+        NoiseError: if position and vector shapes do not match
 
     Returns:
         (batch_size, block_height * grid_height, block_width * grid_width)
@@ -148,11 +148,11 @@ def perlin_noise_tensor(
     bh, bw = positions.shape[1:3]
 
     for i in range(2):
-        if positions.shape[i + 3] not in (1, vectors.shape[i + 2]):
+        if positions.shape[i + 3] not in {1, vectors.shape[i + 2]}:
             msg = f"Blocks shapes do not match: vectors ({vectors.shape[1]}, {vectors.shape[2]}), positions {gh}, {gw})"
             raise NoiseError(msg)
 
-    if positions.shape[0] not in (1, batch_size):
+    if positions.shape[0] not in {1, batch_size}:
         msg = f"Batch sizes do not match: vectors ({vectors.shape[0]}), positions ({positions.shape[0]})"
         raise NoiseError(msg)
 
@@ -206,7 +206,7 @@ def perlin_noise(
         generator -- random generator used for grid vectors (default: {None})
 
     Raises:
-        Exception: if grid and out shapes do not match
+        NoiseError: if grid and out shapes do not match
 
     Returns:
         Noise image shaped (batch_size, height, width)
@@ -410,9 +410,8 @@ def power_noise_like(tensor, alpha=2, k=1):  # This doesn't work properly right 
 
 
 __all__ = (
-    "NoiseType",
     "NoiseError",
-    "scale_noise",
+    "NoiseType",
     "green_noise_like",
     "highres_pyramid_noise_like",
     "laplacian_noise_like",
@@ -421,6 +420,7 @@ __all__ = (
     "pyramid_noise_like",
     "pyramid_old_noise_like",
     "rand_perlin_like",
+    "scale_noise",
     "studentt_noise_like",
     "uniform_noise_like",
 )

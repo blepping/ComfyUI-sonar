@@ -74,6 +74,12 @@ This node can be used to override configuration settings for other samplers, inc
 
 ***
 
+### `SONAR_CUSTOM_NOISE to NOISE`
+
+This node can be used to convert Sonar custom noise to the `NOISE` type used by the builtin `SamplerCustomAdvanced` (and any other nodes that take a `NOISE` input).
+
+***
+
 ### `SonarModulatedNoise`
 
 Experimental noise modulation based on code stolen from

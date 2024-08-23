@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import importlib
 from enum import Enum, auto
 from sys import stderr
 from typing import Any, Callable, NamedTuple
 
 import torch
 from comfy.k_diffusion import sampling
+from comfy.samplers import KSampler, k_diffusion_sampling
 from torch import Tensor
 from tqdm.auto import trange
 
@@ -60,10 +62,10 @@ class SonarBase:
         seed: int | None = None,
     ):
         sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
-        if noise_sampler is not None and self.cfg.noise_type not in (
+        if noise_sampler is not None and self.cfg.noise_type not in {
             None,
             self.DEFAULT_NOISE_TYPE,
-        ):
+        }:
             print(
                 "Sonar: Warning: Noise sampler supplied, overriding noise type from settings",
                 file=stderr,
@@ -127,7 +129,7 @@ class SonarBase:
         momentum_d = (1.0 - p) * d + p * hd
 
         # Euler method with momentum
-        x = x + momentum_d * dt
+        x = x + momentum_d * dt  # noqa: PLR6104
 
         self.update_hist(momentum_d)
 
@@ -155,9 +157,8 @@ class SonarGuidanceMixin:
         return ((latent - avg_s) / std_s).to(latent.dtype)
 
     def guidance_step(self, step_index: int, x: Tensor, denoised: Tensor):
-        if (self.guidance is None or self.guidance.factor == 0.0) or not (
-            self.guidance.start_step <= (step_index + 1) <= self.guidance.end_step
-        ):
+        step_matched = self.guidance.start_step <= step_index <= self.guidance.end_step
+        if self.guidance is None or self.guidance.factor == 0.0 or not step_matched:
             return x
         if self.ref_latent.device != x.device:
             self.ref_latent = self.ref_latent.to(device=x.device)
@@ -263,7 +264,7 @@ class SonarEuler(SonarSampler):
                 else torch.randn_like(sample)
             )
             eps = noise * self.s_noise
-            sample = sample + eps * (sigma_hat**2 - sigma**2) ** 0.5
+            sample = sample + eps * (sigma_hat**2 - sigma**2) ** 0.5  # noqa: PLR6104
 
         denoised = self.model(sample, sigma_hat * self.s_in, **self.extra_args)
         derivative = sampling.to_d(sample, sigma, denoised)
@@ -320,7 +321,7 @@ class SonarEuler(SonarSampler):
         )
 
         for i in trange(len(sigmas) - 1, disable=disable):
-            x, sigma, sigma_hat, denoised = sonar.step(
+            x, _sigma, sigma_hat, denoised = sonar.step(
                 i,
                 x,
             )
@@ -370,7 +371,7 @@ class SonarEulerAncestral(SonarSampler):
         result_sample = self.momentum_step(sample, derivative, dt)
         if sigma_to > 0:
             result_sample = self.guidance_step(step_index, result_sample, denoised)
-            result_sample = (
+            result_sample = (  # noqa: PLR6104
                 result_sample
                 + self.noise_sampler(sigma_from, sigma_to) * self.s_noise * sigma_up
             )
@@ -417,7 +418,7 @@ class SonarEulerAncestral(SonarSampler):
         )
 
         for i in trange(len(sigmas) - 1, disable=disable):
-            x, sigma, sigma_hat, denoised = sonar.step(
+            x, _sigma, sigma_hat, denoised = sonar.step(
                 i,
                 x,
             )
@@ -457,7 +458,7 @@ class SonarDPMPPSDE(SonarSampler):
         return sigma.log.neg()
 
     # DPM++ solver algorithm copied from ComfyUI source.
-    def momentum_step(
+    def momentum_step(  # noqa: PLR0914
         self,
         step_index,
         x: Tensor,
@@ -495,7 +496,7 @@ class SonarDPMPPSDE(SonarSampler):
         self.update_hist(momentum_d)
         hd = self.history_d
         x_2 = (sigma_fn(s_) / sigma_fn(t)) * x - momentum_d
-        x_2 = x_2 + self.noise_sampler(sigma_fn(t), sigma_fn(s)) * self.s_noise * su
+        x_2 += self.noise_sampler(sigma_fn(t), sigma_fn(s)) * self.s_noise * su
         denoised_2 = self.model(x_2, sigma_fn(s) * self.s_in, **self.extra_args)
 
         # Step 2
@@ -527,7 +528,7 @@ class SonarDPMPPSDE(SonarSampler):
         self.init_hist_d(sample)
 
         sigma_from, sigma_to = self.sigmas[step_index], self.sigmas[step_index + 1]
-        sigma_down, sigma_up = sampling.get_ancestral_step(
+        sigma_down, _sigma_up = sampling.get_ancestral_step(
             sigma_from,
             sigma_to,
             eta=self.eta,
@@ -585,7 +586,7 @@ class SonarDPMPPSDE(SonarSampler):
         )
 
         for i in trange(len(sigmas) - 1, disable=disable):
-            x, sigma, sigma_hat, denoised = sonar.step(
+            x, _sigma, sigma_hat, denoised = sonar.step(
                 i,
                 x,
             )
@@ -603,10 +604,6 @@ class SonarDPMPPSDE(SonarSampler):
 
 
 def add_samplers():
-    import importlib
-
-    from comfy.samplers import KSampler, k_diffusion_sampling
-
     extra_samplers = {
         "sonar_euler": SonarEuler.sampler,
         "sonar_euler_ancestral": SonarEulerAncestral.sampler,

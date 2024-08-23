@@ -10,6 +10,7 @@ from torch import Tensor
 
 from . import external
 from .noise_generation import *
+from .sonar import SonarGuidanceMixin
 
 # ruff: noqa: D412, D413, D417, D212, D407, ANN002, ANN003, FBT001, FBT002, S311
 
@@ -220,7 +221,7 @@ class CompositeNoise(CustomNoiseItemBase):
         )
 
     def clone_key(self, k):
-        if k in ("mask", "src_noise", "dst_noise"):
+        if k in {"mask", "src_noise", "dst_noise"}:
             return getattr(self, k).clone()
         return super().clone_key(k)
 
@@ -286,13 +287,11 @@ class GuidedNoise(CustomNoiseItemBase):
         )
 
     def clone_key(self, k):
-        if k in ("noise", "ref_latent"):
+        if k in {"noise", "ref_latent"}:
             return getattr(self, k).clone()
         return super().clone_key(k)
 
     def make_noise_sampler(self, x, *args, normalized=True, **kwargs):
-        from .sonar import SonarGuidanceMixin
-
         factor, guidance_factor = self.factor, self.guidance_factor
         normalize_noise, normalize_result = (
             self.get_normalize(f"normalize_{k}", normalized)
@@ -325,6 +324,7 @@ class GuidedNoise(CustomNoiseItemBase):
                         factor,
                         normalized=normalize_result,
                     )
+
             case "euler":
 
                 def noise_sampler(s, sn):
@@ -884,8 +884,8 @@ if "bleh" in external.MODULES:
                 normalized or num_samplers > 1,
             )
             normalize_result = self.get_normalize("normalize_result", normalized)
-            noise_effects = self.affect in ("noise", "both")
-            result_effects = self.affect in ("result", "both")
+            noise_effects = self.affect in {"noise", "both"}
+            result_effects = self.affect in {"result", "both"}
             noise_init = torch.zeros_like(x)
 
             def noise_sampler(s, sn):

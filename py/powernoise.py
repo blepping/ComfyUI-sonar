@@ -516,7 +516,7 @@ class PowerFilterNoiseItem(PowerNoiseItem):
             x,
             ns,
             self.make_filter(x.shape),
-            self.normalize_result in (True, None),
+            self.normalize_result in {True, None},
         )
         filtered_noise = filtered_ns(
             torch.scalar_tensor(14.0),
@@ -533,11 +533,19 @@ class PowerFilterNoiseItem(PowerNoiseItem):
 
 
 class SonarPowerNoiseNode(SonarCustomNoiseNodeBase):
+    DESCRIPTION = "Custom noise type that applies a filter to generated noise."
+
     @classmethod
     def INPUT_TYPES(cls, *args: list, **kwargs: dict):
         result = super().INPUT_TYPES(*args, **kwargs)
         result["required"] |= {
-            "time_brownian": ("BOOLEAN", {"default": False}),
+            "time_brownian": (
+                "BOOLEAN",
+                {
+                    "default": False,
+                    "tooltip": "Controls whether brownian noise is used when mix isn't 1.0.",
+                },
+            ),
             "alpha": (
                 "FLOAT",
                 {
@@ -546,6 +554,7 @@ class SonarPowerNoiseNode(SonarCustomNoiseNodeBase):
                     "max": 5.0,
                     "step": 0.001,
                     "round": False,
+                    "tooltip": "Values above 0 will amplify low frequencies, negative values will amplify high frequencies.",
                 },
             ),
             "max_freq": (
@@ -556,6 +565,7 @@ class SonarPowerNoiseNode(SonarCustomNoiseNodeBase):
                     "max": 0.7071,
                     "step": 0.001,
                     "round": False,
+                    "tooltip": "Maximum frequency to pass through the filter.",
                 },
             ),
             "min_freq": (
@@ -566,6 +576,7 @@ class SonarPowerNoiseNode(SonarCustomNoiseNodeBase):
                     "max": 0.7071,
                     "step": 0.001,
                     "round": False,
+                    "tooltip": "Minimum frequency to pass through the filter.",
                 },
             ),
             "stretch": (
@@ -576,6 +587,7 @@ class SonarPowerNoiseNode(SonarCustomNoiseNodeBase):
                     "max": 100,
                     "step": 0.1,
                     "round": False,
+                    "tooltip": "Stretches the filter's shape by the specified factor.",
                 },
             ),
             "rotate": (
@@ -586,6 +598,7 @@ class SonarPowerNoiseNode(SonarCustomNoiseNodeBase):
                     "max": 90,
                     "step": 5,
                     "round": False,
+                    "tooltip": "Rotates the filter.",
                 },
             ),
             "pnorm": (
@@ -596,6 +609,7 @@ class SonarPowerNoiseNode(SonarCustomNoiseNodeBase):
                     "max": 100,
                     "step": 0.1,
                     "round": False,
+                    "tooltip": "Factor used for cushioning the band-pass region.",
                 },
             ),
             "mix": (
@@ -606,6 +620,7 @@ class SonarPowerNoiseNode(SonarCustomNoiseNodeBase):
                     "max": 1.0,
                     "step": 0.001,
                     "round": False,
+                    "tooltip": "Controls the ratio of filtered noise. For example, 0.75 means 75% noise with the filter effects applied, 25% raw noise.",
                 },
             ),
             "common_mode": (
@@ -616,6 +631,7 @@ class SonarPowerNoiseNode(SonarCustomNoiseNodeBase):
                     "max": 100.0,
                     "step": 0.001,
                     "round": False,
+                    "tooltip": "Attempts to desaturate thelatent by injecting the average across channels (controlled by channel_correction). Applied after mix.",
                 },
             ),
             "channel_correlation": (
@@ -624,13 +640,20 @@ class SonarPowerNoiseNode(SonarCustomNoiseNodeBase):
                     "default": "1, 1, 1, 1, 1, 1",
                     "multiline": False,
                     "dynamicPrompts": False,
+                    "tooltip": "Comma-separated list of channel correlation strengths.",
                 },
             ),
-            "preview": (("none", "no_mix", "mix"),),
+            "preview": (
+                ("none", "no_mix", "mix"),
+                {
+                    "tooltip": "When enabled, displays a preview of the filter shape and a sample of noise. Mix - previews noise after mix is applied. no_mix - only previews the filtered noise.",
+                },
+            ),
         }
         return result
 
-    def get_item_class(self):
+    @classmethod
+    def get_item_class(cls):
         return PowerNoiseItem
 
     def go(
@@ -648,6 +671,8 @@ class SonarPowerNoiseNode(SonarCustomNoiseNodeBase):
 
 
 class SonarPowerFilterNoiseNode(SonarPowerNoiseNode, SonarNormalizeNoiseNodeMixin):
+    DESCRIPTION = "Custom noise type that allows applying a Power Filter to another custom noise generator."
+
     @classmethod
     def INPUT_TYPES(cls):
         result = super().INPUT_TYPES(include_rescale=False, include_chain=False)
@@ -662,8 +687,18 @@ class SonarPowerFilterNoiseNode(SonarPowerNoiseNode, SonarNormalizeNoiseNodeMixi
         ):
             del result["required"][k]
         result["required"] |= {
-            "sonar_custom_noise": ("SONAR_CUSTOM_NOISE",),
-            "sonar_power_filter": ("SONAR_POWER_FILTER",),
+            "sonar_custom_noise": (
+                "SONAR_CUSTOM_NOISE",
+                {
+                    "tooltip": "Custom noise type to filter.",
+                },
+            ),
+            "sonar_power_filter": (
+                "SONAR_POWER_FILTER",
+                {
+                    "tooltip": "Filter to use.",
+                },
+            ),
             "filter_norm_factor": (
                 "FLOAT",
                 {
@@ -672,15 +707,32 @@ class SonarPowerFilterNoiseNode(SonarPowerNoiseNode, SonarNormalizeNoiseNodeMixi
                     "max": 1.0,
                     "step": 0.1,
                     "round": False,
+                    "tooltip": "Normalization factor applied to the specified filter. 1.0 means 100% normalized.",
                 },
             ),
-            "normalize_result": (("default", "forced", "disabled"),),
-            "normalize_noise": (("default", "forced", "disabled"),),
+            "normalize_result": (
+                ("default", "forced", "disabled"),
+                {
+                    "tooltip": "Controls whether the final result is normalized to 1.0 strength.",
+                },
+            ),
+            "normalize_noise": (
+                ("default", "forced", "disabled"),
+                {
+                    "tooltip": "Controls whether the generated noise is normalized to 1.0 strength.",
+                },
+            ),
         }
-        result["required"]["preview"] = ((*result["required"]["preview"][0], "custom"),)
+        result["required"]["preview"] = (
+            (*result["required"]["preview"][0], "custom"),
+            {
+                "tooltip": "When enabled, displays a preview of the filter shape and a sample of noise. Mix - previews noise after mix is applied. no_mix - only previews the filtered noise. custom - Like no_mix, but will use a latent previewer to display a color preview of the generated noise. Works best when previewer is set to TAESD.",
+            },
+        )
         return result
 
-    def get_item_class(self):
+    @classmethod
+    def get_item_class(cls):
         return PowerFilterNoiseItem
 
     def go(
@@ -714,69 +766,23 @@ class SonarPowerFilterNode:
 
     @classmethod
     def INPUT_TYPES(cls):
+        include_keys = {"alpha", "max_freq", "min_freq", "stretch", "rotate", "pnorm"}
         return {
             "required": {
-                "alpha": (
-                    "FLOAT",
+                k: v
+                for k, v in SonarPowerNoiseNode.INPUT_TYPES()["required"].items()
+                if k in include_keys
+            }
+            | {
+                "oversample": (
+                    "INT",
                     {
-                        "default": 0.0,
-                        "min": -5.0,
-                        "max": 5.0,
-                        "step": 0.001,
-                        "round": False,
+                        "default": 4,
+                        "min": 1,
+                        "max": 128,
+                        "tooltip": "Oversampling factor used for the filter size.",
                     },
                 ),
-                "max_freq": (
-                    "FLOAT",
-                    {
-                        "default": 0.7071,
-                        "min": 0.0,
-                        "max": 0.7071,
-                        "step": 0.001,
-                        "round": False,
-                    },
-                ),
-                "min_freq": (
-                    "FLOAT",
-                    {
-                        "default": 0.0,
-                        "min": 0.0,
-                        "max": 0.7071,
-                        "step": 0.001,
-                        "round": False,
-                    },
-                ),
-                "stretch": (
-                    "FLOAT",
-                    {
-                        "default": 1.0,
-                        "min": 0.01,
-                        "max": 100,
-                        "step": 0.1,
-                        "round": False,
-                    },
-                ),
-                "rotate": (
-                    "FLOAT",
-                    {
-                        "default": 0,
-                        "min": -90,
-                        "max": 90,
-                        "step": 5,
-                        "round": False,
-                    },
-                ),
-                "pnorm": (
-                    "FLOAT",
-                    {
-                        "default": 2,
-                        "min": 0.125,
-                        "max": 100,
-                        "step": 0.1,
-                        "round": False,
-                    },
-                ),
-                "oversample": ("INT", {"default": 4, "min": 1, "max": 128}),
                 "blur": (
                     "FLOAT",
                     {
@@ -785,6 +791,7 @@ class SonarPowerFilterNode:
                         "max": 10.0,
                         "step": 0.01,
                         "round": False,
+                        "tooltip": "Slightly blurs the filter to reduce artifacts.",
                     },
                 ),
                 "scale": (
@@ -795,17 +802,24 @@ class SonarPowerFilterNode:
                         "max": 100.0,
                         "step": 0.1,
                         "round": False,
+                        "tooltip": "Scales the filter to the specified strength. May be negative.",
                     },
                 ),
-                "compose_mode": (("max", "min", "add", "sub", "mul"),),
+                "compose_mode": (
+                    ("max", "min", "add", "sub", "mul"),
+                    {
+                        "tooltip": "Controls composition of the option attached filter. For example, when set to MUL the result will be this filter multiplied by the attached filter. No effect if the optional filter input is not attached.",
+                    },
+                ),
             },
             "optional": {
                 "power_filter_opt": ("SONAR_POWER_FILTER",),
             },
         }
 
+    @classmethod
     def go(
-        self,
+        cls,
         min_freq=0.0,
         max_freq=0.7071,
         stretch=1.0,
@@ -836,6 +850,7 @@ class SonarPowerFilterNode:
 
 
 class SonarPreviewFilterNode:
+    DESCRIPTION = "Allows previewing a Power Filter."
     RETURN_TYPES = ("SONAR_POWER_FILTER",)
     CATEGORY = "advanced/noise"
     FUNCTION = "go"
@@ -845,7 +860,12 @@ class SonarPreviewFilterNode:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "sonar_power_filter": ("SONAR_POWER_FILTER",),
+                "sonar_power_filter": (
+                    "SONAR_POWER_FILTER",
+                    {
+                        "tooltip": "Power Filter to preview.",
+                    },
+                ),
                 "filter_gain": (
                     "FLOAT",
                     {
@@ -854,6 +874,7 @@ class SonarPreviewFilterNode:
                         "max": 1000000.0,
                         "step": 0.1,
                         "round": False,
+                        "tooltip": "Gain factor applied to the filter part of the preview.",
                     },
                 ),
                 "kernel_gain": (
@@ -864,6 +885,7 @@ class SonarPreviewFilterNode:
                         "max": 1000000.0,
                         "step": 0.1,
                         "round": False,
+                        "tooltip": "Gain factor applied to the kernel part of the preview.",
                     },
                 ),
                 "norm_factor": (
@@ -874,6 +896,7 @@ class SonarPreviewFilterNode:
                         "max": 1.0,
                         "step": 0.1,
                         "round": False,
+                        "tooltip": "Normalization factor applied to the filter before previewing. 1.0 means 100% normalized.",
                     },
                 ),
                 "preview_size": (
@@ -888,12 +911,16 @@ class SonarPreviewFilterNode:
                         "128x127",
                         "127x128",
                     ),
+                    {
+                        "tooltip": "Controls the size of the generated preview. Note: Sizes are in latent pixels. For most models, one latent pixel equals eight pixels",
+                    },
                 ),
             },
         }
 
+    @classmethod
     def go(
-        self,
+        cls,
         sonar_power_filter,
         filter_gain=1 / 3,
         kernel_gain=1 / 3,
