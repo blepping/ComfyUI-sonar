@@ -7,6 +7,7 @@ Note, only relatively significant changes to user-visible functionality will be 
 * Added descriptions and tooltips for most nodes.
 * Added `repeat_batch` parameter to `NoisyLatentLike` node.
 * Added a `SONAR_CUSTOM_NOISE to NOISE` node to allow converting from Sonar's custom noise type to the built in ComfyUI `NOISE` (used by `SamplerCustomAdvanced` and possibly other nodes).
+* Added a `SonarAdvancedPyramidNoise` node that allows setting parameters for the pyramid noise variants.
 
 ## 20240521
 

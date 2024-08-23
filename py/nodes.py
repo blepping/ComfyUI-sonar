@@ -730,6 +730,86 @@ class SonarRandomNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMixi
         )
 
 
+class SonarAdvancedPyramidNoiseNode(SonarCustomNoiseNodeBase):
+    DESCRIPTION = (
+        "Custom noise type that allows specifying parameters for Pyramid variants."
+    )
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        result = super().INPUT_TYPES()
+        result["required"] |= {
+            "variant": (
+                (
+                    "highres_pyramid",
+                    "pyramid",
+                    "pyramid_old",
+                ),
+                {
+                    "tooltip": "Sets the Pyramid noise variant to generate.",
+                    "default": "highres_pyramid",
+                },
+            ),
+            "iterations": (
+                "INT",
+                {
+                    "default": -1,
+                    "min": -1,
+                    "max": 8,
+                    "tooltip": "When set to -1 will use the variant default.",
+                },
+            ),
+            "discount": (
+                "FLOAT",
+                {
+                    "default": 0.0,
+                    "tooltip": "When set to 0 will use the variant default.",
+                },
+            ),
+            "upscale_mode": (
+                (
+                    "default",
+                    "bilinear",
+                    "nearest-exact",
+                    "nearest",
+                    "area",
+                    "bicubic",
+                    "bislerp",
+                ),
+                {
+                    "tooltip": "Allows setting the scaling mode for Pyramid noise. Leave on default to use the variant default.",
+                    "default": "default",
+                },
+            ),
+        }
+        return result
+
+    @classmethod
+    def get_item_class(cls):
+        return noise.AdvancedPyramidNoise
+
+    def go(
+        self,
+        *,
+        factor,
+        rescale,
+        variant,
+        iterations,
+        discount,
+        upscale_mode,
+        sonar_custom_noise_opt=None,
+    ):
+        return super().go(
+            factor,
+            rescale=rescale,
+            sonar_custom_noise_opt=sonar_custom_noise_opt,
+            variant=variant,
+            iterations=iterations if iterations != -1 else None,
+            discount=discount if discount != 0 else None,
+            upscale_mode=upscale_mode if upscale_mode != "default" else None,
+        )
+
+
 class CustomNOISE:
     def __init__(
         self,
@@ -1398,6 +1478,7 @@ NODE_CLASS_MAPPINGS = {
     "SonarGuidanceConfig": GuidanceConfigNode,
     "SamplerConfigOverride": SamplerNodeConfigOverride,
     "NoisyLatentLike": NoisyLatentLikeNode,
+    "SonarAdvancedPyramidNoise": SonarAdvancedPyramidNoiseNode,
     "SonarCustomNoise": SonarCustomNoiseNode,
     "SonarCompositeNoise": SonarCompositeNoiseNode,
     "SonarModulatedNoise": SonarModulatedNoiseNode,

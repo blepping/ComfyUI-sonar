@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import abc
+from functools import partial
 from typing import Callable
 
 import comfy
@@ -196,6 +197,30 @@ class NoiseSampler:
         if hasattr(noise, "to"):
             noise = noise.to(dtype=self.dtype, device=self.device)
         return noise
+
+
+class AdvancedPyramidNoise(CustomNoiseItemBase):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        noise_types = {
+            "pyramid": pyramid_noise_like,
+            "pyramid_old": pyramid_old_noise_like,
+            "highres_pyramid": highres_pyramid_noise_like,
+        }
+        noise_sampler_kwargs = {}
+        if self.discount is not None:
+            noise_sampler_kwargs["discount"] = self.discount
+        if self.iterations is not None:
+            noise_sampler_kwargs["iterations"] = self.iterations
+        if self.upscale_mode is not None:
+            noise_sampler_kwargs["upscale_mode"] = self.upscale_mode
+        self.sampler_function = NoiseSampler.simple(
+            partial(noise_types[self.variant], **noise_sampler_kwargs),
+        )
+
+    @torch.no_grad()
+    def make_noise_sampler(self, *args, **kwargs):
+        return self.sampler_function(*args, factor=self.factor, **kwargs)
 
 
 class CompositeNoise(CustomNoiseItemBase):
@@ -931,25 +956,25 @@ NOISE_SAMPLERS: dict[NoiseType, Callable] = {
     NoiseType.GREEN_TEST: NoiseSampler.simple(green_noise_like),
     NoiseType.PYRAMID_OLD: NoiseSampler.simple(pyramid_old_noise_like),
     NoiseType.PYRAMID_BISLERP: NoiseSampler.simple(
-        lambda x: pyramid_noise_like(x, upscale_mode="bislerp"),
+        partial(pyramid_noise_like, upscale_mode="bislerp"),
     ),
     NoiseType.HIGHRES_PYRAMID_BISLERP: NoiseSampler.simple(
-        lambda x: highres_pyramid_noise_like(x, upscale_mode="bislerp"),
+        partial(highres_pyramid_noise_like, upscale_mode="bislerp"),
     ),
     NoiseType.PYRAMID_AREA: NoiseSampler.simple(
-        lambda x: pyramid_noise_like(x, upscale_mode="area"),
+        partial(pyramid_noise_like, upscale_mode="area"),
     ),
     NoiseType.HIGHRES_PYRAMID_AREA: NoiseSampler.simple(
-        lambda x: highres_pyramid_noise_like(x, upscale_mode="area"),
+        partial(highres_pyramid_noise_like, upscale_mode="area"),
     ),
     NoiseType.PYRAMID_OLD_BISLERP: NoiseSampler.simple(
-        lambda x: pyramid_old_noise_like(x, upscale_mode="bislerp"),
+        partial(pyramid_old_noise_like, upscale_mode="bislerp"),
     ),
     NoiseType.PYRAMID_OLD_AREA: NoiseSampler.simple(
-        lambda x: pyramid_old_noise_like(x, upscale_mode="area"),
+        partial(pyramid_old_noise_like, upscale_mode="area"),
     ),
     NoiseType.PYRAMID_DISCOUNT5: NoiseSampler.simple(
-        lambda x: pyramid_noise_like(x, discount=0.5),
+        partial(pyramid_noise_like, discount=0.5),
     ),
     NoiseType.PYRAMID_MIX: NoiseSampler.simple(
         lambda x: pyramid_noise_like(x, discount=0.6)

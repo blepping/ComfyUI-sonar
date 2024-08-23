@@ -237,8 +237,17 @@ def perlin_noise(
     return perlin_noise_tensor(vectors, positions).squeeze(0)
 
 
-def rand_perlin_like(x):
-    noise = torch.randn_like(x) / 2.0
+def rand_perlin_like(x, *, generator=None):
+    noise = (
+        torch.rand(
+            x.shape,
+            dtype=x.dtype,
+            device=x.device,
+            layout=x.layout,
+            generator=generator,
+        )
+        / 2.0
+    )
     noise_height = noise.size(dim=2)
     noise_width = noise.size(dim=3)
     for _ in range(2):
@@ -250,11 +259,27 @@ def rand_perlin_like(x):
     return scale_noise(noise)
 
 
-def uniform_noise_like(x):
-    return (torch.rand_like(x) - 0.5) * 3.46
+def uniform_noise_like(x, *, generator=None):
+    return (
+        torch.rand(
+            x.shape,
+            dtype=x.dtype,
+            device=x.device,
+            layout=x.layout,
+            generator=generator,
+        )
+        - 0.5
+    ) * 3.46
 
 
-def highres_pyramid_noise_like(x, discount=0.7, upscale_mode="bilinear"):
+def highres_pyramid_noise_like(
+    x,
+    *,
+    discount=0.7,
+    upscale_mode="bilinear",
+    iterations=4,
+    generator=None,
+):
     (
         b,
         c,
@@ -262,13 +287,13 @@ def highres_pyramid_noise_like(x, discount=0.7, upscale_mode="bilinear"):
         w,
     ) = x.shape  # EDIT: w and h get over-written, rename for a different variant!
     orig_w, orig_h = w, h
-    noise = uniform_noise_like(x)
-    rs = torch.rand(4, dtype=torch.float32) * 2 + 2
-    for i in range(4):
-        r = rs[i]
+    noise = uniform_noise_like(x, generator=generator)
+    rs = torch.rand(iterations, dtype=torch.float32, generator=generator).cpu() * 2 + 2
+    for i in range(iterations):
+        r = rs[i].item()
         h, w = min(orig_h * 15, int(h * (r**i))), min(orig_w * 15, int(w * (r**i)))
         noise += common_upscale(
-            torch.randn(b, c, h, w).to(x),
+            torch.randn(b, c, h, w, generator=generator).to(x),
             orig_w,
             orig_h,
             upscale_mode,
@@ -281,9 +306,11 @@ def highres_pyramid_noise_like(x, discount=0.7, upscale_mode="bilinear"):
 
 def pyramid_old_noise_like(
     x,
+    *,
     generator=None,
     device="cpu",
     discount=0.8,
+    iterations=5,
     upscale_mode="nearest-exact",
 ):
     size = x.size()
@@ -291,7 +318,7 @@ def pyramid_old_noise_like(
     orig_h, orig_w = h, w
     noise = torch.zeros(size=size, dtype=x.dtype, layout=x.layout, device=device)
     r = 1
-    for i in range(5):
+    for i in range(iterations):
         r *= 2
         noise += common_upscale(
             torch.normal(
@@ -312,14 +339,23 @@ def pyramid_old_noise_like(
 
 
 # Copied from https://wandb.ai/johnowhitaker/multires_noise/reports/Multi-Resolution-Noise-for-Diffusion-Model-Training--VmlldzozNjYyOTU2
-def pyramid_noise_like(x, discount=0.7, upscale_mode="bilinear"):
+def pyramid_noise_like(
+    x,
+    *,
+    discount=0.7,
+    upscale_mode="bilinear",
+    iterations=10,
+    generator=None,
+):
     b, c, w, h = (
         x.shape
     )  # NOTE: w and h get over-written, rename for a different variant!
     orig_w, orig_h = w, h
     noise = torch.randn_like(x)
-    for i in range(10):
-        r = torch.rand(1, device="cpu").item() * 2 + 2  # Rather than always going 2x,
+    for i in range(iterations):
+        r = (
+            torch.rand(1, generator=generator).cpu().item() * 2 + 2
+        )  # Rather than always going 2x,
         w, h = max(1, int(w / (r**i))), max(1, int(h / (r**i)))
         noise += common_upscale(
             torch.randn(b, c, w, h).to(x),
@@ -343,9 +379,9 @@ def studentt_noise_like(x):
     return torch.copysign(torch.pow(torch.abs(noise), 0.5), noise)
 
 
-def green_noise_like(x):
+def green_noise_like(x, *, generator=None):  # noqa: ARG001
     # The comments said this didn't work and I had to learn the hard way. Turns out it's true!
-    width, height = x.size(dim=2), x.size(dim=3)
+    width, height = x.shape[-2:]
     noise = torch.randn_like(x)
     scale = 1.0 / (width * height)
     fy = torch.fft.fftfreq(width, device=x.device)[:, None] ** 2
@@ -376,8 +412,8 @@ def generate_1f_noise(tensor, alpha, k, generator=None):
     return torch.randn(tensor.shape, generator=generator) * spectral_density
 
 
-def pink_noise_like(x):
-    return scale_noise(generate_1f_noise(x, 2.0, 1.0)).to(x.device)
+def pink_noise_like(x, *, generator=None):
+    return scale_noise(generate_1f_noise(x, 2.0, 1.0, generator=generator)).to(x.device)
 
 
 def laplacian_noise_like(x):

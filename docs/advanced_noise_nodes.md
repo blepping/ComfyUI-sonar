@@ -80,6 +80,12 @@ This node can be used to convert Sonar custom noise to the `NOISE` type used by 
 
 ***
 
+### `SonarAdvancedPyramidNoise`
+
+Allows setting some parameters for the pyramid noise variants (`pyramid`, `highres_pyramid` and `pyramid_old`). `discount` further from zero generally results in a more extreme colorful effect (can also be set to negative values). Higher `iterations` also tends to make the effect more extreme - zero iterations will just return normal Gaussian noise. You can also experiment with the `upscale_mode` for different effects.
+
+***
+
 ### `SonarModulatedNoise`
 
 Experimental noise modulation based on code stolen from
