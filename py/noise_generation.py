@@ -95,7 +95,7 @@ def unfold_grid(vectors: Tensor) -> Tensor:
     Returns:
         batched grid vectors
     """
-    batch_size, _, gpy, gpx = vectors.shape
+    batch_size, _channels, gpy, gpx = vectors.shape
     return (
         torch.nn.functional.unfold(vectors, (2, 2))
         .view(batch_size, 2, 4, -1)
@@ -381,11 +381,11 @@ def studentt_noise_like(x):
 
 def green_noise_like(x, *, generator=None):  # noqa: ARG001
     # The comments said this didn't work and I had to learn the hard way. Turns out it's true!
-    width, height = x.shape[-2:]
+    height, width = x.shape[-2:]
     noise = torch.randn_like(x)
     scale = 1.0 / (width * height)
-    fy = torch.fft.fftfreq(width, device=x.device)[:, None] ** 2
-    fx = torch.fft.fftfreq(height, device=x.device) ** 2
+    fy = torch.fft.fftfreq(height, device=x.device)[:, None] ** 2
+    fx = torch.fft.fftfreq(width, device=x.device) ** 2
     f = fy + fx
     power = torch.sqrt(f)
     power[0, 0] = 1
@@ -406,8 +406,9 @@ def generate_1f_noise(tensor, alpha, k, generator=None):
     Returns:
         A tensor with the same shape as `tensor` containing 1/f noise.
     """
+    batch = tensor.shape[0]
     fft = torch.fft.fft2(tensor)
-    freq = torch.arange(1, len(fft) + 1, dtype=torch.float)
+    freq = torch.arange(1, len(fft) + 1, dtype=torch.float).view(batch, 1, 1, 1)
     spectral_density = k / freq**alpha
     return torch.randn(tensor.shape, generator=generator) * spectral_density
 
