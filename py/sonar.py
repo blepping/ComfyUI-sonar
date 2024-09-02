@@ -157,8 +157,7 @@ class SonarGuidanceMixin:
         return ((latent - avg_s) / std_s).to(latent.dtype)
 
     def guidance_step(self, step_index: int, x: Tensor, denoised: Tensor):
-        step_matched = self.guidance.start_step <= step_index <= self.guidance.end_step
-        if self.guidance is None or self.guidance.factor == 0.0 or not step_matched:
+        if self.guidance is None or self.guidance.factor == 0.0 or not self.guidance.start_step <= step_index <= self.guidance.end_step:
             return x
         if self.ref_latent.device != x.device:
             self.ref_latent = self.ref_latent.to(device=x.device)
