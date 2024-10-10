@@ -80,6 +80,20 @@ class NoisyLatentLikeNode:
                         "tooltip": "Repeats the noise generation the specified number of times. For example, if set to two and your reference latent is also batch two you will get a batch of four as output.",
                     },
                 ),
+                "cpu_noise": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": "Controls whether noise will be generated on GPU or CPU. Only affects noise types that support GPU generation (maybe only Brownian).",
+                    },
+                ),
+                "normalize": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": "Controls whether the generated noise is normalized to 1.0 strength before scaling. Generally should be left enabled.",
+                    },
+                ),
             },
             "optional": {
                 "custom_noise_opt": (
@@ -113,6 +127,8 @@ class NoisyLatentLikeNode:
         multiplier: float = 1.0,
         add_to_latent=False,
         repeat_batch=1,
+        cpu_noise=True,
+        normalize=True,
         custom_noise_opt: object | None = None,
         mul_by_sigmas_opt: None | torch.Tensor = None,
         model_opt: object | None = None,
@@ -147,6 +163,9 @@ class NoisyLatentLikeNode:
                 latent_samples,
                 sigma_min=sigma_min,
                 sigma_max=sigma_max,
+                seed=seed,
+                cpu=cpu_noise,
+                normalized=normalize,
             )
         else:
             ns = noise.get_noise_sampler(
@@ -155,7 +174,8 @@ class NoisyLatentLikeNode:
                 sigma_min,
                 sigma_max,
                 seed=seed,
-                cpu=True,
+                cpu=cpu_noise,
+                normalized=normalize,
             )
         randst = torch.random.get_rng_state()
         try:
