@@ -16,7 +16,11 @@ from comfy.k_diffusion.sampling import BrownianTreeNoiseSampler
 from PIL import Image
 from torch import Tensor
 
-from .nodes import SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMixin
+from .nodes import (
+    WILDCARD_NOISE,
+    SonarCustomNoiseNodeBase,
+    SonarNormalizeNoiseNodeMixin,
+)
 from .noise import CustomNoiseItemBase
 from .noise_generation import scale_noise
 
@@ -112,7 +116,7 @@ class PowerFilter:
         scale=1.0,
         rel_bw=0.125,
         oversample=4,
-        compose_with: None | PowerFilter = None,
+        compose_with: PowerFilter | None = None,
         compose_mode="max",
     ):
         self.min_freq = min_freq
@@ -688,7 +692,7 @@ class SonarPowerFilterNoiseNode(SonarPowerNoiseNode, SonarNormalizeNoiseNodeMixi
             del result["required"][k]
         result["required"] |= {
             "sonar_custom_noise": (
-                "SONAR_CUSTOM_NOISE",
+                WILDCARD_NOISE,
                 {
                     "tooltip": "Custom noise type to filter.",
                 },

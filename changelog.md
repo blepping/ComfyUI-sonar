@@ -2,6 +2,21 @@
 
 Note, only relatively significant changes to user-visible functionality will be included here. Most recent changes at the top.
 
+## 20241129
+
+*Note*: Contains some potentially workflow-breaking changes.
+
+* `pink` noise type renamed to `pink_old` - the implementation was incorrect.
+* `power` noise type renamed to `power_old` - the implementation was incorrect.
+* Added `onef_pinkish` (higher frequencye) and `onef_greenish` (lower frequency) noise types.
+* Added `SonarAdvanced1fNoise` node and `onef_pinkish`, `onef_greenish`, `onef_pinkish_mix`, `onef_greenish_mix`, and `onef_pinkishgreenish` noise types.
+* Added `SonarAdvancedPowerLawNoise` node and `grey`, `white`, `violet` and `velvet` noise types.
+* The `SonarAdvancedPyramidNoise` node can now use upscale methods from my [ComfyUI-bleh](https://github.com/blepping/ComfyUI-bleh) node pack if it is available.
+* Added the `SonarChannelNoise` and `SonarBlendedNoise` nodes.
+* Added the `SonarBlehOpsNoise` node.
+* Added advanced parameter input to the SampleConfigOverride node, you can now pass options directly to the wrapped sampler function.
+* Custom noise inputs now are semi-wildcard and will accept `OCS_NOISE` or `SONAR_CUSTOM_NOISE` interchangeably.
+
 ## 20240823
 
 * Added descriptions and tooltips for most nodes.
