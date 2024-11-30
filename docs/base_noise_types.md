@@ -8,6 +8,18 @@ noise of that type. However you can either schedule the noise type to kick in at
 (as in these examples) and/or mix it with something a bit more run of the mill. See
 [advanced_noise_nodes](advanced_noise_nodes.md).
 
+## Documentation TBD
+
+* `grey`
+* `onef_greenish_mix` (50/50 mix of positive/negative noise.)
+* `onef_greenish`
+* `onef_pinkish_mix` (50/50 mix of positive/negative noise.)
+* `onef_pinkish`
+* `onef_pinkishgreenish` (50/50 mix of `onef_pinkish` and `onef_greenish`.)
+* `velvet`
+* `violet`
+* `white`
+
 ## Brownian
 
 This is the default noise type for SDE samplers.
@@ -62,13 +74,17 @@ Variation using bislerp scaling:
 
 ***
 
-## Pink
+## Pink Old
+
+Previously known as `pink`. The implementation isn't correct, though in terms of results it's fine.
 
 ![Pink](../assets/example_images/noise_base_types/noise_pink.png)
 
 ***
 
-## Power Builtin
+## Power Old
+
+Previously known as `power`. The implementation isn't correct, though in terms of results it's fine.
 
 ![PowerBuiltin](../assets/example_images/noise_base_types/noise_power_builtin.png)
 

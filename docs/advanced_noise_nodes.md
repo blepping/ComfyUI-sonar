@@ -72,6 +72,8 @@ If you want to create noise for initial sampling, connect model and sigmas to th
 
 This node can be used to override configuration settings for other samplers, including the noise type. For example, you could force `euler_ancestral` to use a different noise type. It's also possible to override other settings like `s_noise`, etc. *Note*: The wrapper inspects the sampling function's arguments to see what it supports, so you should connect the sampler directly to this rather than having other nodes (like a different sampler wrapper) in between.
 
+You can enter YAML parameters in the text input, these arguments are passed directly to the sampler function without any error checking. If the same key exists in the node itself (i.e. `s_noise`) the one in the text input will take precedence. Note that these are based on the internal sampler function so the names of the arguments won't necessarily be the same as the sampler node (but they often are). You may need to check the source code for the sampler.
+
 ***
 
 ### `SONAR_CUSTOM_NOISE to NOISE`
@@ -83,6 +85,26 @@ This node can be used to convert Sonar custom noise to the `NOISE` type used by 
 ### `SonarAdvancedPyramidNoise`
 
 Allows setting some parameters for the pyramid noise variants (`pyramid`, `highres_pyramid` and `pyramid_old`). `discount` further from zero generally results in a more extreme colorful effect (can also be set to negative values). Higher `iterations` also tends to make the effect more extreme - zero iterations will just return normal Gaussian noise. You can also experiment with the `upscale_mode` for different effects.
+
+### `SonarAdvanced1fNoise`
+
+More extensive documentation TBD (hopefully). For now, a few recipes:
+
+These differ differ only in alpha. For the other parameters, use `k=1, vf=1, hf=1, use_sqrt=true` to start.
+
+* `blue`: `alpha=1`
+* `green`: `alpha=0.75`
+* `pink`: `alpha=0.5`
+*
+
+### `SonarAdvancedPowerLawNoise`
+
+More extensive documentation TBD (hopefully). For now, a few recipes:
+
+* `white`: `alpha=0, use_sign=true, div_max_dims=none`
+* `grey`: `alpha=0, use_sign=false, div_max_dims=none`
+* `velvet`: `alpha=1, use_sign=true, div_max_dims=all, use_div_max_abs=true`
+* `violet`: `alpha=0.5, use_sign=true, div_max_dims=all, use_div_max_abs=true`
 
 ***
 
@@ -326,3 +348,29 @@ Light to dark (negative strength):
 Randomly chooses between the noise types in the chain connected to it each time the noise sampler is called.
 You generally do not want to use `rescale` here. You can also set `mix_count` to choose and combine multiple
 types.
+
+### `SonarChannelNoise`
+
+Allows using a different noise generator per channel. The custom noise items attached to this node are treated as a list where the furthest item from the node will correspond to channel 0. For example where CN is a custom noise node and SCN is the `SonarChannelNoise` node:
+
+```plaintext
+CN (channel 0) -> CN (channel 1) -> SCN
+```
+
+Don't enable `rescale` in the custom noise nodes attached to `SonarChannelNoise`. If you want a blend of noise types for a channel, you can use something like `SonarBlendedNoise`.
+
+### `SonarBlendedNoise`
+
+Allows blending two noise generators. If [ComfyUI-bleh](https://github.com/blepping/ComfyUI-bleh) is available, you will have access to many more blending modes.
+
+### `SonarBlehOpsNoise`
+
+Only provided if [ComfyUI-bleh](https://github.com/blepping/ComfyUI-bleh) is available. Allows transforming/manipulating noise with bleh blockops expressions. For instance, you can do something like:
+
+```yaml
+- ops:
+  - [multiply, -1]
+  - [roll, -2, 0.5]
+```
+
+to flip the sign on the noise and then roll dimension -2 (height) by 50%.
