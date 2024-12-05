@@ -17,6 +17,7 @@ from PIL import Image
 from torch import Tensor
 
 from .nodes import (
+    NOISE_INPUT_TYPES_HINT,
     WILDCARD_NOISE,
     SonarCustomNoiseNodeBase,
     SonarNormalizeNoiseNodeMixin,
@@ -694,7 +695,7 @@ class SonarPowerFilterNoiseNode(SonarPowerNoiseNode, SonarNormalizeNoiseNodeMixi
             "sonar_custom_noise": (
                 WILDCARD_NOISE,
                 {
-                    "tooltip": "Custom noise type to filter.",
+                    "tooltip": f"Custom noise type to filter.\n{NOISE_INPUT_TYPES_HINT}",
                 },
             ),
             "sonar_power_filter": (

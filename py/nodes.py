@@ -25,6 +25,46 @@ from .sonar import (
     SonarGuidanceMixin,
 )
 
+try:
+    from comfy_execution import validation as comfy_validation
+
+    if not hasattr(comfy_validation, "validate_node_input"):
+        raise NotImplementedError  # noqa: TRY301
+    HAVE_COMFY_UNION_TYPE = comfy_validation.validate_node_input("B", "A,B")
+except (ImportError, NotImplementedError):
+    HAVE_COMFY_UNION_TYPE = False
+except Exception as exc:  # noqa: BLE001
+    HAVE_COMFY_UNION_TYPE = False
+    print(
+        f"** ComfyUI-sonar: Warning, caught unexpected exception trying to detect ComfyUI union type support. Disabling. Exception: {exc}",
+    )
+
+NOISE_INPUT_TYPES = frozenset(("SONAR_CUSTOM_NOISE", "OCS_NOISE"))
+
+if not HAVE_COMFY_UNION_TYPE:
+
+    class Wildcard(str):  # noqa: FURB189
+        __slots__ = ("whitelist",)
+
+        @classmethod
+        def __new__(cls, s, *args: list, whitelist=None, **kwargs: dict):
+            result = super().__new__(s, *args, **kwargs)
+            result.whitelist = whitelist
+            return result
+
+        def __ne__(self, other):  # noqa: D105
+            return False if self.whitelist is None else other not in self.whitelist
+
+    WILDCARD_NOISE = Wildcard("*", whitelist=NOISE_INPUT_TYPES)
+else:
+    WILDCARD_NOISE = ",".join(NOISE_INPUT_TYPES)
+
+
+NOISE_INPUT_TYPES_HINT = (
+    f"The following input types are supported: {', '.join(NOISE_INPUT_TYPES)}"
+)
+
+
 if "bleh" in external.MODULES:
     bleh_latent_utils = external.MODULES["bleh"].py.latent_utils
     BLEND_MODES = bleh_latent_utils.BLENDING_MODES
@@ -40,28 +80,6 @@ else:
         "bicubic",
         "bislerp",
     )
-
-
-class Wildcard(str):  # noqa: FURB189
-    __slots__ = ("whitelist",)
-
-    @classmethod
-    def __new__(cls, s, *args: list, whitelist=None, **kwargs: dict):
-        result = super().__new__(s, *args, **kwargs)
-        result.whitelist = whitelist
-        return result
-
-    def __ne__(self, other):  # noqa: D105
-        return False if self.whitelist is None else other not in self.whitelist
-
-
-WILDCARD_NOISE = Wildcard(
-    "*",
-    whitelist=frozenset((
-        "SONAR_CUSTOM_NOISE",
-        "OCS_NOISE",
-    )),
-)
 
 
 class NoisyLatentLikeNode:
@@ -138,7 +156,7 @@ class NoisyLatentLikeNode:
                 "custom_noise_opt": (
                     WILDCARD_NOISE,
                     {
-                        "tooltip": "Allows connecting a custom noise chain. When connected, noise_type has no effect.",
+                        "tooltip": f"Allows connecting a custom noise chain. When connected, noise_type has no effect.\n{NOISE_INPUT_TYPES_HINT}",
                     },
                 ),
                 "mul_by_sigmas_opt": (
@@ -281,7 +299,7 @@ class SonarCustomNoiseNodeBase(abc.ABC):
                 "sonar_custom_noise_opt": (
                     WILDCARD_NOISE,
                     {
-                        "tooltip": "Optional input for more custom noise items.",
+                        "tooltip": f"Optional input for more custom noise items.\n{NOISE_INPUT_TYPES_HINT}",
                     },
                 ),
             }
@@ -339,7 +357,7 @@ class SonarModulatedNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeM
             "sonar_custom_noise": (
                 WILDCARD_NOISE,
                 {
-                    "tooltip": "Input custom noise to modulate.",
+                    "tooltip": f"Input custom noise to modulate.\n{NOISE_INPUT_TYPES_HINT}",
                 },
             ),
             "modulation_type": (
@@ -436,7 +454,7 @@ class SonarRepeatedNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMi
             "sonar_custom_noise": (
                 WILDCARD_NOISE,
                 {
-                    "tooltip": "Custom noise input for items to repeat. Note: Unlike most other custom noise nodes, this is treated like a list.",
+                    "tooltip": f"Custom noise input for items to repeat. Note: Unlike most other custom noise nodes, this is treated like a list.\n{NOISE_INPUT_TYPES_HINT}",
                 },
             ),
             "repeat_length": (
@@ -512,7 +530,7 @@ class SonarScheduledNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeM
             "sonar_custom_noise": (
                 WILDCARD_NOISE,
                 {
-                    "tooltip": "Custom noise to use when start_percent and end_percent matches.",
+                    "tooltip": f"Custom noise to use when start_percent and end_percent matches.\n{NOISE_INPUT_TYPES_HINT}",
                 },
             ),
             "start_percent": (
@@ -544,7 +562,7 @@ class SonarScheduledNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeM
             "fallback_sonar_custom_noise": (
                 WILDCARD_NOISE,
                 {
-                    "tooltip": "Optional input for noise to use when outside of the start_percent, end_percent range. NOTE: When not connected, defaults to NO NOISE which is probably not what you want.",
+                    "tooltip": f"Optional input for noise to use when outside of the start_percent, end_percent range. NOTE: When not connected, defaults to NO NOISE which is probably not what you want.\n{NOISE_INPUT_TYPES_HINT}",
                 },
             ),
         }
@@ -588,13 +606,13 @@ class SonarCompositeNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeM
             "sonar_custom_noise_dst": (
                 WILDCARD_NOISE,
                 {
-                    "tooltip": "Custom noise input for noise where the mask is not set.",
+                    "tooltip": f"Custom noise input for noise where the mask is not set.\n{NOISE_INPUT_TYPES_HINT}",
                 },
             ),
             "sonar_custom_noise_src": (
                 WILDCARD_NOISE,
                 {
-                    "tooltip": "Custom noise input for noise where the mask is set..",
+                    "tooltip": f"Custom noise input for noise where the mask is set.\n{NOISE_INPUT_TYPES_HINT}",
                 },
             ),
             "normalize_dst": (
@@ -666,7 +684,7 @@ class SonarGuidedNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMixi
             "sonar_custom_noise": (
                 WILDCARD_NOISE,
                 {
-                    "tooltip": "Custom noise input to combine with the guidance.",
+                    "tooltip": f"Custom noise input to combine with the guidance.\n{NOISE_INPUT_TYPES_HINT}",
                 },
             ),
             "method": (
@@ -748,7 +766,7 @@ class SonarRandomNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMixi
             "sonar_custom_noise": (
                 WILDCARD_NOISE,
                 {
-                    "tooltip": "Custom noise input for noise items to randomize. Note: Unlike most other custom noise nodes, this is treated like a list.",
+                    "tooltip": f"Custom noise input for noise items to randomize. Note: Unlike most other custom noise nodes, this is treated like a list.\n{NOISE_INPUT_TYPES_HINT}",
                 },
             ),
             "mix_count": (
@@ -799,7 +817,7 @@ class SonarChannelNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMix
             "sonar_custom_noise": (
                 WILDCARD_NOISE,
                 {
-                    "tooltip": "Custom noise input for noise items corresponding to each channel. SD1/2x and SDXL use 4 channels, Flux and SD3 use 16. Note: Unlike most other custom noise nodes, this is treated like a list where the noise item furthest from the node corresponds to channel 0.",
+                    "tooltip": f"Custom noise input for noise items corresponding to each channel. SD1/2x and SDXL use 4 channels, Flux and SD3 use 16. Note: Unlike most other custom noise nodes, this is treated like a list where the noise item furthest from the node corresponds to channel 0.\n{NOISE_INPUT_TYPES_HINT}",
                 },
             ),
             "insufficient_channels_mode": (
@@ -871,13 +889,13 @@ class SonarBlendedNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMix
             "custom_noise_1": (
                 WILDCARD_NOISE,
                 {
-                    "tooltip": "Custom noise. Optional if noise_2 percent is 1.",
+                    "tooltip": f"Custom noise. Optional if noise_2 percent is 1.\n{NOISE_INPUT_TYPES_HINT}",
                 },
             ),
             "custom_noise_2": (
                 WILDCARD_NOISE,
                 {
-                    "tooltip": "Custom noise. Optional if noise_2_percent is 0.",
+                    "tooltip": f"Custom noise. Optional if noise_2_percent is 0.\n{NOISE_INPUT_TYPES_HINT}",
                 },
             ),
         }
@@ -1218,7 +1236,7 @@ class SonarToComfyNOISENode:
                 "custom_noise": (
                     WILDCARD_NOISE,
                     {
-                        "tooltip": "Custom noise type to convert.",
+                        "tooltip": f"Custom noise type to convert.\n{NOISE_INPUT_TYPES_HINT}",
                     },
                 ),
                 "seed": (
@@ -1495,7 +1513,7 @@ class SamplerNodeSonarEulerAncestral(SamplerNodeSonarEuler):
                 "custom_noise_opt": (
                     WILDCARD_NOISE,
                     {
-                        "tooltip": "Optional input for custom noise used during ancestral or SDE sampling. When connected, the built-in noise_type selector is ignored.",
+                        "tooltip": f"Optional input for custom noise used during ancestral or SDE sampling. When connected, the built-in noise_type selector is ignored.\n{NOISE_INPUT_TYPES_HINT}",
                     },
                 ),
             },
@@ -1569,7 +1587,7 @@ class SamplerNodeSonarDPMPPSDE(SamplerNodeSonarEuler):
                 "custom_noise_opt": (
                     WILDCARD_NOISE,
                     {
-                        "tooltip": "Optional input for custom noise used during ancestral or SDE sampling. When connected, the built-in noise_type selector is ignored.",
+                        "tooltip": f"Optional input for custom noise used during ancestral or SDE sampling. When connected, the built-in noise_type selector is ignored.\n{NOISE_INPUT_TYPES_HINT}",
                     },
                 ),
             },
@@ -1691,7 +1709,7 @@ class SamplerNodeConfigOverride:
                 "custom_noise_opt": (
                     WILDCARD_NOISE,
                     {
-                        "tooltip": "Optional input for custom noise used during ancestral or SDE sampling. When connected, the built-in noise_type selector is ignored.",
+                        "tooltip": f"Optional input for custom noise used during ancestral or SDE sampling. When connected, the built-in noise_type selector is ignored.\n{NOISE_INPUT_TYPES_HINT}",
                     },
                 ),
                 "yaml_parameters": (
@@ -1869,7 +1887,12 @@ if "bleh" in external.MODULES:
         def INPUT_TYPES(cls):
             result = super().INPUT_TYPES(include_rescale=False, include_chain=False)
             result["required"] |= {
-                "sonar_custom_noise": (WILDCARD_NOISE,),
+                "sonar_custom_noise": (
+                    WILDCARD_NOISE,
+                    {
+                        "tooltip": f"Custom noise input.\n{NOISE_INPUT_TYPES_HINT}",
+                    },
+                ),
                 "blend_mode": (
                     ("simple_add", *bleh_latentutils.BLENDING_MODES.keys()),
                 ),
@@ -1957,7 +1980,12 @@ if "bleh" in external.MODULES:
         def INPUT_TYPES(cls):
             result = super().INPUT_TYPES(include_rescale=False, include_chain=False)
             result["required"] |= {
-                "sonar_custom_noise": (WILDCARD_NOISE,),
+                "sonar_custom_noise": (
+                    WILDCARD_NOISE,
+                    {
+                        "tooltip": f"Custom noise input.\n{NOISE_INPUT_TYPES_HINT}",
+                    },
+                ),
                 "normalize": (
                     ("default", "forced", "disabled"),
                     {
@@ -2042,7 +2070,12 @@ if "restart" in external.MODULES:
                     "chunked_mode": ("BOOLEAN", {"default": True}),
                 },
                 "optional": {
-                    "custom_noise_opt": (WILDCARD_NOISE,),
+                    "custom_noise_opt": (
+                        WILDCARD_NOISE,
+                        {
+                            "tooltip": f"Optional custom noise input.\n{NOISE_INPUT_TYPES_HINT}",
+                        },
+                    ),
                 },
             }
 
@@ -2110,7 +2143,12 @@ if "restart" in external.MODULES:
                         "chunked_mode": ("BOOLEAN", {"default": True}),
                     },
                     "optional": {
-                        "custom_noise_opt": (WILDCARD_NOISE,),
+                        "custom_noise_opt": (
+                            WILDCARD_NOISE,
+                            {
+                                "tooltip": f"Optional custom noise input.\n{NOISE_INPUT_TYPES_HINT}",
+                            },
+                        ),
                     },
                 }
 
