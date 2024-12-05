@@ -9,7 +9,7 @@ from typing import Any, Callable
 import numpy as np
 import torch
 import yaml
-from comfy import samplers
+from comfy import model_management, samplers
 
 from . import external, noise
 from .noise import NoiseType
@@ -210,11 +210,17 @@ class NoisyLatentLikeNode:
                 / latent_scale_factor
             )
         if sigmas is not None and sigmas.numel() > 1:
-            sigma_min, sigma_max = sigmas[0], sigmas[-1]
+            sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
             sigma, sigma_next = sigmas[0], sigmas[1]
         else:
             sigma_min, sigma_max, sigma, sigma_next = (None,) * 4
         latent_samples = latent["samples"]
+        orig_device = latent_samples.device
+        want_device = (
+            torch.device("cpu") if cpu_noise else model_management.get_torch_device()
+        )
+        if latent_samples.device != want_device:
+            latent_samples = latent_samples.detach().clone().to(want_device)
         if custom_noise_opt is not None:
             ns = custom_noise_opt.make_noise_sampler(
                 latent_samples,
@@ -248,6 +254,7 @@ class NoisyLatentLikeNode:
             result += latent_samples.repeat(
                 *(repeat_batch if i == 0 else 1 for i in range(latent_samples.ndim)),
             ).to(result)
+        result = result.to(orig_device)
         return ({"samples": result},)
 
 
@@ -339,6 +346,26 @@ class SonarCustomNoiseNode(SonarCustomNoiseNodeBase):
     @classmethod
     def get_item_class(cls):
         return noise.CustomNoiseItem
+
+
+class SonarCustomNoiseAdvNode(SonarCustomNoiseNode):
+    DESCRIPTION = "A custom noise item allowing advanced YAML parameter input."
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        result = super().INPUT_TYPES()
+        result["optional"] |= {
+            "yaml_parameters": (
+                "STRING",
+                {
+                    "tooltip": "Allows specifying custom parameters via YAML. Note: When specifying paramaters this way, there is no error checking.",
+                    "placeholder": "# YAML or JSON here",
+                    "dynamicPrompts": False,
+                    "multiline": True,
+                },
+            ),
+        }
+        return result
 
 
 class SonarNormalizeNoiseNodeMixin:
@@ -1856,6 +1883,7 @@ NODE_CLASS_MAPPINGS = {
     "SonarAdvanced1fNoise": SonarAdvanced1fNoiseNode,
     "SonarAdvancedPowerLawNoise": SonarAdvancedPowerLawNoiseNode,
     "SonarCustomNoise": SonarCustomNoiseNode,
+    "SonarCustomNoiseAdv": SonarCustomNoiseAdvNode,
     "SonarCompositeNoise": SonarCompositeNoiseNode,
     "SonarModulatedNoise": SonarModulatedNoiseNode,
     "SonarRepeatedNoise": SonarRepeatedNoiseNode,
