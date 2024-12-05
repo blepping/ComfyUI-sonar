@@ -18,7 +18,17 @@ from .sonar import SonarGuidanceMixin
 
 
 class CustomNoiseItemBase(abc.ABC):
-    def __init__(self, factor, **kwargs):
+    def __init__(self, factor, *, yaml_parameters=None, **kwargs):
+        if yaml_parameters:
+            extra_params = yaml.safe_load(yaml_parameters)
+            if extra_params is None:
+                pass
+            elif not isinstance(extra_params, dict):
+                raise ValueError(
+                    "CustomNoiseItem: yaml_parameters must either be null or an object",
+                )
+            else:
+                kwargs["ns_kwargs"] = extra_params
         self.factor = factor
         self.keys = set(kwargs.keys())
         for k, v in kwargs.items():
@@ -53,17 +63,7 @@ class CustomNoiseItemBase(abc.ABC):
 
 
 class CustomNoiseItem(CustomNoiseItemBase):
-    def __init__(self, factor, *, yaml_parameters=None, **kwargs):
-        if yaml_parameters:
-            extra_params = yaml.safe_load(yaml_parameters)
-            if extra_params is None:
-                pass
-            elif not isinstance(extra_params, dict):
-                raise ValueError(
-                    "CustomNoiseItem: yaml_parameters must either be null or an object",
-                )
-            else:
-                kwargs["ns_kwargs"] = extra_params
+    def __init__(self, factor, **kwargs):
         super().__init__(factor, **kwargs)
         if getattr(self, "noise_type", None) is None:
             raise ValueError("Noise type required!")
@@ -1017,6 +1017,63 @@ class BlendedNoise(CustomNoiseItemBase):
                 else blend_function(noise_1, ns_2(s, sn), n2_blend_tensor)
             )
             return scale_noise(noise, factor, normalized=normalize)
+
+        return noise_sampler
+
+
+class WaveletFilteredNoise(CustomNoiseItemBase):
+    def __init__(self, factor, *, normalize, noise, normalize_noise=False, **kwargs):
+        super().__init__(
+            factor,
+            noise=noise,
+            normalize=normalize,
+            normalize_noise=normalize_noise,
+            **kwargs,
+        )
+
+    def clone_key(self, k):
+        if k == "noise":
+            return self.noise.clone()
+        return super().clone_key(k)
+
+    def make_noise_sampler(
+        self,
+        x,
+        sigma_min,
+        sigma_max,
+        *args,
+        normalized=True,
+        **kwargs,
+    ):
+        factor = self.factor
+        normalize = self.get_normalize("normalize", normalized)
+        internal_ns = self.noise.make_noise_sampler(
+            x,
+            *args,
+            sigma_min=sigma_min,
+            sigma_max=sigma_max,
+            normalized=self.normalize_noise,
+            **kwargs,
+        )
+        ns_kwargs = getattr(self, "ns_kwargs", {}).copy()
+        # print("WF:NS KWARGS", ns_kwargs)
+        kwargs |= ns_kwargs
+        ns = WaveletNoiseGenerator(
+            x,
+            *args,
+            sigma_min=sigma_min,
+            sigma_max=sigma_max,
+            normalized=False,
+            noise_sampler=internal_ns,
+            **kwargs,
+        )
+
+        def noise_sampler(sigma, sigma_next):
+            return scale_noise(
+                ns(sigma, sigma_next),
+                factor,
+                normalized=normalize,
+            )
 
         return noise_sampler
 

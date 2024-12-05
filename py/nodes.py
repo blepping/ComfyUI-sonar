@@ -1250,6 +1250,75 @@ class CustomNOISE:
         return torch.cat(tuple(result[i] for i in inverse_inds), axis=0)
 
 
+class SonarWaveletFilteredNoiseNode(
+    SonarCustomNoiseNodeBase,
+    SonarNormalizeNoiseNodeMixin,
+):
+    DESCRIPTION = "Custom noise type that allows filtering another custom noise source with wavelets."
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        result = super().INPUT_TYPES()
+        result["required"] |= {
+            "custom_noise": (
+                WILDCARD_NOISE,
+                {
+                    "tooltip": f"Custom noise.\n{NOISE_INPUT_TYPES_HINT}",
+                },
+            ),
+            "normalize_noise": (
+                "BOOLEAN",
+                {
+                    "default": False,
+                    "tooltip": "Controls whether the noise source is normalized before wavelet filtering occurs.",
+                },
+            ),
+            "normalize": (
+                ("default", "forced", "disabled"),
+                {
+                    "tooltip": "Controls whether the generated noise is normalized to 1.0 strength. For weird blend modes, you may want to set this to forced.",
+                },
+            ),
+        }
+        result["optional"] |= {
+            "yaml_parameters": (
+                "STRING",
+                {
+                    "tooltip": "Allows specifying custom parameters via YAML. Note: When specifying paramaters this way, there is no error checking.",
+                    "placeholder": "# YAML or JSON here",
+                    "dynamicPrompts": False,
+                    "multiline": True,
+                },
+            ),
+        }
+        return result
+
+    @classmethod
+    def get_item_class(cls):
+        return noise.WaveletFilteredNoise
+
+    def go(
+        self,
+        *,
+        factor,
+        rescale,
+        normalize,
+        normalize_noise,
+        custom_noise,
+        yaml_parameters=None,
+        sonar_custom_noise_opt=None,
+    ):
+        return super().go(
+            factor,
+            rescale=rescale,
+            sonar_custom_noise_opt=sonar_custom_noise_opt,
+            normalize=self.get_normalize(normalize),
+            normalize_noise=normalize_noise,
+            noise=custom_noise,
+            yaml_parameters=yaml_parameters,
+        )
+
+
 class SonarToComfyNOISENode:
     DESCRIPTION = "Allows converting SONAR_CUSTOM_NOISE to NOISE (used by SamplerCustomAdvanced and possibly other custom samplers). NOTE: Does not work with noise types that depend on sigma (Brownian, ScheduledNoise, etc)."
     RETURN_TYPES = ("NOISE",)
@@ -1892,6 +1961,7 @@ NODE_CLASS_MAPPINGS = {
     "SonarRandomNoise": SonarRandomNoiseNode,
     "SonarChannelNoise": SonarChannelNoiseNode,
     "SonarBlendedNoise": SonarBlendedNoiseNode,
+    "SonarWaveletFilteredNoise": SonarWaveletFilteredNoiseNode,
     "SONAR_CUSTOM_NOISE to NOISE": SonarToComfyNOISENode,
 }
 

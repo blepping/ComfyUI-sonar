@@ -912,19 +912,30 @@ class WaveletNoiseGenerator(NoiseGenerator):
             "biort": "near_sym_a",
             "yl_scale": 1.0,
             "yh_scales": None,
+            "noise_sampler": None,
         }
 
-    def generate(self, *_args):
-        noise = self.rand_like()
+    def generate(self, *args):
+        noise = (
+            self.rand_like()
+            if self.noise_sampler is None
+            else self.noise_sampler(*args)
+        )
         yl, yh = self.wavelet_forward(noise)
         if self.yl_scale != 1:
             yl *= self.yl_scale
-        if self.yh_scales:
-            for hscale, ht in zip(self.yh_scales, yh):
-                if isinstance(ht, (int, float)):
-                    ht *= ht  # noqa: PLW2901
+        if self.yh_scales is not None:
+            yh_scales = self.yh_scales
+            if isinstance(yh_scales, (int, float)):
+                yh_scales = (yh_scales,) * len(yh)
+            # print("SCALES", self.yl_scale, yh_scales)
+            for hscale, ht in zip(yh_scales, yh):
+                # print(">> SCALING", hscale)
+                if isinstance(hscale, (int, float)):
+                    ht *= hscale  # noqa: PLW2901
                     continue
                 for lidx in range(min(ht.shape[2], len(hscale))):
+                    # print(">>    SCALE IDX", lidx)
                     ht[:, :, lidx, :, :] *= hscale[lidx]
         return self.wavelet_inverse((yl, yh))
 
