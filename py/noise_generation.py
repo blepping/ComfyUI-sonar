@@ -278,7 +278,7 @@ class BrownianNoiseGenerator(NoiseGenerator):
             x,
             sigma_min,
             sigma_max,
-            seed,
+            seed=seed,
             cpu=self.cpu,
         )
 
