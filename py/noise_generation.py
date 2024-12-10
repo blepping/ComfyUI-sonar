@@ -26,6 +26,7 @@ from .external import MODULES as EXT
 
 class NoiseType(Enum):
     BROWNIAN = auto()
+    DISTRO = auto()
     GAUSSIAN = auto()
     GREEN_TEST = auto()
     GREY = auto()
@@ -158,6 +159,7 @@ class NoiseGenerator:
     def ng_params(cls):
         return {
             "normalized": True,
+            "force_normalize": None,
             "normalize_dims": None,
             "cpu": True,
             "generator": None,
@@ -195,7 +197,8 @@ class NoiseGenerator:
             noise = tensor_to(noise, self.device)
         return scale_noise(
             noise,
-            normalized=self.normalized,
+            normalized=self.normalized
+            and (self.force_normalize is None or self.force_normalize is True),
             normalize_dims=self.normalize_dims,
         )
 
@@ -830,6 +833,228 @@ class LaplacianNoiseGenerator(NoiseGenerator):
         return noise
 
 
+class DistroNoiseGenerator(NoiseGenerator):
+    name = "distro"
+
+    valid_distros = frozenset((
+        "beta",
+        "cauchy",
+        "continuous_bernoulli",
+        "dirichlet",
+        "exponential",
+        "fisher_snedecor",
+        "gamma",
+        "geometric",
+        "gumbel",
+        "inverse_gamma",
+        "kumaraswamy",
+        "laplacian",
+        "log_normal",
+        "normal",
+        "pareto",
+        "poisson",
+        "studentt",
+        "uniform",
+        "vonmises",
+        "weibull",
+    ))
+
+    simple_distros = frozenset((
+        "cauchy",
+        "exponential",
+        "geometric",
+        "log_normal",
+        "normal",
+        "uniform",
+    ))
+
+    def __init__(self, x, *args, **kwargs):
+        super().__init__(x, *args, **kwargs)
+        if self.distro not in self.valid_distros:
+            raise ValueError("Bad distro")
+
+    @classmethod
+    @property
+    def ng_params(cls):
+        return super().ng_params | {
+            "distro": "normal",
+            "quantile_norm": 0.85,
+            "quantile_norm_pow": 0.5,
+            "quantile_norm_fac": 1.0,
+            # Simple
+            "exponential_lambd": 1.0,
+            "cauchy_median": 0.0,
+            "cauchy_sigma": 1.0,
+            "geometric_p": 0.25,
+            "log_normal_mean": 1.0,
+            "log_normal_std": 2,
+            "normal_mean": 0.0,
+            "normal_std": 1.0,
+            "uniform_from": 0.0,
+            "uniform_to": 1.0,
+            # Complex distros
+            "laplacian_loc": 0.0,
+            "laplacian_scale": 1.0,
+            "studentt_loc": 0,
+            "studentt_scale": 1.0,
+            "studentt_df": 1.0,
+            "beta_alpha": 0.5,
+            "beta_beta": 0.5,
+            "continuous_bernoulli_probs": 0.5,
+            "dirichlet_concentration": (0.5, 0.5),
+            "dirichlet_batch_idx": 1,
+            "fisher_snedecor_df1": 1.0,
+            "fisher_snedecor_df2": 2.0,
+            "gamma_concentration": 1.0,
+            "gamma_rate": 1.0,
+            "gumbel_loc": 1.0,
+            "gumbel_scale": 2.0,
+            "inverse_gamma_concentration": 1.0,
+            "inverse_gamma_rate": 1.0,
+            "kumaraswamy_alpha": 1.0,
+            "kumaraswamy_beta": 1.0,
+            "pareto_scale": 1.0,
+            "pareto_alpha": 1.0,
+            "poisson_rate": 1.5,
+            "vonmises_loc": 1.0,
+            "vonmises_concentration": 1.0,
+            "weibull_scale": 1.0,
+            "weibull_concentration": 1.0,
+        }
+
+    def norm_quantile(self, noise):
+        if self.distro == "dirichlet":
+            noise = noise[..., self.dirichlet_batch_idx]
+        if (
+            self.quantile_norm is None
+            or self.quantile_norm <= 0
+            or self.quantile_norm >= 1
+        ):
+            return noise
+        nq = torch.quantile(
+            noise.flatten(start_dim=1).abs(),
+            self.quantile_norm,
+            dim=-1,
+        )
+        nq_shape = tuple(nq.shape) + (1,) * (noise.ndim - nq.ndim)
+        nq = nq.mul_(self.quantile_norm_fac).reshape(*nq_shape)
+        noise = noise.clamp(-nq, nq)
+        return torch.copysign(
+            torch.pow(torch.abs(noise), self.quantile_norm_pow),
+            noise,
+        ).reshape(self.shape)
+
+    def singlet(self, val):
+        if isinstance(val, torch.Tensor):
+            return val
+        if not isinstance(val, (tuple, list)):
+            val = (val,)
+        return torch.tensor(
+            val,
+            dtype=self.dtype,
+            device=self.gen_device,
+        )
+
+    def generate_simple(self, distro):
+        noise = torch.zeros(
+            *self.shape,
+            device=self.gen_device,
+            dtype=self.dtype,
+            layout=self.layout,
+        )
+        if distro == "exponential":
+            noise.exponential_(lambd=self.exponential_lambd)
+        elif distro == "cauchy":
+            noise.cauchy_(median=self.cauchy_median, sigma=self.cauchy_sigma)
+        elif distro == "geometric":
+            noise.geometric_(p=self.geometric_p)
+        elif distro == "log_normal":
+            noise.log_normal_(mean=self.log_normal_mean, std=self.log_normal_std)
+        elif distro == "normal":
+            noise.normal_(mean=self.normal_mean, std=self.normal_std)
+        elif distro == "uniform":
+            noise.uniform_(self.uniform_from, self.uniform_to)
+        else:
+            raise ValueError("Bad simple distro!")
+        return self.norm_quantile(noise)
+
+    def generate(self, *_args):
+        distro = self.distro
+        if distro in self.simple_distros:
+            return self.generate_simple(distro)
+        td = torch.distributions
+        if distro == "laplacian":
+            dobj = td.Laplace(
+                loc=self.singlet(self.laplacian_loc),
+                scale=self.singlet(self.laplacian_scale),
+            )
+        elif distro == "studentt":
+            dobj = td.StudentT(
+                self.singlet(self.studentt_df),
+                loc=self.singlet(self.studentt_loc),
+                scale=self.singlet(self.studentt_scale),
+            )
+        elif distro == "beta":
+            dobj = td.Beta(
+                self.singlet(self.beta_alpha),
+                self.singlet(self.beta_beta),
+            )
+        elif distro == "continuous_bernoulli":
+            dobj = td.ContinuousBernoulli(
+                probs=self.singlet(self.continuous_bernoulli_probs),
+            )
+        elif distro == "dirichlet":
+            dobj = td.Dirichlet(
+                concentration=self.singlet(self.dirichlet_concentration),
+            )
+        elif distro == "gamma":
+            dobj = td.Gamma(
+                concentration=self.singlet(self.gamma_concentration),
+                rate=self.singlet(self.gamma_rate),
+            )
+        elif distro == "inverse_gamma":
+            dobj = td.InverseGamma(
+                concentration=self.singlet(self.inverse_gamma_concentration),
+                rate=self.singlet(self.inverse_gamma_rate),
+            )
+        elif distro == "gumbel":
+            dobj = td.Gumbel(
+                loc=self.singlet(self.gumbel_loc),
+                scale=self.singlet(self.gumbel_scale),
+            )
+        elif distro == "kumaraswamy":
+            dobj = td.Kumaraswamy(
+                self.singlet(self.kumaraswamy_alpha),
+                self.singlet(self.kumaraswamy_beta),
+            )
+        elif distro == "pareto":
+            dobj = td.Pareto(
+                scale=self.singlet(self.pareto_scale),
+                alpha=self.singlet(self.pareto_alpha),
+            )
+        elif distro == "poisson":
+            dobj = td.Poisson(
+                rate=self.singlet(self.poisson_rate),
+            )
+        elif distro == "vonmises":
+            dobj = td.VonMises(
+                loc=self.singlet(self.vonmises_loc),
+                concentration=self.singlet(self.vonmises_concentration),
+            )
+        elif distro == "weibull":
+            dobj = td.Weibull(
+                scale=self.singlet(self.weibull_scale),
+                concentration=self.singlet(self.weibull_concentration),
+            )
+        else:
+            raise RuntimeError("Impossible: Couldn't find handler for distro")
+        if getattr(dobj, "has_rsample", False):
+            noise = dobj.rsample(self.shape)
+        else:
+            noise = dobj.sample(self.shape)
+        return self.norm_quantile(noise)
+
+
 class PowerOldNoiseGenerator(NoiseGenerator):
     name = "power_old"
 
@@ -942,6 +1167,7 @@ class WaveletNoiseGenerator(NoiseGenerator):
 
 __all__ = (
     "BrownianNoiseGenerator",
+    "DistroNoiseGenerator",
     "GaussianNoiseGenerator",
     "GreenTestNoiseGenerator",
     "HighresPyramidNoiseGenerator",

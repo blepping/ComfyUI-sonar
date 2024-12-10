@@ -279,6 +279,14 @@ class AdvancedPowerLawNoise(AdvancedNoiseBase):
         return PowerLawNoiseGenerator
 
 
+class AdvancedDistroNoise(AdvancedNoiseBase):
+    ns_factory_arg_keys = ("distro",)
+
+    @property
+    def ns_factory(self):
+        return DistroNoiseGenerator
+
+
 class CompositeNoise(CustomNoiseItemBase):
     def __init__(
         self,
@@ -1236,6 +1244,7 @@ if "bleh" in external.MODULES:
 
 NOISE_SAMPLERS: dict[NoiseType, Callable] = {
     NoiseType.BROWNIAN: NoiseSampler.wrap(BrownianNoiseGenerator),
+    NoiseType.DISTRO: NoiseSampler.wrap(DistroNoiseGenerator),
     NoiseType.GAUSSIAN: NoiseSampler.wrap(GaussianNoiseGenerator),
     NoiseType.UNIFORM: NoiseSampler.wrap(UniformNoiseGenerator),
     NoiseType.PERLIN: NoiseSampler.wrap(PerlinOldNoiseGenerator),
