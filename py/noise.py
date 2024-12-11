@@ -80,7 +80,7 @@ class CustomNoiseItem(CustomNoiseItemBase):
         **kwargs,
     ):
         ns_kwargs = getattr(self, "ns_kwargs", {}).copy()
-        print("NS KWARGS", ns_kwargs)
+        # print("NS KWARGS", ns_kwargs)
 
         return get_noise_sampler(
             self.noise_type,
@@ -274,16 +274,26 @@ class Advanced1fNoise(AdvancedNoiseBase):
 class AdvancedPowerLawNoise(AdvancedNoiseBase):
     ns_factory_arg_keys = ("alpha", "div_max_dims", "use_sign")
 
+    @classmethod
     @property
-    def ns_factory(self):
+    def ns_factory(cls):
         return PowerLawNoiseGenerator
 
 
 class AdvancedDistroNoise(AdvancedNoiseBase):
-    ns_factory_arg_keys = ("distro",)
+    distro_params = DistroNoiseGenerator.build_params()
+    ns_factory_arg_keys = (
+        "distro",
+        "quantile_norm",
+        "quantile_norm_dim",
+        "quantile_norm_flatten",
+        "result_index",
+        *distro_params.keys(),
+    )
 
+    @classmethod
     @property
-    def ns_factory(self):
+    def ns_factory(cls):
         return DistroNoiseGenerator
 
 

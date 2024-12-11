@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 from enum import Enum, auto
+from functools import lru_cache
 from typing import Callable
 
 import torch
@@ -836,117 +837,345 @@ class LaplacianNoiseGenerator(NoiseGenerator):
 class DistroNoiseGenerator(NoiseGenerator):
     name = "distro"
 
-    valid_distros = frozenset((
-        "beta",
-        "cauchy",
-        "continuous_bernoulli",
-        "dirichlet",
-        "exponential",
-        "fisher_snedecor",
-        "gamma",
-        "geometric",
-        "gumbel",
-        "inverse_gamma",
-        "kumaraswamy",
-        "laplacian",
-        "log_normal",
-        "normal",
-        "pareto",
-        "poisson",
-        "studentt",
-        "uniform",
-        "vonmises",
-        "weibull",
-    ))
-
     simple_distros = frozenset((
         "cauchy",
         "exponential",
         "geometric",
         "log_normal",
         "normal",
-        "uniform",
     ))
 
     def __init__(self, x, *args, **kwargs):
         super().__init__(x, *args, **kwargs)
-        if self.distro not in self.valid_distros:
+        if self.distro not in self.distro_params:
             raise ValueError("Bad distro")
 
     @classmethod
     @property
-    def ng_params(cls):
-        return super().ng_params | {
-            "distro": "normal",
-            "quantile_norm": 0.85,
-            "quantile_norm_pow": 0.5,
-            "quantile_norm_fac": 1.0,
+    @lru_cache(maxsize=1)
+    def distro_params(cls):
+        td = torch.distributions
+        tt = torch.Tensor
+        return {
             # Simple
-            "exponential_lambd": 1.0,
-            "cauchy_median": 0.0,
-            "cauchy_sigma": 1.0,
-            "geometric_p": 0.25,
-            "log_normal_mean": 1.0,
-            "log_normal_std": 2,
-            "normal_mean": 0.0,
-            "normal_std": 1.0,
-            "uniform_from": 0.0,
-            "uniform_to": 1.0,
+            "exponential": (
+                tt.exponential_,
+                {
+                    "lambd": {
+                        "default": 1.0,
+                    },
+                },
+            ),
+            "cauchy": (
+                tt.cauchy_,
+                {
+                    "median": {
+                        "default": "0.0",
+                    },
+                    "sigma": {
+                        "default": 1.0,
+                        "min": 0.0,
+                    },
+                },
+            ),
+            "geometric": (
+                tt.geometric_,
+                {
+                    "p": {
+                        "default": 0.25,
+                    },
+                },
+            ),
+            "log_normal": (
+                tt.log_normal_,
+                {
+                    "mean": {
+                        "default": 1.0,
+                    },
+                    "std": {
+                        "default": 2.0,
+                    },
+                },
+            ),
+            "normal": (
+                tt.normal_,
+                {
+                    "mean": {
+                        "default": 0.0,
+                    },
+                    "std": {
+                        "default": 1.0,
+                    },
+                },
+            ),
             # Complex distros
-            "laplacian_loc": 0.0,
-            "laplacian_scale": 1.0,
-            "studentt_loc": 0,
-            "studentt_scale": 1.0,
-            "studentt_df": 1.0,
-            "beta_alpha": 0.5,
-            "beta_beta": 0.5,
-            "continuous_bernoulli_probs": 0.5,
-            "dirichlet_concentration": (0.5, 0.5),
-            "dirichlet_batch_idx": 1,
-            "fisher_snedecor_df1": 1.0,
-            "fisher_snedecor_df2": 2.0,
-            "gamma_concentration": 1.0,
-            "gamma_rate": 1.0,
-            "gumbel_loc": 1.0,
-            "gumbel_scale": 2.0,
-            "inverse_gamma_concentration": 1.0,
-            "inverse_gamma_rate": 1.0,
-            "kumaraswamy_alpha": 1.0,
-            "kumaraswamy_beta": 1.0,
-            "pareto_scale": 1.0,
-            "pareto_alpha": 1.0,
-            "poisson_rate": 1.5,
-            "vonmises_loc": 1.0,
-            "vonmises_concentration": 1.0,
-            "weibull_scale": 1.0,
-            "weibull_concentration": 1.0,
+            "uniform": (
+                td.Uniform,
+                {
+                    "low": {
+                        "default": 0.0,
+                    },
+                    "high": {
+                        "default": 1.0,
+                    },
+                },
+            ),
+            "laplacian": (
+                td.Laplace,
+                {
+                    "loc": {
+                        "default": "0.0",
+                    },
+                    "scale": {
+                        "default": "1.0",
+                    },
+                },
+            ),
+            "studentt": (
+                td.StudentT,
+                {
+                    "loc": {
+                        "default": "0.0",
+                    },
+                    "scale": {
+                        "default": "1.0",
+                    },
+                    "df": {
+                        "default": "1.0",
+                    },
+                },
+            ),
+            "beta": (
+                td.Beta,
+                {
+                    "alpha": {
+                        "default": "0.5",
+                    },
+                    "beta": {
+                        "default": "0.5",
+                    },
+                },
+            ),
+            "continuous_bernoulli": (
+                td.ContinuousBernoulli,
+                {
+                    "probs": {
+                        "default": "0.5",
+                    },
+                },
+            ),
+            "dirichlet": (
+                td.Dirichlet,
+                {
+                    "concentration": {
+                        "default": "0.5 0.5",
+                    },
+                },
+            ),
+            "fisher_snedecor": (
+                td.FisherSnedecor,
+                {
+                    "df1": {
+                        "default": "1.0",
+                    },
+                    "df2": {
+                        "default": "2.0",
+                    },
+                },
+            ),
+            "gamma": (
+                td.Gamma,
+                {
+                    "concentration": {
+                        "default": "1.0",
+                    },
+                    "rate": {
+                        "default": "1.0",
+                    },
+                },
+            ),
+            "gumbel": (
+                td.Gumbel,
+                {
+                    "loc": {
+                        "default": "1.0",
+                    },
+                    "scale": {
+                        "default": "2.0",
+                    },
+                },
+            ),
+            "inverse_gamma": (
+                td.InverseGamma,
+                {
+                    "concentration": {
+                        "default": "1.0",
+                    },
+                    "rate": {
+                        "default": "1.0",
+                    },
+                },
+            ),
+            "kumaraswamy": (
+                td.Kumaraswamy,
+                {
+                    "alpha": {
+                        "default": "1.0",
+                    },
+                    "beta": {
+                        "default": "1.0",
+                    },
+                },
+            ),
+            "pareto": (
+                td.Pareto,
+                {
+                    "scale": {
+                        "default": "1.0",
+                    },
+                    "alpha": {
+                        "default": "1.0",
+                    },
+                },
+            ),
+            "poisson": (
+                td.Poisson,
+                {
+                    "rate": {
+                        "default": "1.5",
+                    },
+                },
+            ),
+            "vonmises": (
+                td.VonMises,
+                {
+                    "loc": {
+                        "default": "1.0",
+                    },
+                    "concentration": {
+                        "default": "1.0",
+                    },
+                },
+            ),
+            "weibull": (
+                td.Weibull,
+                {
+                    "scale": {
+                        "default": "1.0",
+                    },
+                    "concentration": {
+                        "default": "1.0",
+                    },
+                },
+            ),
         }
 
+    @classmethod
+    @lru_cache(maxsize=1)
+    def build_params(cls):
+        return {
+            f"{tkey}_{pkey}": pval
+            for tkey, tval in cls.distro_params.items()
+            for pkey, pval in tval[1].items()
+        }
+
+    @classmethod
+    @property
+    @lru_cache(maxsize=1)
+    def ng_params(cls):
+        dparams = {k: v["default"] for k, v in cls.build_params().items()}
+        return (
+            super().ng_params
+            | {
+                "distro": "normal",
+                "quantile_norm": 0.85,
+                "quantile_norm_flatten": True,
+                "quantile_norm_dim": 1,
+                "quantile_norm_pow": 0.5,
+                "quantile_norm_fac": 1.0,
+                "result_index": -1,
+            }
+            | dparams
+        )
+
     def norm_quantile(self, noise):
-        if self.distro == "dirichlet":
-            noise = noise[..., self.dirichlet_batch_idx]
+        if noise.ndim > len(self.shape):
+            if (
+                noise.ndim != len(self.shape) + 1
+                or noise.shape[: len(self.shape)] != self.shape
+            ):
+                errstr = f"Unexpected shape when normalizing distro({self.distro}) noise! Output shape={self.shape}, noise shape={noise.shape}, generator dump: {self}"
+                raise RuntimeError(errstr)
+            idx = self.result_index
+            if idx < 0:
+                idx = noise.shape[-1] + idx
+            noise = noise[..., max(0, min(noise.shape[-1] - 1, idx))]
         if (
             self.quantile_norm is None
             or self.quantile_norm <= 0
             or self.quantile_norm >= 1
         ):
             return noise
+        qdim = self.quantile_norm_dim
+        if qdim is not None and not self.quantile_norm_flatten:
+            return self.norm_quantile_noflatten(noise)
+        if qdim in {2, 3}:
+            noise = noise.movedim(qdim, 1)
+        tempshape = noise.shape
+        if qdim is None:
+            flatnoise = noise.flatten()
+        elif qdim in {0, 1}:
+            flatnoise = noise.flatten(start_dim=qdim + 1)
+        elif qdim in {2, 3}:
+            flatnoise = noise.flatten(start_dim=2)
+        else:
+            raise ValueError("Unexpected quantile_norm_dim!")
         nq = torch.quantile(
-            noise.flatten(start_dim=1).abs(),
+            flatnoise.abs(),
             self.quantile_norm,
             dim=-1,
         )
+        del flatnoise
         nq_shape = tuple(nq.shape) + (1,) * (noise.ndim - nq.ndim)
         nq = nq.mul_(self.quantile_norm_fac).reshape(*nq_shape)
         noise = noise.clamp(-nq, nq)
-        return torch.copysign(
+        result = torch.copysign(
             torch.pow(torch.abs(noise), self.quantile_norm_pow),
             noise,
-        ).reshape(self.shape)
+        ).reshape(tempshape)
+        if qdim in {2, 3}:
+            result = result.movedim(1, qdim)
+        return result.reshape(self.shape).contiguous()
 
-    def singlet(self, val):
+    def norm_quantile_noflatten(self, noise):
+        qdim = self.quantile_norm_dim
+        nq = torch.quantile(
+            noise.abs(),
+            self.quantile_norm,
+            dim=qdim,
+            keepdim=True,
+        ).mul_(self.quantile_norm_fac)
+        noise = noise.clamp(-nq, nq)
+        return (
+            torch.copysign(
+                torch.pow(torch.abs(noise), self.quantile_norm_pow),
+                noise,
+            )
+            .reshape(self.shape)
+            .contiguous()
+        )
+
+    def distro_param(self, val, *, force_float=False):
         if isinstance(val, torch.Tensor):
-            return val
+            return float(val) if force_float else val
+        if isinstance(val, str):
+            val = tuple(float(v) for v in val.split(None))
+        if force_float:
+            if isinstance(val, (float, int)):
+                return float(val)
+            if len(val) > 1:
+                raise ValueError("Couldn't return result as float")
+            return float(val[0])
         if not isinstance(val, (tuple, list)):
             val = (val,)
         return torch.tensor(
@@ -955,103 +1184,33 @@ class DistroNoiseGenerator(NoiseGenerator):
             device=self.gen_device,
         )
 
-    def generate_simple(self, distro):
-        noise = torch.zeros(
-            *self.shape,
-            device=self.gen_device,
-            dtype=self.dtype,
-            layout=self.layout,
-        )
-        if distro == "exponential":
-            noise.exponential_(lambd=self.exponential_lambd)
-        elif distro == "cauchy":
-            noise.cauchy_(median=self.cauchy_median, sigma=self.cauchy_sigma)
-        elif distro == "geometric":
-            noise.geometric_(p=self.geometric_p)
-        elif distro == "log_normal":
-            noise.log_normal_(mean=self.log_normal_mean, std=self.log_normal_std)
-        elif distro == "normal":
-            noise.normal_(mean=self.normal_mean, std=self.normal_std)
-        elif distro == "uniform":
-            noise.uniform_(self.uniform_from, self.uniform_to)
-        else:
-            raise ValueError("Bad simple distro!")
-        return self.norm_quantile(noise)
+    def get_distro_kwargs(self, distro, ddef, *, force_float=False):
+        return {
+            k: self.distro_param(
+                getattr(self, f"{distro}_{k}"),
+                force_float=force_float,
+            )
+            for k in ddef
+        }
 
     def generate(self, *_args):
         distro = self.distro
-        if distro in self.simple_distros:
-            return self.generate_simple(distro)
-        td = torch.distributions
-        if distro == "laplacian":
-            dobj = td.Laplace(
-                loc=self.singlet(self.laplacian_loc),
-                scale=self.singlet(self.laplacian_scale),
+        dfun, ddef = self.distro_params[distro]
+        is_simple = distro in self.simple_distros
+        dkwargs = self.get_distro_kwargs(distro, ddef, force_float=is_simple)
+        if is_simple:
+            noise = torch.empty(
+                *self.shape,
+                device=self.gen_device,
+                dtype=self.dtype,
+                layout=self.layout,
             )
-        elif distro == "studentt":
-            dobj = td.StudentT(
-                self.singlet(self.studentt_df),
-                loc=self.singlet(self.studentt_loc),
-                scale=self.singlet(self.studentt_scale),
-            )
-        elif distro == "beta":
-            dobj = td.Beta(
-                self.singlet(self.beta_alpha),
-                self.singlet(self.beta_beta),
-            )
-        elif distro == "continuous_bernoulli":
-            dobj = td.ContinuousBernoulli(
-                probs=self.singlet(self.continuous_bernoulli_probs),
-            )
-        elif distro == "dirichlet":
-            dobj = td.Dirichlet(
-                concentration=self.singlet(self.dirichlet_concentration),
-            )
-        elif distro == "gamma":
-            dobj = td.Gamma(
-                concentration=self.singlet(self.gamma_concentration),
-                rate=self.singlet(self.gamma_rate),
-            )
-        elif distro == "inverse_gamma":
-            dobj = td.InverseGamma(
-                concentration=self.singlet(self.inverse_gamma_concentration),
-                rate=self.singlet(self.inverse_gamma_rate),
-            )
-        elif distro == "gumbel":
-            dobj = td.Gumbel(
-                loc=self.singlet(self.gumbel_loc),
-                scale=self.singlet(self.gumbel_scale),
-            )
-        elif distro == "kumaraswamy":
-            dobj = td.Kumaraswamy(
-                self.singlet(self.kumaraswamy_alpha),
-                self.singlet(self.kumaraswamy_beta),
-            )
-        elif distro == "pareto":
-            dobj = td.Pareto(
-                scale=self.singlet(self.pareto_scale),
-                alpha=self.singlet(self.pareto_alpha),
-            )
-        elif distro == "poisson":
-            dobj = td.Poisson(
-                rate=self.singlet(self.poisson_rate),
-            )
-        elif distro == "vonmises":
-            dobj = td.VonMises(
-                loc=self.singlet(self.vonmises_loc),
-                concentration=self.singlet(self.vonmises_concentration),
-            )
-        elif distro == "weibull":
-            dobj = td.Weibull(
-                scale=self.singlet(self.weibull_scale),
-                concentration=self.singlet(self.weibull_concentration),
-            )
+            noise = dfun(noise, **dkwargs)
         else:
-            raise RuntimeError("Impossible: Couldn't find handler for distro")
-        if getattr(dobj, "has_rsample", False):
-            noise = dobj.rsample(self.shape)
-        else:
-            noise = dobj.sample(self.shape)
+            dobj = dfun(**dkwargs)
+            noise = (
+                dobj.rsample if getattr(dobj, "has_rsample", False) else dobj.sample
+            )(self.shape)
         return self.norm_quantile(noise)
 
 

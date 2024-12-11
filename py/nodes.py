@@ -542,7 +542,7 @@ class SonarRepeatedNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMi
 
 
 class SonarScheduledNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMixin):
-    DESCRIPTION = "Custom noise type that allows scheduling the output of other custom noise generators. NOTE: If you don't connect the fallback custom noise input, no noise will be generated outside of the start_percent, end_percent range. Recommend connecting a 1.0 strength Gaussian custom noise node as the fallback."
+    DESCRIPTION = "Custom noise type that allows scheduling the output of other custom noise generators. NOTE: If you don't connect the fallback custom noise input, no noise will be generated outside of the start_percent, end_percent range. I recommend connecting a 1.0 strength Gaussian custom noise node as the fallback."
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -1188,6 +1188,101 @@ class SonarAdvancedPowerLawNoiseNode(SonarCustomNoiseNodeBase):
         )
 
 
+class SonarAdvancedDistroNoiseNode(SonarCustomNoiseNodeBase):
+    DESCRIPTION = "Custom noise type that allows specifying parameters for Distro variants. See: https://pytorch.org/docs/stable/distributions.html"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        ngcls = cls.get_item_class().ns_factory
+        distro_params = ngcls.distro_params
+        variants = tuple(sorted(distro_params.keys()))
+        combined_params = ngcls.build_params()
+
+        result = super().INPUT_TYPES()
+        result["required"] |= {
+            "distribution": (
+                variants,
+                {
+                    "tooltip": "Sets the distribution used for noise generation. See: https://pytorch.org/docs/stable/distributions.html",
+                    "default": "uniform",
+                },
+            ),
+            "quantile_norm": (
+                "FLOAT",
+                {
+                    "default": 0.85,
+                    "min": 0.0,
+                    "max": 1.0,
+                    "tooltip": "When enabled, will normalize generated noise to this quantile (i.e. 0.75 means outliers >75% will be clipped). Set to 1.0 or 0.0 to disable quantile normalization. A value like 0.75 or 0.85 should be reasonable, it really depends on the distribution and how many of the values are extreme.",
+                },
+            ),
+            "quantile_norm_mode": (
+                (
+                    "global",
+                    "batch",
+                    "channel",
+                    "batch_row",
+                    "batch_col",
+                    "nonflat_row",
+                    "nonflat_col",
+                ),
+                {
+                    "default": "batch",
+                    "tooltip": "Controls what dimensions quantile normalization uses. By default, the noise is flattened first. You can try the nonflat versions but they may have a very strong row/column influence. Only applies when quantile_norm is active.",
+                },
+            ),
+            "result_index": (
+                "INT",
+                {
+                    "default": -1,
+                    "tooltip": "When noise generation returns a batch of items, it will select the specified index. Negative indexes count from the end. Values outside the valid range will be automatically adjusted.",
+                },
+            ),
+        } | {
+            k: ("STRING" if isinstance(v["default"], str) else "FLOAT", v)
+            for k, v in combined_params.items()
+        }
+        # print("RESULT:", result)
+        return result
+
+    @classmethod
+    def get_item_class(cls):
+        return noise.AdvancedDistroNoise
+
+    def go(
+        self,
+        *,
+        factor,
+        rescale,
+        distribution,
+        quantile_norm,
+        quantile_norm_mode,
+        result_index,
+        sonar_custom_noise_opt=None,
+        **kwargs: dict[str],
+    ):
+        normdim, normflat = {
+            "global": (None, True),
+            "batch": (0, True),
+            "channel": (1, True),
+            "batch_row": (2, True),
+            "batch_col": (3, True),
+            "nonflat_row": (2, False),
+            "nonflat_col": (3, False),
+        }.get(quantile_norm_mode, (1, True))
+        return super().go(
+            factor,
+            rescale=rescale,
+            sonar_custom_noise_opt=sonar_custom_noise_opt,
+            distro=distribution,
+            quantile_norm=quantile_norm,
+            quantile_norm_dim=normdim,
+            quantile_norm_flatten=normflat,
+            result_index=result_index,
+            **kwargs,
+        )
+
+
 class CustomNOISE:
     def __init__(
         self,
@@ -1260,12 +1355,6 @@ class SonarWaveletFilteredNoiseNode(
     def INPUT_TYPES(cls):
         result = super().INPUT_TYPES()
         result["required"] |= {
-            "custom_noise": (
-                WILDCARD_NOISE,
-                {
-                    "tooltip": f"Custom noise.\n{NOISE_INPUT_TYPES_HINT}",
-                },
-            ),
             "normalize_noise": (
                 "BOOLEAN",
                 {
@@ -1281,6 +1370,12 @@ class SonarWaveletFilteredNoiseNode(
             ),
         }
         result["optional"] |= {
+            "custom_noise": (
+                WILDCARD_NOISE,
+                {
+                    "tooltip": f"Optional: Custom noise input. If unconnected will default to Gaussian noise.\n{NOISE_INPUT_TYPES_HINT}",
+                },
+            ),
             "yaml_parameters": (
                 "STRING",
                 {
@@ -1304,7 +1399,7 @@ class SonarWaveletFilteredNoiseNode(
         rescale,
         normalize,
         normalize_noise,
-        custom_noise,
+        custom_noise=None,
         yaml_parameters=None,
         sonar_custom_noise_opt=None,
     ):
@@ -1951,6 +2046,7 @@ NODE_CLASS_MAPPINGS = {
     "SonarAdvancedPyramidNoise": SonarAdvancedPyramidNoiseNode,
     "SonarAdvanced1fNoise": SonarAdvanced1fNoiseNode,
     "SonarAdvancedPowerLawNoise": SonarAdvancedPowerLawNoiseNode,
+    "SonarAdvancedDistroNoise": SonarAdvancedDistroNoiseNode,
     "SonarCustomNoise": SonarCustomNoiseNode,
     "SonarCustomNoiseAdv": SonarCustomNoiseAdvNode,
     "SonarCompositeNoise": SonarCompositeNoiseNode,
