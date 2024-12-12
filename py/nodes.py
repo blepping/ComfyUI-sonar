@@ -9,11 +9,11 @@ from typing import Any, Callable
 import numpy as np
 import torch
 import yaml
-from comfy import samplers
+from comfy import model_management, samplers
 
 from . import external, noise
 from .noise import NoiseType
-from .noise_generation import scale_noise
+from .noise_utils import scale_noise
 from .sonar import (
     GuidanceConfig,
     GuidanceType,
@@ -210,11 +210,17 @@ class NoisyLatentLikeNode:
                 / latent_scale_factor
             )
         if sigmas is not None and sigmas.numel() > 1:
-            sigma_min, sigma_max = sigmas[0], sigmas[-1]
+            sigma_min, sigma_max = sigmas[sigmas > 0].min(), sigmas.max()
             sigma, sigma_next = sigmas[0], sigmas[1]
         else:
             sigma_min, sigma_max, sigma, sigma_next = (None,) * 4
         latent_samples = latent["samples"]
+        orig_device = latent_samples.device
+        want_device = (
+            torch.device("cpu") if cpu_noise else model_management.get_torch_device()
+        )
+        if latent_samples.device != want_device:
+            latent_samples = latent_samples.detach().clone().to(want_device)
         if custom_noise_opt is not None:
             ns = custom_noise_opt.make_noise_sampler(
                 latent_samples,
@@ -248,6 +254,7 @@ class NoisyLatentLikeNode:
             result += latent_samples.repeat(
                 *(repeat_batch if i == 0 else 1 for i in range(latent_samples.ndim)),
             ).to(result)
+        result = result.to(orig_device)
         return ({"samples": result},)
 
 
@@ -339,6 +346,26 @@ class SonarCustomNoiseNode(SonarCustomNoiseNodeBase):
     @classmethod
     def get_item_class(cls):
         return noise.CustomNoiseItem
+
+
+class SonarCustomNoiseAdvNode(SonarCustomNoiseNode):
+    DESCRIPTION = "A custom noise item allowing advanced YAML parameter input."
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        result = super().INPUT_TYPES()
+        result["optional"] |= {
+            "yaml_parameters": (
+                "STRING",
+                {
+                    "tooltip": "Allows specifying custom parameters via YAML. Note: When specifying paramaters this way, there is no error checking.",
+                    "placeholder": "# YAML or JSON here",
+                    "dynamicPrompts": False,
+                    "multiline": True,
+                },
+            ),
+        }
+        return result
 
 
 class SonarNormalizeNoiseNodeMixin:
@@ -515,7 +542,7 @@ class SonarRepeatedNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMi
 
 
 class SonarScheduledNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMixin):
-    DESCRIPTION = "Custom noise type that allows scheduling the output of other custom noise generators. NOTE: If you don't connect the fallback custom noise input, no noise will be generated outside of the start_percent, end_percent range. Recommend connecting a 1.0 strength Gaussian custom noise node as the fallback."
+    DESCRIPTION = "Custom noise type that allows scheduling the output of other custom noise generators. NOTE: If you don't connect the fallback custom noise input, no noise will be generated outside of the start_percent, end_percent range. I recommend connecting a 1.0 strength Gaussian custom noise node as the fallback."
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -932,6 +959,143 @@ class SonarBlendedNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMix
         )
 
 
+class SonarResizedNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMixin):
+    DESCRIPTION = "Custom noise type that allows resizing another noise item."
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        result = super().INPUT_TYPES(include_rescale=False, include_chain=False)
+        result["required"] |= {
+            "width": (
+                "INT",
+                {
+                    "default": 1152,
+                    "min": 16,
+                    "step": 8,
+                    "tooltip": "Note: This should almost always be set to a higher value than the image you're actually sampling.",
+                },
+            ),
+            "height": (
+                "INT",
+                {
+                    "default": 1152,
+                    "min": 16,
+                    "step": 8,
+                    "tooltip": "Note: This should almost always be set to a higher value than the image you're actually sampling.",
+                },
+            ),
+            "downscale_strategy": (
+                ("crop", "scale"),
+                {
+                    "default": "crop",
+                    "tooltip": "Scaling noise is something you'd pretty much only use to create weird effects. For normal workflows, leave this on crop.",
+                },
+            ),
+            "initial_reference": (
+                ("prefer_crop", "prefer_scale"),
+                {
+                    "default": "prefer_crop",
+                    "tooltip": "The initial latent the noise sampler uses as a reference may not match the requested width/height. This setting controls whether to crop or scale. Note: Cropping can only occur when the initial reference is larger than width/height in both dimensions which is unlikely (and not recommended).",
+                },
+            ),
+            "crop_mode": (
+                (
+                    "center",
+                    "top_left",
+                    "top_center",
+                    "top_right",
+                    "center_left",
+                    "center_right",
+                    "bottom_left",
+                    "bottom_center",
+                    "bottom_right",
+                ),
+                {
+                    "default": "center",
+                    "tooltip": "Note: Crops will have a bias toward the lower number when the size isn't divisible by two. For example, a center crop of size 3 from (0, 1, 2, 3, 4, 5) will result in (1, 2, 3).",
+                },
+            ),
+            "crop_offset_horizontal": (
+                "INT",
+                {
+                    "default": 0,
+                    "step": 8,
+                    "tooltip": "This offsets the cropped view by the specified size. Positive values will move it toward the right, negative values will move it toward the left. The offsets will be adjusted to to fit in the available space. For example, if you have crop_mode set to top_right then setting a positive offset isn't going to do anything: it's already as far right as it can go.",
+                },
+            ),
+            "crop_offset_vertical": (
+                "INT",
+                {
+                    "default": 0,
+                    "step": 8,
+                    "tooltip": "This offsets the cropped view by the specified size. Positive values will move it toward the bottom, negative values will move it toward the top. The offsets will be adjusted to to fit in the available space. For example, if you have crop_mode set to bottom_right then setting a positive offset isn't going to do anything: it's already as far down as it can go.",
+                },
+            ),
+            "upscale_mode": (
+                UPSCALE_METHODS,
+                {
+                    "tooltip": "Allows setting the scaling mode when width/height is smaller than the requested size.",
+                    "default": "nearest-exact",
+                },
+            ),
+            "downscale_mode": (
+                UPSCALE_METHODS,
+                {
+                    "tooltip": "Allows setting the scaling mode when width/height is larger than the requested size and downscale_strategy is set to 'scale'.",
+                    "default": "nearest-exact",
+                },
+            ),
+            "normalize": (
+                ("default", "forced", "disabled"),
+                {
+                    "tooltip": "Controls whether the generated noise is normalized to 1.0 strength. For weird blend modes, you may want to set this to forced.",
+                },
+            ),
+            "custom_noise": (
+                WILDCARD_NOISE,
+                {
+                    "tooltip": f"Custom noise.\n{NOISE_INPUT_TYPES_HINT}",
+                },
+            ),
+        }
+        return result
+
+    @classmethod
+    def get_item_class(cls):
+        return noise.ResizedNoise
+
+    def go(
+        self,
+        *,
+        factor,
+        width,
+        height,
+        downscale_strategy,
+        initial_reference,
+        crop_offset_horizontal,
+        crop_offset_vertical,
+        crop_mode,
+        upscale_mode,
+        downscale_mode,
+        normalize,
+        custom_noise,
+    ):
+        return super().go(
+            factor,
+            width=width,
+            height=height,
+            downscale_strategy=downscale_strategy,
+            initial_reference=initial_reference,
+            crop_offset_horizontal=crop_offset_horizontal,
+            crop_offset_vertical=crop_offset_vertical,
+            crop_mode=crop_mode,
+            upscale_mode=upscale_mode,
+            downscale_mode=downscale_mode,
+            normalize=normalize,
+            custom_noise=custom_noise,
+        )
+
+
 class SonarAdvancedPyramidNoiseNode(SonarCustomNoiseNodeBase):
     DESCRIPTION = (
         "Custom noise type that allows specifying parameters for Pyramid variants."
@@ -1161,6 +1325,102 @@ class SonarAdvancedPowerLawNoiseNode(SonarCustomNoiseNodeBase):
         )
 
 
+class SonarAdvancedDistroNoiseNode(SonarCustomNoiseNodeBase):
+    DESCRIPTION = "Custom noise type that allows specifying parameters for Distro variants. See: https://pytorch.org/docs/stable/distributions.html"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        ngcls = cls.get_item_class().ns_factory
+        distro_params = ngcls.distro_params
+        variants = tuple(sorted(distro_params.keys()))
+        combined_params = ngcls.build_params()
+
+        result = super().INPUT_TYPES()
+        result["required"] |= {
+            "distribution": (
+                variants,
+                {
+                    "tooltip": "Sets the distribution used for noise generation. See: https://pytorch.org/docs/stable/distributions.html",
+                    "default": "uniform",
+                },
+            ),
+            "quantile_norm": (
+                "FLOAT",
+                {
+                    "default": 0.85,
+                    "min": 0.0,
+                    "max": 1.0,
+                    "tooltip": "When enabled, will normalize generated noise to this quantile (i.e. 0.75 means outliers >75% will be clipped). Set to 1.0 or 0.0 to disable quantile normalization. A value like 0.75 or 0.85 should be reasonable, it really depends on the distribution and how many of the values are extreme.",
+                },
+            ),
+            "quantile_norm_mode": (
+                (
+                    "global",
+                    "batch",
+                    "channel",
+                    "batch_row",
+                    "batch_col",
+                    "nonflat_row",
+                    "nonflat_col",
+                ),
+                {
+                    "default": "batch",
+                    "tooltip": "Controls what dimensions quantile normalization uses. By default, the noise is flattened first. You can try the nonflat versions but they may have a very strong row/column influence. Only applies when quantile_norm is active.",
+                },
+            ),
+            "result_index": (
+                "STRING",
+                {
+                    "default": "-1",
+                    "tooltip": "When noise generation returns a batch of items, it will select the specified index. Negative indexes count from the end. Values outside the valid range will be automatically adjusted. You may enter a space-separated list of values for the case where there might be multiple added batch dimensions. Excess batch dimensions are removed from the end, indexe from result_index are used in order so you may want to enter the indexes in reverse order.\nExample: If your noise has shape (1, 4, 3, 3) and two 2-sized batch dims are added resulting in (1, 4, 3, 3, 2, 2) and you wanted index 0 from the first additional batch dimension and 1 from the second you would use result_index: 1 0",
+                },
+            ),
+        } | {
+            k: ("STRING" if isinstance(v["default"], str) else v.get("_ty", "FLOAT"), v)
+            for k, v in combined_params.items()
+        }
+        # print("RESULT:", result)
+        return result
+
+    @classmethod
+    def get_item_class(cls):
+        return noise.AdvancedDistroNoise
+
+    def go(
+        self,
+        *,
+        factor,
+        rescale,
+        distribution,
+        quantile_norm,
+        quantile_norm_mode,
+        result_index,
+        sonar_custom_noise_opt=None,
+        **kwargs: dict[str],
+    ):
+        normdim, normflat = {
+            "global": (None, True),
+            "batch": (0, True),
+            "channel": (1, True),
+            "batch_row": (2, True),
+            "batch_col": (3, True),
+            "nonflat_row": (2, False),
+            "nonflat_col": (3, False),
+        }.get(quantile_norm_mode, (1, True))
+        result_index = tuple(int(v) for v in result_index.split(None))
+        return super().go(
+            factor,
+            rescale=rescale,
+            sonar_custom_noise_opt=sonar_custom_noise_opt,
+            distro=distribution,
+            quantile_norm=quantile_norm,
+            quantile_norm_dim=normdim,
+            quantile_norm_flatten=normflat,
+            result_index=result_index,
+            **kwargs,
+        )
+
+
 class CustomNOISE:
     def __init__(
         self,
@@ -1221,6 +1481,75 @@ class CustomNOISE:
             if idx in unique_inds:
                 result.append(noise)
         return torch.cat(tuple(result[i] for i in inverse_inds), axis=0)
+
+
+class SonarWaveletFilteredNoiseNode(
+    SonarCustomNoiseNodeBase,
+    SonarNormalizeNoiseNodeMixin,
+):
+    DESCRIPTION = "Custom noise type that allows filtering another custom noise source with wavelets."
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        result = super().INPUT_TYPES()
+        result["required"] |= {
+            "normalize_noise": (
+                "BOOLEAN",
+                {
+                    "default": False,
+                    "tooltip": "Controls whether the noise source is normalized before wavelet filtering occurs.",
+                },
+            ),
+            "normalize": (
+                ("default", "forced", "disabled"),
+                {
+                    "tooltip": "Controls whether the generated noise is normalized to 1.0 strength. For weird blend modes, you may want to set this to forced.",
+                },
+            ),
+        }
+        result["optional"] |= {
+            "custom_noise": (
+                WILDCARD_NOISE,
+                {
+                    "tooltip": f"Optional: Custom noise input. If unconnected will default to Gaussian noise.\n{NOISE_INPUT_TYPES_HINT}",
+                },
+            ),
+            "yaml_parameters": (
+                "STRING",
+                {
+                    "tooltip": "Allows specifying custom parameters via YAML. Note: When specifying paramaters this way, there is no error checking.",
+                    "placeholder": "# YAML or JSON here",
+                    "dynamicPrompts": False,
+                    "multiline": True,
+                },
+            ),
+        }
+        return result
+
+    @classmethod
+    def get_item_class(cls):
+        return noise.WaveletFilteredNoise
+
+    def go(
+        self,
+        *,
+        factor,
+        rescale,
+        normalize,
+        normalize_noise,
+        custom_noise=None,
+        yaml_parameters=None,
+        sonar_custom_noise_opt=None,
+    ):
+        return super().go(
+            factor,
+            rescale=rescale,
+            sonar_custom_noise_opt=sonar_custom_noise_opt,
+            normalize=self.get_normalize(normalize),
+            normalize_noise=normalize_noise,
+            noise=custom_noise,
+            yaml_parameters=yaml_parameters,
+        )
 
 
 class SonarToComfyNOISENode:
@@ -1855,7 +2184,9 @@ NODE_CLASS_MAPPINGS = {
     "SonarAdvancedPyramidNoise": SonarAdvancedPyramidNoiseNode,
     "SonarAdvanced1fNoise": SonarAdvanced1fNoiseNode,
     "SonarAdvancedPowerLawNoise": SonarAdvancedPowerLawNoiseNode,
+    "SonarAdvancedDistroNoise": SonarAdvancedDistroNoiseNode,
     "SonarCustomNoise": SonarCustomNoiseNode,
+    "SonarCustomNoiseAdv": SonarCustomNoiseAdvNode,
     "SonarCompositeNoise": SonarCompositeNoiseNode,
     "SonarModulatedNoise": SonarModulatedNoiseNode,
     "SonarRepeatedNoise": SonarRepeatedNoiseNode,
@@ -1864,6 +2195,8 @@ NODE_CLASS_MAPPINGS = {
     "SonarRandomNoise": SonarRandomNoiseNode,
     "SonarChannelNoise": SonarChannelNoiseNode,
     "SonarBlendedNoise": SonarBlendedNoiseNode,
+    "SonarResizedNoise": SonarResizedNoiseNode,
+    "SonarWaveletFilteredNoise": SonarWaveletFilteredNoiseNode,
     "SONAR_CUSTOM_NOISE to NOISE": SonarToComfyNOISENode,
 }
 
