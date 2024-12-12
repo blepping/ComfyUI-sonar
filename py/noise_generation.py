@@ -909,49 +909,13 @@ class DistroNoiseGenerator(NoiseGenerator):
                 },
             ),
             # Complex distros
-            "uniform": (
-                td.Uniform,
-                {
-                    "low": {
-                        "default": 0.0,
-                    },
-                    "high": {
-                        "default": 1.0,
-                    },
-                },
-            ),
-            "laplacian": (
-                td.Laplace,
-                {
-                    "loc": {
-                        "default": "0.0",
-                    },
-                    "scale": {
-                        "default": "1.0",
-                    },
-                },
-            ),
-            "studentt": (
-                td.StudentT,
-                {
-                    "loc": {
-                        "default": "0.0",
-                    },
-                    "scale": {
-                        "default": "1.0",
-                    },
-                    "df": {
-                        "default": "1.0",
-                    },
-                },
-            ),
             "beta": (
                 td.Beta,
                 {
-                    "alpha": {
+                    "concentration0": {
                         "default": "0.5",
                     },
-                    "beta": {
+                    "concentration1": {
                         "default": "0.5",
                     },
                 },
@@ -1019,11 +983,70 @@ class DistroNoiseGenerator(NoiseGenerator):
             "kumaraswamy": (
                 td.Kumaraswamy,
                 {
-                    "alpha": {
+                    "concentration0": {
                         "default": "1.0",
                     },
-                    "beta": {
+                    "concentration1": {
                         "default": "1.0",
+                    },
+                },
+            ),
+            "laplacian": (
+                td.Laplace,
+                {
+                    "loc": {
+                        "default": "0.0",
+                    },
+                    "scale": {
+                        "default": "1.0",
+                    },
+                },
+            ),
+            "lkjcholesky": (
+                td.LKJCholesky,
+                {
+                    "dim": {
+                        "_ty": "INT",
+                        "default": 3,
+                    },
+                    "concentration": {
+                        "default": "1.0",
+                    },
+                },
+            ),
+            "lrmvariate_normal": (
+                lambda loc, cov_factor, cov_diag: td.LowRankMultivariateNormal(
+                    loc=loc,
+                    cov_factor=cov_factor.reshape(loc.numel(), -1),
+                    cov_diag=cov_diag,
+                ),
+                {
+                    "loc": {
+                        "default": "0.0 0.0",
+                    },
+                    "cov_factor": {
+                        "default": "1.0 0.0",
+                    },
+                    "cov_diag": {
+                        "default": "1.0 1.0",
+                    },
+                },
+            ),
+            "mvariate_normal": (
+                lambda loc, cov_multiplier=1.0: td.MultivariateNormal(
+                    loc=loc,
+                    covariance_matrix=torch.eye(
+                        loc.numel(),
+                        dtype=loc.dtype,
+                        device=loc.device,
+                    ).mul_(cov_multiplier),
+                ),
+                {
+                    "loc": {
+                        "default": "0.0 0.0",
+                    },
+                    "cov_multiplier": {
+                        "default": 1.0,
                     },
                 },
             ),
@@ -1043,6 +1066,53 @@ class DistroNoiseGenerator(NoiseGenerator):
                 {
                     "rate": {
                         "default": "1.5",
+                    },
+                },
+            ),
+            "relaxed_bernoulli": (
+                td.RelaxedBernoulli,
+                {
+                    "temperature": {
+                        "default": 0.75,
+                    },
+                    "probs": {
+                        "default": "0.66",
+                    },
+                },
+            ),
+            "relaxed_onehotcategorical": (
+                td.RelaxedOneHotCategorical,
+                {
+                    "temperature": {
+                        "default": 1.5,
+                    },
+                    "probs": {
+                        "default": "0.33 0.66",
+                    },
+                },
+            ),
+            "studentt": (
+                td.StudentT,
+                {
+                    "loc": {
+                        "default": "0.0",
+                    },
+                    "scale": {
+                        "default": "1.0",
+                    },
+                    "df": {
+                        "default": "1.0",
+                    },
+                },
+            ),
+            "uniform": (
+                td.Uniform,
+                {
+                    "low": {
+                        "default": 0.0,
+                    },
+                    "high": {
+                        "default": 1.0,
                     },
                 },
             ),
@@ -1068,22 +1138,49 @@ class DistroNoiseGenerator(NoiseGenerator):
                     },
                 },
             ),
+            "wishart": (
+                lambda df, cov_size=2, cov_multiplier=1.0: td.Wishart(
+                    df=df,
+                    covariance_matrix=torch.eye(
+                        int(cov_size),
+                        dtype=df.dtype,
+                        device=df.device,
+                    ).mul_(cov_multiplier),
+                ),
+                {
+                    "df": {
+                        "default": "2.0",
+                    },
+                    "cov_size": {
+                        "_ty": "INT",
+                        "default": 2,
+                    },
+                    "cov_multiplier": {
+                        "default": 1.0,
+                    },
+                },
+            ),
         }
 
     @classmethod
     @lru_cache(maxsize=1)
     def build_params(cls):
         return {
-            f"{tkey}_{pkey}": pval
-            for tkey, tval in cls.distro_params.items()
-            for pkey, pval in tval[1].items()
+            f"{tykey}_{pkey}": pval
+            for tykey, tyval in cls.distro_params.items()
+            for pkey, pval in tyval[1].items()
+            if not pkey.startswith("_")
         }
 
     @classmethod
     @property
     @lru_cache(maxsize=1)
     def ng_params(cls):
-        dparams = {k: v["default"] for k, v in cls.build_params().items()}
+        dparams = {
+            k: v["default"]
+            for k, v in cls.build_params().items()
+            if not k.startswith("_")
+        }
         return (
             super().ng_params
             | {
@@ -1100,25 +1197,32 @@ class DistroNoiseGenerator(NoiseGenerator):
 
     def norm_quantile(self, noise):
         if noise.ndim > len(self.shape):
-            if (
-                noise.ndim != len(self.shape) + 1
-                or noise.shape[: len(self.shape)] != self.shape
-            ):
+            if noise.shape[: len(self.shape)] != self.shape:
                 errstr = f"Unexpected shape when normalizing distro({self.distro}) noise! Output shape={self.shape}, noise shape={noise.shape}, generator dump: {self}"
                 raise RuntimeError(errstr)
-            idx = self.result_index
-            if idx < 0:
-                idx = noise.shape[-1] + idx
-            noise = noise[..., max(0, min(noise.shape[-1] - 1, idx))]
+            selfdims = len(self.shape)
+            while noise.ndim > selfdims:
+                idx = self.result_index
+                if idx < 0:
+                    idx = noise.shape[-1] + idx
+                noise = noise[..., max(0, min(noise.shape[-1] - 1, idx))]
         if (
             self.quantile_norm is None
             or self.quantile_norm <= 0
             or self.quantile_norm >= 1
         ):
             return noise
+        if isinstance(self.quantile_norm, (tuple, list)):
+            quantile_norm = torch.tensor(
+                self.quantile_norm,
+                device=self.gen_device,
+                dtype=self.dtype,
+            )
+        else:
+            quantile_norm = self.quantile_norm
         qdim = self.quantile_norm_dim
         if qdim is not None and not self.quantile_norm_flatten:
-            return self.norm_quantile_noflatten(noise)
+            return self.norm_quantile_noflatten(noise, quantile_norm)
         if qdim in {2, 3}:
             noise = noise.movedim(qdim, 1)
         tempshape = noise.shape
@@ -1132,7 +1236,7 @@ class DistroNoiseGenerator(NoiseGenerator):
             raise ValueError("Unexpected quantile_norm_dim!")
         nq = torch.quantile(
             flatnoise.abs(),
-            self.quantile_norm,
+            quantile_norm,
             dim=-1,
         )
         del flatnoise
@@ -1147,11 +1251,11 @@ class DistroNoiseGenerator(NoiseGenerator):
             result = result.movedim(1, qdim)
         return result.reshape(self.shape).contiguous()
 
-    def norm_quantile_noflatten(self, noise):
+    def norm_quantile_noflatten(self, noise, quantile_norm):
         qdim = self.quantile_norm_dim
         nq = torch.quantile(
             noise.abs(),
-            self.quantile_norm,
+            quantile_norm,
             dim=qdim,
             keepdim=True,
         ).mul_(self.quantile_norm_fac)
@@ -1165,17 +1269,17 @@ class DistroNoiseGenerator(NoiseGenerator):
             .contiguous()
         )
 
-    def distro_param(self, val, *, force_float=False):
+    def distro_param(self, val, *, simple_fun=None):
         if isinstance(val, torch.Tensor):
-            return float(val) if force_float else val
+            return simple_fun(val) if simple_fun is not None else val
         if isinstance(val, str):
             val = tuple(float(v) for v in val.split(None))
-        if force_float:
+        if simple_fun is not None:
             if isinstance(val, (float, int)):
-                return float(val)
+                return simple_fun(val)
             if len(val) > 1:
                 raise ValueError("Couldn't return result as float")
-            return float(val[0])
+            return simple_fun(val[0])
         if not isinstance(val, (tuple, list)):
             val = (val,)
         return torch.tensor(
@@ -1184,11 +1288,13 @@ class DistroNoiseGenerator(NoiseGenerator):
             device=self.gen_device,
         )
 
-    def get_distro_kwargs(self, distro, ddef, *, force_float=False):
+    def get_distro_kwargs(self, distro, ddef, *, simple=False):
         return {
             k: self.distro_param(
                 getattr(self, f"{distro}_{k}"),
-                force_float=force_float,
+                simple_fun=None
+                if not simple and k != "dim"
+                else (int if k == "dim" else float),
             )
             for k in ddef
         }
@@ -1197,7 +1303,7 @@ class DistroNoiseGenerator(NoiseGenerator):
         distro = self.distro
         dfun, ddef = self.distro_params[distro]
         is_simple = distro in self.simple_distros
-        dkwargs = self.get_distro_kwargs(distro, ddef, force_float=is_simple)
+        dkwargs = self.get_distro_kwargs(distro, ddef, simple=is_simple)
         if is_simple:
             noise = torch.empty(
                 *self.shape,

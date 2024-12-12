@@ -1239,7 +1239,7 @@ class SonarAdvancedDistroNoiseNode(SonarCustomNoiseNodeBase):
                 },
             ),
         } | {
-            k: ("STRING" if isinstance(v["default"], str) else "FLOAT", v)
+            k: ("STRING" if isinstance(v["default"], str) else v.get("_ty", "FLOAT"), v)
             for k, v in combined_params.items()
         }
         # print("RESULT:", result)
