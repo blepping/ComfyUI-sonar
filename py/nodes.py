@@ -1703,7 +1703,7 @@ class SamplerNodeSonarBase:
                         "max": 2.5,
                         "step": 0.01,
                         "round": False,
-                        "tooltip": "Strength of the output from normal sampling. When set to 1.0 effectively disables momentum.",
+                        "tooltip": "How much of the normal result to keep during sampling. 0.95 means 95% normal, 5% from history. When set to 1.0 effectively disables momentum.",
                     },
                 ),
                 "momentum_hist": (
@@ -1714,7 +1714,7 @@ class SamplerNodeSonarBase:
                         "max": 1.5,
                         "step": 0.01,
                         "round": False,
-                        "tooltip": "Strength of momentum history",
+                        "tooltip": "How much of the existing history to leave at each update. 0.75 means keep 75%, mix in 25% of the new result.",
                     },
                 ),
                 "momentum_init": (
@@ -1756,6 +1756,34 @@ class SamplerNodeSonarBase:
 
 
 class SamplerNodeSonarEuler(SamplerNodeSonarBase):
+    RETURN_TYPES = ("SAMPLER",)
+    CATEGORY = "sampling/custom_sampling/samplers"
+
+    FUNCTION = "get_sampler"
+
+    @classmethod
+    def get_sampler(
+        cls,
+        *,
+        momentum,
+        momentum_hist,
+        momentum_init,
+        direction,
+        rand_init_noise_type,
+        guidance_cfg_opt=None,
+    ):
+        cfg = SonarConfig(
+            momentum=momentum,
+            init=HistoryType[momentum_init.upper()],
+            momentum_hist=momentum_hist,
+            direction=direction,
+            rand_init_noise_type=NoiseType[rand_init_noise_type.upper()],
+            guidance=guidance_cfg_opt,
+        )
+        return (samplers.KSAMPLER(SonarEuler.sampler, {"sonar_config": cfg}),)
+
+
+class SamplerNodeSonarEulerAncestral(SamplerNodeSonarEuler):
     @classmethod
     def INPUT_TYPES(cls):
         result = super().INPUT_TYPES()
@@ -1772,52 +1800,6 @@ class SamplerNodeSonarEuler(SamplerNodeSonarBase):
                         "tooltip": "Multiplier for noise added during ancestral or SDE sampling.",
                     },
                 ),
-            },
-        )
-        return result
-
-    RETURN_TYPES = ("SAMPLER",)
-    CATEGORY = "sampling/custom_sampling/samplers"
-
-    FUNCTION = "get_sampler"
-
-    @classmethod
-    def get_sampler(
-        cls,
-        *,
-        momentum,
-        momentum_hist,
-        momentum_init,
-        direction,
-        rand_init_noise_type,
-        s_noise,
-        guidance_cfg_opt=None,
-    ):
-        cfg = SonarConfig(
-            momentum=momentum,
-            init=HistoryType[momentum_init.upper()],
-            momentum_hist=momentum_hist,
-            direction=direction,
-            rand_init_noise_type=NoiseType[rand_init_noise_type.upper()],
-            guidance=guidance_cfg_opt,
-        )
-        return (
-            samplers.KSAMPLER(
-                SonarEuler.sampler,
-                {
-                    "s_noise": s_noise,
-                    "sonar_config": cfg,
-                },
-            ),
-        )
-
-
-class SamplerNodeSonarEulerAncestral(SamplerNodeSonarEuler):
-    @classmethod
-    def INPUT_TYPES(cls):
-        result = super().INPUT_TYPES()
-        result["required"].update(
-            {
                 "eta": (
                     "FLOAT",
                     {
@@ -1892,6 +1874,17 @@ class SamplerNodeSonarDPMPPSDE(SamplerNodeSonarEuler):
         result = super().INPUT_TYPES()
         result["required"].update(
             {
+                "s_noise": (
+                    "FLOAT",
+                    {
+                        "default": 1.0,
+                        "min": 0.0,
+                        "max": 100.0,
+                        "step": 0.01,
+                        "round": False,
+                        "tooltip": "Multiplier for noise added during ancestral or SDE sampling.",
+                    },
+                ),
                 "eta": (
                     "FLOAT",
                     {
