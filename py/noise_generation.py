@@ -8,8 +8,6 @@ from typing import Callable
 
 import torch
 from comfy.k_diffusion import sampling
-from comfy.model_management import device_supports_non_blocking
-from comfy.utils import common_upscale
 from torch import FloatTensor, Generator, Tensor
 from torch.distributions import Laplace, StudentT
 
@@ -20,7 +18,13 @@ try:
 except ImportError:
     HAVE_WAVELETS = False
 
-from .external import MODULES as EXT
+from .noise_utils import (
+    BLENDING_MODES,
+    quantile_normalize,
+    scale_noise,
+    scale_samples,
+    tensor_to,
+)
 
 # ruff: noqa: D412, D413, D417, D212, D407, ANN002, ANN003, FBT001, FBT002, S311
 
@@ -76,58 +80,6 @@ class NoiseType(Enum):
 
 class NoiseError(Exception):
     pass
-
-
-def scale_noise(
-    noise,
-    factor=1.0,
-    *,
-    normalized=True,
-    threshold_std_devs=2.5,
-    normalize_dims=None,
-):
-    numel = noise.numel()
-    if not normalized or numel == 0:
-        return noise.mul_(factor) if factor != 1 else noise
-    if normalize_dims is not None:
-        std = noise.std(dim=normalize_dims, keepdim=True)
-        noise = noise / std  # noqa: PLR6104
-        return noise.sub_(noise.mean(dim=normalize_dims, keepdim=True)).mul_(factor)
-    mean, std = noise.mean().item(), noise.std().item()
-    threshold = threshold_std_devs / math.sqrt(numel)
-    if abs(mean) > threshold:
-        noise -= mean
-    if abs(1.0 - std) > threshold:
-        noise /= std
-    return noise.mul_(factor) if factor != 1 else noise
-
-
-if "bleh" in EXT:
-    scale_samples = EXT["bleh"].py.latent_utils.scale_samples
-    BLENDING_MODES = EXT["bleh"].py.latent_utils.BLENDING_MODES
-else:
-    BLENDING_MODES = {"lerp": torch.lerp}
-
-    def scale_samples(
-        samples,
-        width,
-        height,
-        *,
-        mode="bicubic",
-    ):
-        return common_upscale(samples, width, height, mode, None)
-
-
-CAN_NONBLOCK = {}
-
-
-def tensor_to(tensor, dest):
-    device = dest.device if isinstance(dest, torch.Tensor) else dest
-    non_blocking = CAN_NONBLOCK.get(device)
-    if non_blocking is None:
-        non_blocking = device_supports_non_blocking(device)
-        CAN_NONBLOCK[device] = non_blocking
-    return tensor.to(dest, non_blocking=non_blocking)
 
 
 class NoiseGenerator:
@@ -1190,80 +1142,38 @@ class DistroNoiseGenerator(NoiseGenerator):
                 "quantile_norm_dim": 1,
                 "quantile_norm_pow": 0.5,
                 "quantile_norm_fac": 1.0,
-                "result_index": -1,
+                "result_index": "-1",
             }
             | dparams
         )
 
-    def norm_quantile(self, noise):
+    def norm_output(self, noise):
         if noise.ndim > len(self.shape):
             if noise.shape[: len(self.shape)] != self.shape:
                 errstr = f"Unexpected shape when normalizing distro({self.distro}) noise! Output shape={self.shape}, noise shape={noise.shape}, generator dump: {self}"
                 raise RuntimeError(errstr)
             selfdims = len(self.shape)
+            result_index = self.result_index
+            if not isinstance(result_index, (tuple, list)):
+                result_index = (result_index,)
+            ri_len = len(result_index)
+            if ri_len == 0:
+                raise ValueError("When result_index is a list, it must not be empty")
+            trim_count = 0
             while noise.ndim > selfdims:
-                idx = self.result_index
+                idx = result_index[trim_count % ri_len]
                 if idx < 0:
                     idx = noise.shape[-1] + idx
                 noise = noise[..., max(0, min(noise.shape[-1] - 1, idx))]
-        if (
-            self.quantile_norm is None
-            or self.quantile_norm <= 0
-            or self.quantile_norm >= 1
-        ):
-            return noise
-        if isinstance(self.quantile_norm, (tuple, list)):
-            quantile_norm = torch.tensor(
-                self.quantile_norm,
-                device=self.gen_device,
-                dtype=self.dtype,
-            )
-        else:
-            quantile_norm = self.quantile_norm
-        qdim = self.quantile_norm_dim
-        if qdim is not None and not self.quantile_norm_flatten:
-            return self.norm_quantile_noflatten(noise, quantile_norm)
-        if qdim in {2, 3}:
-            noise = noise.movedim(qdim, 1)
-        tempshape = noise.shape
-        if qdim is None:
-            flatnoise = noise.flatten()
-        elif qdim in {0, 1}:
-            flatnoise = noise.flatten(start_dim=qdim + 1)
-        elif qdim in {2, 3}:
-            flatnoise = noise.flatten(start_dim=2)
-        else:
-            raise ValueError("Unexpected quantile_norm_dim!")
-        nq = torch.quantile(
-            flatnoise.abs(),
-            quantile_norm,
-            dim=-1,
-        )
-        del flatnoise
-        nq_shape = tuple(nq.shape) + (1,) * (noise.ndim - nq.ndim)
-        nq = nq.mul_(self.quantile_norm_fac).reshape(*nq_shape)
-        noise = noise.clamp(-nq, nq)
-        result = torch.copysign(
-            torch.pow(torch.abs(noise), self.quantile_norm_pow),
-            noise,
-        ).reshape(tempshape)
-        if qdim in {2, 3}:
-            result = result.movedim(1, qdim)
-        return result.reshape(self.shape).contiguous()
-
-    def norm_quantile_noflatten(self, noise, quantile_norm):
-        qdim = self.quantile_norm_dim
-        nq = torch.quantile(
-            noise.abs(),
-            quantile_norm,
-            dim=qdim,
-            keepdim=True,
-        ).mul_(self.quantile_norm_fac)
-        noise = noise.clamp(-nq, nq)
+                trim_count += 1
         return (
-            torch.copysign(
-                torch.pow(torch.abs(noise), self.quantile_norm_pow),
+            quantile_normalize(
                 noise,
+                quantile=self.quantile_norm,
+                dim=self.quantile_norm_dim,
+                flatten=self.quantile_norm_flatten,
+                nq_fac=self.quantile_norm_fac,
+                pow_fac=self.quantile_norm_pow,
             )
             .reshape(self.shape)
             .contiguous()
@@ -1317,7 +1227,7 @@ class DistroNoiseGenerator(NoiseGenerator):
             noise = (
                 dobj.rsample if getattr(dobj, "has_rsample", False) else dobj.sample
             )(self.shape)
-        return self.norm_quantile(noise)
+        return self.norm_output(noise)
 
 
 class PowerOldNoiseGenerator(NoiseGenerator):
@@ -1450,5 +1360,4 @@ __all__ = (
     "StudentTNoiseGenerator",
     "UniformNoiseGenerator",
     "WaveletNoiseGenerator",
-    "scale_noise",
 )

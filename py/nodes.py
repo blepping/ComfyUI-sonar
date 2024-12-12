@@ -13,7 +13,7 @@ from comfy import model_management, samplers
 
 from . import external, noise
 from .noise import NoiseType
-from .noise_generation import scale_noise
+from .noise_utils import scale_noise
 from .sonar import (
     GuidanceConfig,
     GuidanceType,
@@ -959,6 +959,143 @@ class SonarBlendedNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMix
         )
 
 
+class SonarResizedNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMixin):
+    DESCRIPTION = "Custom noise type that allows resizing another noise item."
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        result = super().INPUT_TYPES(include_rescale=False, include_chain=False)
+        result["required"] |= {
+            "width": (
+                "INT",
+                {
+                    "default": 1152,
+                    "min": 16,
+                    "step": 8,
+                    "tooltip": "Note: This should almost always be set to a higher value than the image you're actually sampling.",
+                },
+            ),
+            "height": (
+                "INT",
+                {
+                    "default": 1152,
+                    "min": 16,
+                    "step": 8,
+                    "tooltip": "Note: This should almost always be set to a higher value than the image you're actually sampling.",
+                },
+            ),
+            "downscale_strategy": (
+                ("crop", "scale"),
+                {
+                    "default": "crop",
+                    "tooltip": "Scaling noise is something you'd pretty much only use to create weird effects. For normal workflows, leave this on crop.",
+                },
+            ),
+            "initial_reference": (
+                ("prefer_crop", "prefer_scale"),
+                {
+                    "default": "prefer_crop",
+                    "tooltip": "The initial latent the noise sampler uses as a reference may not match the requested width/height. This setting controls whether to crop or scale. Note: Cropping can only occur when the initial reference is larger than width/height in both dimensions which is unlikely (and not recommended).",
+                },
+            ),
+            "crop_mode": (
+                (
+                    "center",
+                    "top_left",
+                    "top_center",
+                    "top_right",
+                    "center_left",
+                    "center_right",
+                    "bottom_left",
+                    "bottom_center",
+                    "bottom_right",
+                ),
+                {
+                    "default": "center",
+                    "tooltip": "Note: Crops will have a bias toward the lower number when the size isn't divisible by two. For example, a center crop of size 3 from (0, 1, 2, 3, 4, 5) will result in (1, 2, 3).",
+                },
+            ),
+            "crop_offset_horizontal": (
+                "INT",
+                {
+                    "default": 0,
+                    "step": 8,
+                    "tooltip": "This offsets the cropped view by the specified size. Positive values will move it toward the right, negative values will move it toward the left. The offsets will be adjusted to to fit in the available space. For example, if you have crop_mode set to top_right then setting a positive offset isn't going to do anything: it's already as far right as it can go.",
+                },
+            ),
+            "crop_offset_vertical": (
+                "INT",
+                {
+                    "default": 0,
+                    "step": 8,
+                    "tooltip": "This offsets the cropped view by the specified size. Positive values will move it toward the bottom, negative values will move it toward the top. The offsets will be adjusted to to fit in the available space. For example, if you have crop_mode set to bottom_right then setting a positive offset isn't going to do anything: it's already as far down as it can go.",
+                },
+            ),
+            "upscale_mode": (
+                UPSCALE_METHODS,
+                {
+                    "tooltip": "Allows setting the scaling mode when width/height is smaller than the requested size.",
+                    "default": "nearest-exact",
+                },
+            ),
+            "downscale_mode": (
+                UPSCALE_METHODS,
+                {
+                    "tooltip": "Allows setting the scaling mode when width/height is larger than the requested size and downscale_strategy is set to 'scale'.",
+                    "default": "nearest-exact",
+                },
+            ),
+            "normalize": (
+                ("default", "forced", "disabled"),
+                {
+                    "tooltip": "Controls whether the generated noise is normalized to 1.0 strength. For weird blend modes, you may want to set this to forced.",
+                },
+            ),
+            "custom_noise": (
+                WILDCARD_NOISE,
+                {
+                    "tooltip": f"Custom noise.\n{NOISE_INPUT_TYPES_HINT}",
+                },
+            ),
+        }
+        return result
+
+    @classmethod
+    def get_item_class(cls):
+        return noise.ResizedNoise
+
+    def go(
+        self,
+        *,
+        factor,
+        width,
+        height,
+        downscale_strategy,
+        initial_reference,
+        crop_offset_horizontal,
+        crop_offset_vertical,
+        crop_mode,
+        upscale_mode,
+        downscale_mode,
+        normalize,
+        custom_noise,
+    ):
+        return super().go(
+            factor,
+            width=width,
+            height=height,
+            downscale_strategy=downscale_strategy,
+            initial_reference=initial_reference,
+            crop_offset_horizontal=crop_offset_horizontal,
+            crop_offset_vertical=crop_offset_vertical,
+            crop_mode=crop_mode,
+            upscale_mode=upscale_mode,
+            downscale_mode=downscale_mode,
+            normalize=normalize,
+            custom_noise=custom_noise,
+        )
+
+
 class SonarAdvancedPyramidNoiseNode(SonarCustomNoiseNodeBase):
     DESCRIPTION = (
         "Custom noise type that allows specifying parameters for Pyramid variants."
@@ -1232,10 +1369,10 @@ class SonarAdvancedDistroNoiseNode(SonarCustomNoiseNodeBase):
                 },
             ),
             "result_index": (
-                "INT",
+                "STRING",
                 {
-                    "default": -1,
-                    "tooltip": "When noise generation returns a batch of items, it will select the specified index. Negative indexes count from the end. Values outside the valid range will be automatically adjusted.",
+                    "default": "-1",
+                    "tooltip": "When noise generation returns a batch of items, it will select the specified index. Negative indexes count from the end. Values outside the valid range will be automatically adjusted. You may enter a space-separated list of values for the case where there might be multiple added batch dimensions. Excess batch dimensions are removed from the end, indexe from result_index are used in order so you may want to enter the indexes in reverse order.\nExample: If your noise has shape (1, 4, 3, 3) and two 2-sized batch dims are added resulting in (1, 4, 3, 3, 2, 2) and you wanted index 0 from the first additional batch dimension and 1 from the second you would use result_index: 1 0",
                 },
             ),
         } | {
@@ -1270,6 +1407,7 @@ class SonarAdvancedDistroNoiseNode(SonarCustomNoiseNodeBase):
             "nonflat_row": (2, False),
             "nonflat_col": (3, False),
         }.get(quantile_norm_mode, (1, True))
+        result_index = tuple(int(v) for v in result_index.split(None))
         return super().go(
             factor,
             rescale=rescale,
@@ -2057,6 +2195,7 @@ NODE_CLASS_MAPPINGS = {
     "SonarRandomNoise": SonarRandomNoiseNode,
     "SonarChannelNoise": SonarChannelNoiseNode,
     "SonarBlendedNoise": SonarBlendedNoiseNode,
+    "SonarResizedNoise": SonarResizedNoiseNode,
     "SonarWaveletFilteredNoise": SonarWaveletFilteredNoiseNode,
     "SONAR_CUSTOM_NOISE to NOISE": SonarToComfyNOISENode,
 }

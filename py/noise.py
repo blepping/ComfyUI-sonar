@@ -12,6 +12,7 @@ from torch import Tensor
 
 from . import external
 from .noise_generation import *
+from .noise_utils import crop_samples, scale_noise, scale_samples
 from .sonar import SonarGuidanceMixin
 
 # ruff: noqa: D412, D413, D417, D212, D407, ANN002, ANN003, FBT001, FBT002, S311
@@ -1035,6 +1036,115 @@ class BlendedNoise(CustomNoiseItemBase):
                 else blend_function(noise_1, ns_2(s, sn), n2_blend_tensor)
             )
             return scale_noise(noise, factor, normalized=normalize)
+
+        return noise_sampler
+
+
+class ResizedNoise(CustomNoiseItemBase):
+    def __init__(
+        self,
+        factor,
+        *,
+        width,
+        height,
+        downscale_strategy,
+        initial_reference,
+        crop_offset_horizontal,
+        crop_offset_vertical,
+        crop_mode,
+        upscale_mode,
+        downscale_mode,
+        normalize,
+        custom_noise,
+    ):
+        if len(custom_noise.items) == 0:
+            raise ValueError("ResizedNoise requires at least one noise item")
+        super().__init__(
+            factor,
+            width=width,
+            height=height,
+            downscale_strategy=downscale_strategy,
+            initial_reference=initial_reference,
+            crop_offset_horizontal=crop_offset_horizontal,
+            crop_offset_vertical=crop_offset_vertical,
+            crop_mode=crop_mode,
+            upscale_mode=upscale_mode,
+            downscale_mode=downscale_mode,
+            noise=custom_noise.clone(),
+            normalize=normalize,
+        )
+
+    def clone_key(self, k):
+        if k == "noise":
+            return self.noise.clone()
+        return super().clone_key(k)
+
+    def make_noise_sampler(self, x, *args, normalized=True, **kwargs):
+        if x.ndim < 3:
+            raise ValueError("ResizedNoise can only handle 3+ dimensional latents")
+        factor = self.factor
+        normalize = self.get_normalize("normalize", normalized)
+        xh, xw = x.shape[-2:]
+        nh, nw = self.height // 8, self.width // 8
+        offsh, offsw = self.crop_offset_vertical // 8, self.crop_offset_horizontal // 8
+        if xh == nh and xw == nw:
+            ns = self.custom_noise.make_noise_sampler(
+                x,
+                *args,
+                normalized=normalize,
+                **kwargs,
+            )
+
+            def noise_sampler(*args, **kwargs):
+                return ns(*args, **kwargs).mul_(factor)
+
+            return noise_sampler
+
+        upscale_mode = self.upscale_mode
+        downscale_mode = self.downscale_mode
+        crop_mode = self.crop_mode
+        x_all_bigger = xh >= nh and xw >= nw
+        x_any_bigger = xh >= nh or xw >= nw
+        if x_all_bigger:
+            if self.initial_reference == "prefer_crop":
+                x = crop_samples(
+                    x,
+                    nw,
+                    nh,
+                    mode=self.crop_mode,
+                    offset_width=offsw,
+                    offset_height=offsh,
+                )
+            else:
+                x = scale_samples(x, nw, nh, mode=self.downscale_mode)
+            output = partial(scale_samples, width=xw, height=xh, mode=upscale_mode)
+        else:
+            x = scale_samples(x, nw, nh, mode=self.upscale_mode)
+            if x_any_bigger:
+                output = partial(scale_samples, width=xw, height=xh, mode=upscale_mode)
+            elif self.downscale_strategy == "scale":
+                output = partial(
+                    scale_samples,
+                    width=xw,
+                    height=xh,
+                    mode=downscale_mode,
+                )
+            else:
+                output = partial(
+                    crop_samples,
+                    width=xw,
+                    height=xh,
+                    mode=crop_mode,
+                    offset_width=offsw,
+                    offset_height=offsh,
+                )
+        ns = self.noise.make_noise_sampler(x, *args, normalized=False, **kwargs)
+        del x
+
+        def noise_sampler(*args, **kwargs):
+            return output(
+                scale_noise(ns(*args, **kwargs), factor, normalized=normalize),
+            )
 
         return noise_sampler
 
