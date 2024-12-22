@@ -52,6 +52,21 @@ Parameters:
 
 ***
 
+### `SonarCustomNoiseAdv`
+
+Same as the `SonarCustomNoise` except it also includes a text widget for passing parameters by YAML or JSON (JSON is valid YAML).
+
+Just for example, instead of using the absurdly large `SonarAdvancedDistroNoise` node, you could do something like:
+
+```yaml
+distro: wishart
+quantile_norm: 0.5
+wishart_cov_size: 4
+wishart_df: 3.5
+```
+
+***
+
 ### `NoisyLatentLike`
 
 This node takes a reference latent and generates noise of the same shape. The one required input is `latent`.
@@ -105,6 +120,59 @@ More extensive documentation TBD (hopefully). For now, a few recipes:
 * `grey`: `alpha=0, use_sign=false, div_max_dims=none`
 * `velvet`: `alpha=1, use_sign=true, div_max_dims=all, use_div_max_abs=true`
 * `violet`: `alpha=0.5, use_sign=true, div_max_dims=all, use_div_max_abs=true`
+
+***
+
+## `SonarWaveletFilteredNoise`
+
+You will need [pytorch_wavelets](https://github.com/fbcotter/pytorch_wavelets) installed in your Python environment to use this one.
+
+Allows filtering another noise source using wavelets. Parameters are specified using YAML (or JSON) in the text widget. The defaults are:
+
+```yaml
+use_dtcwt: false
+mode: periodization
+level: 3
+wave: haar
+
+# Only used in DTCWT mode.
+qshift: qshift_a
+# Only used in DTCWT mode.
+biort: near_sym_a
+
+# Additional parameters for the inverse wavelet operation
+# are null by default and will use whatever the
+# forward parameter is set to:
+#   inv_mode, inv_wave, inv_biort, inv_qshift
+# Note: Using different parameters for the inverse wavelet
+#       operation may not work well (or just fail entirely).
+
+# Scale for the lowpass filter.
+yl_scale: 1.0
+
+# Scales for the highpass filter. Can be a single value (null is basically 1.0).
+yh_scales: null
+```
+
+***
+
+### `SonarAdvancedDistroNoise`
+
+See: https://pytorch.org/docs/stable/distributions.html
+
+For the most part, we just pass parameters directly to PyTorch's distribution classes. Some of them have specific requirements so it is possible to set invalid parameters.
+
+It may be more convenient to specify parameters using the `SonarCustomNoiseAdv` node than this gigantic monstrosity of a node. **Note**: In that case, pass the distribution name using `distro`, i.e. `distro: laplacian`.
+
+Common parameters:
+
+* `quantile_norm`: When enabled, will normalize generated noise to this quantile (i.e. 0.75 means outliers >75% will be clipped). Set to 1.0 or 0.0 to disable quantile normalization. A value like 0.75 or 0.85 should be reasonable, it really depends on the distribution and how many of the values are extreme. Some actually work better with quantile normalization disabled.
+* `quantile_norm_mode`: Controls what dimensions quantile normalization uses. By default, the noise is flattened first. You can try the nonflat versions but they may have a very strong row/column influence. Only applies when quantile_norm is active.
+* `result_index`: When noise generation returns a batch of items, it will select the specified index. Negative indexes count from the end. Values outside the valid range will be automatically adjusted. You may enter a space-separated list of values for the case where there might be multiple added batch dimensions. Excess batch dimensions are removed from the end, indexe from result_index are used in order so you may want to enter the indexes in reverse order. Example: If your noise has shape `(1, 4, 3, 3)` and two 2-sized batch dims are added resulting in `(1, 4, 3, 3, 2, 2)` and you wanted index 0 from the first additional batch dimension and 1 from the second you would use result_index: `1 0`
+
+Individual distributions have parameters beginning with their name, i.e. `laplacian_loc`. Parameters that are string inputs usually allow entering multiple space-separated items. This will usually result in the output noise being a batch, which can be selected with the `result_index` parameter.
+
+Suggestions for fun distributions to try: Wishart and VonMises can produce some interesting results.
 
 ***
 

@@ -18,13 +18,8 @@ try:
 except ImportError:
     HAVE_WAVELETS = False
 
-from .noise_utils import (
-    BLENDING_MODES,
-    quantile_normalize,
-    scale_noise,
-    scale_samples,
-    tensor_to,
-)
+from . import utils
+from .utils import quantile_normalize, scale_noise, tensor_to
 
 # ruff: noqa: D412, D413, D417, D212, D407, ANN002, ANN003, FBT001, FBT002, S311
 
@@ -439,7 +434,7 @@ class PerlinOldNoiseGenerator(NoiseGenerator):
         return cls.perlin_noise_tensor(vectors, positions, blend=blend).squeeze(0)
 
     def generate(self, *_args):
-        blend = BLENDING_MODES[self.blend_mode]
+        blend = utils.BLENDING_MODES[self.blend_mode]
         noise = self.rand_like(fun=torch.rand).div_(self.div_fac)
 
         _batch, channels, noise_height, noise_width = noise.shape
@@ -528,7 +523,7 @@ class HighresPyramidNoiseGenerator(NoiseGenerator):
         for i in range(self.iterations):
             r = rs[i].item()
             h, w = min(orig_h * 15, int(h * (r**i))), min(orig_w * 15, int(w * (r**i)))
-            noise += scale_samples(
+            noise += utils.scale_samples(
                 tensor_to(torch.randn(b, c, h, w, generator=self.generator), noise),
                 orig_w,
                 orig_h,
@@ -565,7 +560,7 @@ class PyramidOldNoiseGenerator(NoiseGenerator):
         r = 1
         for i in range(self.iterations):
             r *= 2
-            noise += scale_samples(
+            noise += utils.scale_samples(
                 torch.normal(
                     mean=0,
                     std=0.5**i,
@@ -608,7 +603,7 @@ class PyramidNoiseGenerator(NoiseGenerator):
                 torch.rand(1, generator=self.generator).cpu().item() * 2 + 2
             )  # Rather than always going 2x,
             w, h = max(1, int(w / (r**i))), max(1, int(h / (r**i)))
-            noise += scale_samples(
+            noise += utils.scale_samples(
                 torch.randn(
                     b,
                     c,

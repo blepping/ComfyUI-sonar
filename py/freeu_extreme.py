@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import torch
 
-from .external import MODULES as EXTERNAL_MODULES
+from . import utils
+from .external import IntegratedNode
 from .powernoise import PowerFilter
 
 
@@ -28,14 +29,7 @@ def ffilter(x, pfilter, normalization_factor=1.0, cfg_idx=None, filter_cache=Non
     return x_filt.to(x.dtype, non_blocking=True)
 
 
-BLEND_OPS = (
-    {"lerp": torch.lerp}
-    if "bleh" not in EXTERNAL_MODULES
-    else EXTERNAL_MODULES["bleh"].py.latent_utils.BLENDING_MODES
-)
-
-
-class FreeUExtremeConfigNode:
+class FreeUExtremeConfigNode(metaclass=IntegratedNode):
     DESCRIPTION = "Allows setting configuration for FreeU Extreme."
     RETURN_TYPES = ("FRUX_CONFIG",)
     FUNCTION = "go"
@@ -150,7 +144,7 @@ class FreeUExtremeConfigNode:
                     },
                 ),
                 "blend_mode": (
-                    tuple(BLEND_OPS.keys()),
+                    tuple(utils.BLENDING_MODES.keys()),
                     {
                         "tooltip": "Mode used when blending. Generally only has an effect when blend is set to values other than 0 or 1",
                     },
@@ -302,7 +296,7 @@ class FreeUExtremeConfig:
         x[:, slice_offs : slice_offs + slice_size] = (
             xslice
             if self.blend == 1.0
-            else BLEND_OPS[self.blend_mode](
+            else utils.BLENDING_MODES[self.blend_mode](
                 x[:, slice_offs : slice_offs + slice_size],
                 xslice,
                 self.blend,
@@ -331,12 +325,12 @@ class FreeUExtremeConfig:
     def clone(self):
         return self.__class__(**{k: getattr(self, k) for k in self._keys})
 
-    def __repr__(self):  # noqa: D105
+    def __repr__(self):
         meh = {k: getattr(self, k) for k in self._keys}
         return f"<FRUXConfig: {meh}>"
 
 
-class FreeUExtremeNode:
+class FreeUExtremeNode(metaclass=IntegratedNode):
     DESCRIPTION = "Main FreeU Extreme node. Allows patching a model with the FreeU (V2) effect with more control."
     RETURN_TYPES = ("MODEL",)
     FUNCTION = "go"

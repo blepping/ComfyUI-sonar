@@ -23,7 +23,7 @@ from .nodes import (
     SonarNormalizeNoiseNodeMixin,
 )
 from .noise import CustomNoiseItemBase
-from .noise_utils import scale_noise
+from .utils import scale_noise
 
 # ruff: noqa: ANN003, FBT001, FBT002
 
