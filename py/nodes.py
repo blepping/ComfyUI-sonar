@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import abc
 import inspect
+import math
 import random
-from types import SimpleNamespace
 from typing import Any, Callable
 
 import numpy as np
@@ -158,7 +158,7 @@ class NoisyLatentLikeNode(metaclass=IntegratedNode):
         }
 
     @classmethod
-    def go(
+    def go(  # noqa: PLR0914
         cls,
         *,
         noise_type: str,
@@ -182,9 +182,11 @@ class NoisyLatentLikeNode(metaclass=IntegratedNode):
             while hasattr(model, "model"):
                 model = model.model
             latent_scale_factor = model.latent_format.scale_factor
-            max_denoise = samplers.Sampler().max_denoise(
-                SimpleNamespace(inner_model=model),
-                sigmas,
+            model_sigma_max = float(model.model_sampling.sigma_max)
+            first_sigma = float(sigmas[0])
+            max_denoise = (
+                math.isclose(model_sigma_max, first_sigma, rel_tol=1e-05)
+                or first_sigma > model_sigma_max
             )
             multiplier *= (
                 float(
@@ -1404,68 +1406,6 @@ class SonarAdvancedDistroNoiseNode(SonarCustomNoiseNodeBase):
         )
 
 
-class CustomNOISE:
-    def __init__(
-        self,
-        custom_noise,
-        seed,
-        *,
-        cpu_noise=True,
-        normalize=True,
-        multiplier=1.0,
-    ):
-        self.custom_noise = custom_noise
-        self.seed = seed
-        self.cpu_noise = cpu_noise
-        self.normalize = normalize
-        self.multiplier = multiplier
-
-    def _sample_noise(self, latent_image, seed):
-        result = self.custom_noise.make_noise_sampler(
-            latent_image,
-            None,
-            None,
-            seed=seed,
-            cpu=self.cpu_noise,
-            normalized=self.normalize,
-        )(None, None).to(
-            device="cpu",
-            dtype=latent_image.dtype,
-        )
-        if result.layout != latent_image.layout:
-            if latent_image.layout == torch.sparse_coo:
-                return result.to_sparse()
-            errstr = f"Cannot handle latent layout {type(latent_image.layout).__name__}"
-            raise NotImplementedError(errstr)
-        return result if self.multiplier == 1.0 else result.mul_(self.multiplier)
-
-    def generate_noise(self, input_latent):
-        latent_image = input_latent["samples"]
-        batch_inds = input_latent.get("batch_index")
-        torch.manual_seed(self.seed)
-        random.seed(self.seed)
-        if self.multiplier == 0.0:
-            return torch.zeros(
-                latent_image.shape,
-                dtype=latent_image.dtype,
-                layout=latent_image.layout,
-                device="cpu",
-            )
-        if batch_inds is None:
-            return self._sample_noise(latent_image, self.seed)
-        unique_inds, inverse_inds = np.unique(batch_inds, return_inverse=True)
-        result = []
-        batch_size = latent_image.shape[0]
-        for idx in range(unique_inds[-1] + 1):
-            noise = self._sample_noise(
-                latent_image[idx % batch_size].unsqueeze(0),
-                self.seed + idx,
-            )
-            if idx in unique_inds:
-                result.append(noise)
-        return torch.cat(tuple(result[i] for i in inverse_inds), axis=0)
-
-
 class SonarWaveletFilteredNoiseNode(
     SonarCustomNoiseNodeBase,
     SonarNormalizeNoiseNodeMixin,
@@ -1533,6 +1473,68 @@ class SonarWaveletFilteredNoiseNode(
             noise=custom_noise,
             yaml_parameters=yaml_parameters,
         )
+
+
+class CustomNOISE:
+    def __init__(
+        self,
+        custom_noise,
+        seed,
+        *,
+        cpu_noise=True,
+        normalize=True,
+        multiplier=1.0,
+    ):
+        self.custom_noise = custom_noise
+        self.seed = seed
+        self.cpu_noise = cpu_noise
+        self.normalize = normalize
+        self.multiplier = multiplier
+
+    def _sample_noise(self, latent_image, seed):
+        result = self.custom_noise.make_noise_sampler(
+            latent_image,
+            None,
+            None,
+            seed=seed,
+            cpu=self.cpu_noise,
+            normalized=self.normalize,
+        )(None, None).to(
+            device="cpu",
+            dtype=latent_image.dtype,
+        )
+        if result.layout != latent_image.layout:
+            if latent_image.layout == torch.sparse_coo:
+                return result.to_sparse()
+            errstr = f"Cannot handle latent layout {type(latent_image.layout).__name__}"
+            raise NotImplementedError(errstr)
+        return result if self.multiplier == 1.0 else result.mul_(self.multiplier)
+
+    def generate_noise(self, input_latent):
+        latent_image = input_latent["samples"]
+        batch_inds = input_latent.get("batch_index")
+        torch.manual_seed(self.seed)
+        random.seed(self.seed)
+        if self.multiplier == 0.0:
+            return torch.zeros(
+                latent_image.shape,
+                dtype=latent_image.dtype,
+                layout=latent_image.layout,
+                device="cpu",
+            )
+        if batch_inds is None:
+            return self._sample_noise(latent_image, self.seed)
+        unique_inds, inverse_inds = np.unique(batch_inds, return_inverse=True)
+        result = []
+        batch_size = latent_image.shape[0]
+        for idx in range(unique_inds[-1] + 1):
+            noise = self._sample_noise(
+                latent_image[idx % batch_size].unsqueeze(0),
+                self.seed + idx,
+            )
+            if idx in unique_inds:
+                result.append(noise)
+        return torch.cat(tuple(result[i] for i in inverse_inds), axis=0)
 
 
 class SonarToComfyNOISENode(metaclass=IntegratedNode):
@@ -2244,6 +2246,8 @@ class SonarBlendFilterNoiseNode(
         normalize_result,
         normalize_noise,
     ):
+        if bleh is None:
+            raise RuntimeError("bleh not available")
         import ast  # noqa: PLC0415
 
         ffilter_custom = ffilter_custom.strip()
@@ -2321,6 +2325,8 @@ class SonarBlehOpsNoiseNode(
         rules,
         normalize,
     ):
+        if bleh is None:
+            raise RuntimeError("bleh not available")
         return super().go(
             factor,
             noise=sonar_custom_noise.clone(),
@@ -2384,11 +2390,11 @@ class KRestartSamplerCustomNoise(metaclass=IntegratedNode):
 
     RETURN_TYPES = ("LATENT", "LATENT")
     RETURN_NAMES = ("output", "denoised_output")
-    FUNCTION = "sample"
+    FUNCTION = "go"
     CATEGORY = "sampling"
 
     @classmethod
-    def sample(
+    def go(
         cls,
         *,
         model,
@@ -2409,6 +2415,8 @@ class KRestartSamplerCustomNoise(metaclass=IntegratedNode):
         chunked_mode=False,
         custom_noise_opt=None,
     ):
+        if restart is None:
+            raise RuntimeError("Restart not available")
         return restart.restart_sampling.restart_sampling(
             model,
             noise_seed,
@@ -2458,6 +2466,8 @@ class RestartSamplerCustomNoise(metaclass=IntegratedNode):
 
     @classmethod
     def go(cls, sampler, chunked_mode, custom_noise_opt=None):
+        if restart is None or not hasattr(restart.restart_sampling, "RestartSampler"):
+            raise RuntimeError("Restart not available")
         restart_options = {
             "restart_chunked": chunked_mode,
             "restart_wrapped_sampler": sampler,
@@ -2473,20 +2483,18 @@ class RestartSamplerCustomNoise(metaclass=IntegratedNode):
         return (restart_sampler,)
 
 
+NODE_CLASS_MAPPINGS |= {
+    "KRestartSamplerCustomNoise": KRestartSamplerCustomNoise,
+    "RestartSamplerCustomNoise": RestartSamplerCustomNoise,
+    "SonarBlendFilterNoise": SonarBlendFilterNoiseNode,
+    "SonarBlehOpsNoise": SonarBlehOpsNoiseNode,
+}
+
+
 def init_integrations(integrations):
-    global NODE_CLASS_MAPPINGS, restart, bleh  # noqa: PLW0603
+    global restart, bleh  # noqa: PLW0603
     restart = integrations.restart
-    if restart is not None:
-        NODE_CLASS_MAPPINGS["KRestartSamplerCustomNoise"] = KRestartSamplerCustomNoise
-        if hasattr(restart.restart_sampling, "RestartSampler"):
-            NODE_CLASS_MAPPINGS["RestartSamplerCustomNoise"] = RestartSamplerCustomNoise
     bleh = integrations.bleh
-    if bleh is None:
-        return
-    NODE_CLASS_MAPPINGS |= {
-        "SonarBlendFilterNoise": SonarBlendFilterNoiseNode,
-        "SonarBlehOpsNoise": SonarBlehOpsNoiseNode,
-    }
 
 
 external.MODULES.register_init_handler(init_integrations)

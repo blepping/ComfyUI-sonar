@@ -489,6 +489,10 @@ class ScheduledNoise(CustomNoiseItemBase):
                 return torch.zeros_like(x)
 
         def noise_sampler(s, sn):
+            if s is None or sn is None:
+                raise ValueError(
+                    "ScheduledNoise requires sigma, sigma_next to be passed",
+                )
             noise = (ns if end_sigma <= s <= start_sigma else nsa)(s, sn)
             return scale_noise(noise, factor, normalized=normalize)
 
