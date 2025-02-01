@@ -2,6 +2,22 @@
 
 Note, only relatively significant changes to user-visible functionality will be included here. Most recent changes at the top.
 
+## 20250130
+
+*Note*: May change seeds.
+
+This set of changes includes some pretty major internal refactoring. Definitely possible that I broke something, so please create an issue if you run into problems.
+
+* Noise generation should now respect whether generating on CPU vs GPU is selected. Previously it likely was defaulting to generating on GPU. This may change seeds.
+* Refactored momentum samplers, this may change seeds especially if you were using weird parameters like negative direction.
+* Added some new parameters for momentum samplers.
+* Removed the `s_noise` and churn parameters from the normal Sonar Euler sampler. May break workflows. (Churn was the predecessor to ancestral samplers and is basically obsolete.)
+* Added `wavelet` and `distro` noise types.
+* Added `SonarCustomNoiseAdv` node that allows passing parameters via YAML.
+* Added `SonarResizedNoise` node that allows you to generate noise at a fixed size and then crop/resize it to match the generation.
+* Added `SonarAdvancedDistroNoise` node that allows generating noise with basically all the distributions PyTorch supports.
+* Added `SonarWaveletFilteredNoise` node that lets you filter another noise generator using wavelets.
+
 ## 20241129
 
 *Note*: Contains some potentially workflow-breaking changes.

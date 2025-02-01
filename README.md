@@ -64,6 +64,47 @@ You can optionally plug this into the Sonar sampler nodes. See the [Guidance](#g
 
 Very abbreviated section. The init type can make a big difference. If you use `RANDOM` you can get away with setting `direction` to high values (like up to `2.25` or so) and absurdly low values (like `-30.0`). It's also possible to set `momentum` and `momentum_hist` to negative values, although whether it's a good idea...
 
+<details>
+<summary>Click to expand advanced parameters info</summary>
+
+There are some extra advanced parameters that may be passed by YAML/JSON using `SamplerConfigOVerride`'s `yaml_parameters`. Defaults:
+
+```yaml
+sonar_params:
+    # One of: classic, new, denoised
+    #  classic: Should be the same as the way it works in the A1111 extension.
+    #  new: Possibly improved version that doesn't blend in the history again.
+    #  denoised: Instead of using the noise prediction, we do momentum on denoised instead.
+    momentum_mode: new
+
+    # The following two parameters may be used to control when
+    # momentum sampling is active. Steps are 0-based with 0 being the first step.
+    momentum_start_step: 0
+    momentum_end_step: 9999
+
+    # Controls whether history always gets updated, whether or not within the
+    # start/end step range or only in that range. Can be used to affect the initial
+    # history value.
+    always_update_history: true
+
+    # Only applies when the init type is RAND.
+    rand_init_noise_multiplier: 1.0
+
+    # If you have ComfyUI-bleh installed, you can use any blend mode it provides.
+    # Otherwise you can have your blend mode in any color you want as long as it's lerp.
+    blend_mode: lerp
+
+    # Defaultss to blend_mode if unset.
+    momentum_blend_mode: null
+
+    # Defaults to blend_mode if unset. Only applies to linear guidance mode.
+    guidance_blend_mode: null
+```
+
+Additionally, it's possible to override the normal Sonar parameters here as well. If they exist in the `sonar_params` block, they will overwrite the values in the node.
+
+</details>
+
 ## Guidance
 
 You can try the `SamplerSonarNaive` sampler which has an optional latent input. The guidance _probably_ isn't working correctly and the implementation definitely isn't exactly the same as the original A1111 version but it still might be fun to play with. The `linear` guidance type is a lot more sensitive to the `guidance_factor` than the `euler` type. For `euler`, reasonable values are around `0.01` to `0.1`, for `linear` reasonable values are more like `0.001` to `0.02`. It is also possible to set guidance factor to a negative value, I've found this results in high contrast and very vivid colors.
@@ -112,6 +153,7 @@ My version was initially based on this Sonar sampler implementation for Diffuser
 * New pyramid noise based on implementation in [Jonathan Whitaker](https://wandb.ai/johnowhitaker/multires_noise/reports/Multi-Resolution-Noise-for-Diffusion-Model-Training--VmlldzozNjYyOTU2)'s article on multi-resolution noise.
 * Original `SonarPowerNoise` contributed by [elias-gaeros](https://github.com/elias-gaeros/). Additionally, he provided a lot of guidance with refactoring it to allow separate filtering and other enhancements and answered a multitude of dumb questions. To say those changes are only co-authored is probably giving myself too much credit. Thank you! Your patience and help is very much appreciated.
 * New 1/f (onef) and power law (white, grey, violet, velvet) noise types referenced from https://github.com/WASasquatch/PowerNoiseSuite
+* Wavelet noise idea (and some of the default settings) from https://github.com/ClownsharkBatwing/RES4LYF
 
 ## Errata
 

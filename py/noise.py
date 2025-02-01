@@ -6,18 +6,30 @@ from typing import Callable
 
 import comfy
 import torch
+import yaml
 from comfy.k_diffusion import sampling
 from torch import Tensor
 
-from . import external
+from . import external, utils
 from .noise_generation import *
 from .sonar import SonarGuidanceMixin
+from .utils import crop_samples, scale_noise
 
 # ruff: noqa: D412, D413, D417, D212, D407, ANN002, ANN003, FBT001, FBT002, S311
 
 
 class CustomNoiseItemBase(abc.ABC):
-    def __init__(self, factor, **kwargs):
+    def __init__(self, factor, *, yaml_parameters=None, **kwargs):
+        if yaml_parameters:
+            extra_params = yaml.safe_load(yaml_parameters)
+            if extra_params is None:
+                pass
+            elif not isinstance(extra_params, dict):
+                raise ValueError(
+                    "CustomNoiseItem: yaml_parameters must either be null or an object",
+                )
+            else:
+                kwargs["ns_kwargs"] = extra_params
         self.factor = factor
         self.keys = set(kwargs.keys())
         for k, v in kwargs.items():
@@ -46,6 +58,7 @@ class CustomNoiseItemBase(abc.ABC):
         seed=None,
         cpu=True,
         normalized=True,
+        **kwargs,
     ):
         raise NotImplementedError
 
@@ -65,16 +78,25 @@ class CustomNoiseItem(CustomNoiseItemBase):
         seed=None,
         cpu=True,
         normalized=True,
+        **kwargs,
     ):
+        ns_kwargs = getattr(self, "ns_kwargs", {}).copy()
+        # print("NS KWARGS", ns_kwargs)
+
         return get_noise_sampler(
             self.noise_type,
             x,
             sigma_min,
             sigma_max,
-            seed=seed,
-            cpu=cpu,
+            seed=ns_kwargs.pop("seed", seed),
+            cpu=ns_kwargs.pop("cpu", cpu),
             factor=self.factor,
-            normalized=self.get_normalize("normalize", normalized),
+            normalized=ns_kwargs.pop(
+                "normalized",
+                self.get_normalize("normalize", normalized),
+            ),
+            **ns_kwargs,
+            **kwargs,
         )
 
 
@@ -155,6 +177,7 @@ class NoiseSampler:
         make_noise_sampler: Callable | None = None,
         normalized=False,
         factor: float = 1.0,
+        **kwargs,
     ):
         self.factor = factor
         self.normalized = normalized
@@ -164,16 +187,18 @@ class NoiseSampler:
         try:
             self.noise_sampler = make_noise_sampler(
                 x,
-                transform(torch.as_tensor(sigma_min))
+                sigma_min=transform(torch.as_tensor(sigma_min))
                 if sigma_min is not None
                 else None,
-                transform(torch.as_tensor(sigma_max))
+                sigma_max=transform(torch.as_tensor(sigma_max))
                 if sigma_max is not None
                 else None,
                 seed=seed,
                 cpu=cpu,
+                **kwargs,
             )
         except TypeError as _exc:
+            print("GOT EXC", _exc)
             self.noise_sampler = make_noise_sampler(x)
 
     @classmethod
@@ -216,7 +241,7 @@ class AdvancedNoiseBase(CustomNoiseItemBase):
             v = getattr(self, k, None)
             if v is not None:
                 noise_sampler_kwargs[k] = v
-        self.sampler_factory = NoiseSampler.simple(
+        self.sampler_factory = NoiseSampler.wrap(
             partial(self.ns_factory, **noise_sampler_kwargs),
         )
 
@@ -229,9 +254,9 @@ class AdvancedPyramidNoise(AdvancedNoiseBase):
     ns_factory_arg_keys = ("discount", "iterations", "upscale_mode")
 
     pyramid_variants_map = {  # noqa: RUF012
-        "pyramid": pyramid_noise_like,
-        "pyramid_old": pyramid_old_noise_like,
-        "highres_pyramid": highres_pyramid_noise_like,
+        "pyramid": PyramidNoiseGenerator,
+        "pyramid_old": PyramidOldNoiseGenerator,
+        "highres_pyramid": HighresPyramidNoiseGenerator,
     }
 
     @property
@@ -244,15 +269,33 @@ class Advanced1fNoise(AdvancedNoiseBase):
 
     @property
     def ns_factory(self):
-        return onef_noise_like
+        return OneFNoiseGenerator
 
 
 class AdvancedPowerLawNoise(AdvancedNoiseBase):
     ns_factory_arg_keys = ("alpha", "div_max_dims", "use_sign")
 
+    @classmethod
     @property
-    def ns_factory(self):
-        return powerlaw_noise_like
+    def ns_factory(cls):
+        return PowerLawNoiseGenerator
+
+
+class AdvancedDistroNoise(AdvancedNoiseBase):
+    distro_params = DistroNoiseGenerator.build_params()
+    ns_factory_arg_keys = (
+        "distro",
+        "quantile_norm",
+        "quantile_norm_dim",
+        "quantile_norm_flatten",
+        "result_index",
+        *distro_params.keys(),
+    )
+
+    @classmethod
+    @property
+    def ns_factory(cls):
+        return DistroNoiseGenerator
 
 
 class CompositeNoise(CustomNoiseItemBase):
@@ -446,6 +489,10 @@ class ScheduledNoise(CustomNoiseItemBase):
                 return torch.zeros_like(x)
 
         def noise_sampler(s, sn):
+            if s is None or sn is None:
+                raise ValueError(
+                    "ScheduledNoise requires sigma, sigma_next to be passed",
+                )
             noise = (ns if end_sigma <= s <= start_sigma else nsa)(s, sn)
             return scale_noise(noise, factor, normalized=normalize)
 
@@ -997,271 +1044,508 @@ class BlendedNoise(CustomNoiseItemBase):
         return noise_sampler
 
 
-if "bleh" in external.MODULES:
-    bleh = external.MODULES["bleh"]
-    BLU = bleh.py.latent_utils
-    BOPS = bleh.py.nodes.ops
-
-    class BlendFilterNoise(CustomNoiseItemBase):
-        def __init__(
-            self,
+class ResizedNoise(CustomNoiseItemBase):
+    def __init__(
+        self,
+        factor,
+        *,
+        width,
+        height,
+        downscale_strategy,
+        initial_reference,
+        crop_offset_horizontal,
+        crop_offset_vertical,
+        crop_mode,
+        upscale_mode,
+        downscale_mode,
+        normalize,
+        custom_noise,
+    ):
+        if len(custom_noise.items) == 0:
+            raise ValueError("ResizedNoise requires at least one noise item")
+        super().__init__(
             factor,
-            *,
-            noise,
-            blend_mode,
-            ffilter,
-            ffilter_scale,
-            ffilter_strength,
-            ffilter_threshold,
-            enhance_mode,
-            enhance_strength,
-            affect,
-            normalize_result,
-            normalize_noise,
-        ):
-            if len(noise.items) == 0:
-                raise ValueError("BlendFilterNoise requires at least one noise item")
-            super().__init__(
-                factor,
-                noise=noise.clone(),
-                blend_mode=blend_mode,
-                ffilter=ffilter,
-                ffilter_scale=ffilter_scale,
-                ffilter_strength=ffilter_strength,
-                ffilter_threshold=ffilter_threshold,
-                enhance_mode=enhance_mode,
-                enhance_strength=enhance_strength,
-                affect=affect,
-                normalize_result=normalize_result,
-                normalize_noise=normalize_noise,
-            )
+            width=width,
+            height=height,
+            downscale_strategy=downscale_strategy,
+            initial_reference=initial_reference,
+            crop_offset_horizontal=crop_offset_horizontal,
+            crop_offset_vertical=crop_offset_vertical,
+            crop_mode=crop_mode,
+            upscale_mode=upscale_mode,
+            downscale_mode=downscale_mode,
+            custom_noise=custom_noise.clone(),
+            normalize=normalize,
+        )
 
-        def clone_key(self, k):
-            if k == "noise":
-                return self.noise.clone()
-            return super().clone_key(k)
+    def clone_key(self, k):
+        if k == "custom_noise":
+            return self.custom_noise.clone()
+        return super().clone_key(k)
 
-        def apply_effects(self, noise, sigma):
-            if self.ffilter:
-                noise = BLU.ffilter(
-                    noise,
-                    self.ffilter_threshold,
-                    self.ffilter_scale,
-                    self.ffilter,
-                    self.ffilter_strength,
-                )
-            if self.enhance_mode != "none" and self.enhance_strength != 0:
-                noise = BLU.enhance_tensor(
-                    noise,
-                    self.enhance_mode,
-                    self.enhance_strength,
-                    sigma=sigma,
-                    skip_multiplier=0,
-                    adjust_scale=False,
-                )
-            return noise
-
-        def make_noise_sampler(self, x, *args, normalized=True, **kwargs):
-            factor = self.factor
-            noise_items = self.noise.items
-            noise_samplers = tuple(
-                ni.make_noise_sampler(x, *args, normalized=False, **kwargs)
-                for ni in noise_items
-            )
-            num_samplers = len(noise_samplers)
-            normalize_noise = self.get_normalize(
-                "normalize_noise",
-                normalized or num_samplers > 1,
-            )
-            normalize_result = self.get_normalize("normalize_result", normalized)
-            noise_effects = self.affect in {"noise", "both"}
-            result_effects = self.affect in {"result", "both"}
-            noise_init = torch.zeros_like(x)
-
-            def noise_sampler(s, sn):
-                noise = noise_init.clone()
-                for ni, ns in zip(noise_items, noise_samplers):
-                    curr_noise = scale_noise(ns(s, sn), normalized=normalize_noise)
-                    if noise_effects:
-                        curr_noise = self.apply_effects(curr_noise, s)
-                    if self.blend_mode == "simple_add":
-                        noise += curr_noise.mul_(ni.factor)
-                    else:
-                        noise = BLU.BLENDING_MODES[self.blend_mode](
-                            noise,
-                            curr_noise,
-                            ni.factor,
-                        )
-                del curr_noise
-                noise = scale_noise(noise, factor, normalized=normalize_result)
-                if result_effects:
-                    noise = self.apply_effects(noise, s)
-                return noise
-
-            return noise_sampler
-
-    class BlehOpsNoise(CustomNoiseItemBase):
-        def __init__(
-            self,
-            factor,
-            *,
-            noise,
-            rules,
-            normalize,
-        ):
-            if len(noise.items) == 0:
-                raise ValueError("BlehOpsNoise requires at least one noise item")
-            super().__init__(
-                factor,
-                noise=noise.clone(),
-                rules=rules,
-                normalize=normalize,
-            )
-
-        def clone_key(self, k):
-            if k == "noise":
-                return self.noise.clone()
-            return super().clone_key(k)
-
-        def make_noise_sampler(self, x, *args, normalized=True, **kwargs):
-            factor = self.factor
-            normalize = self.get_normalize("normalize", normalized)
-            rulegroup = self.rules
-            internal_ns = self.noise.make_noise_sampler(
+    def make_noise_sampler(self, x, *args, normalized=True, **kwargs):
+        if x.ndim < 3:
+            raise ValueError("ResizedNoise can only handle 3+ dimensional latents")
+        factor = self.factor
+        normalize = self.get_normalize("normalize", normalized)
+        xh, xw = x.shape[-2:]
+        nh, nw = self.height // 8, self.width // 8
+        offsh, offsw = self.crop_offset_vertical // 8, self.crop_offset_horizontal // 8
+        if xh == nh and xw == nw:
+            ns = self.custom_noise.make_noise_sampler(
                 x,
                 *args,
-                normalized=False,
+                normalized=normalize,
                 **kwargs,
             )
 
-            def noise_sampler(s, sn):
-                noise = internal_ns(s, sn)
-                if len(rulegroup.rules):
-                    state = {
-                        BOPS.CondType.TYPE: BOPS.PatchType.LATENT,
-                        BOPS.CondType.PERCENT: 0.0,
-                        BOPS.CondType.BLOCK: -1,
-                        BOPS.CondType.STAGE: -1,
-                        "sigma": None if s is None else s,
-                        "h": noise,
-                        "hsp": x.detach().clone(),
-                        "target": "h",
-                    }
-                    noise = rulegroup.eval(state, toplevel=True)["h"]
-                return scale_noise(noise, factor, normalized=normalize)
+            def noise_sampler(*args, **kwargs):
+                return ns(*args, **kwargs).mul_(factor)
 
             return noise_sampler
 
+        upscale_mode = self.upscale_mode
+        downscale_mode = self.downscale_mode
+        crop_mode = self.crop_mode
+        x_all_bigger = xh >= nh and xw >= nw
+        x_any_bigger = xh >= nh or xw >= nw
+        if x_all_bigger:
+            if self.initial_reference == "prefer_crop":
+                x = crop_samples(
+                    x,
+                    nw,
+                    nh,
+                    mode=self.crop_mode,
+                    offset_width=offsw,
+                    offset_height=offsh,
+                )
+            else:
+                x = utils.scale_samples(x, nw, nh, mode=self.downscale_mode)
+            output = partial(
+                utils.scale_samples,
+                width=xw,
+                height=xh,
+                mode=upscale_mode,
+            )
+        else:
+            x = utils.scale_samples(x, nw, nh, mode=self.upscale_mode)
+            if x_any_bigger:
+                output = partial(
+                    utils.scale_samples,
+                    width=xw,
+                    height=xh,
+                    mode=upscale_mode,
+                )
+            elif self.downscale_strategy == "scale":
+                output = partial(
+                    utils.scale_samples,
+                    width=xw,
+                    height=xh,
+                    mode=downscale_mode,
+                )
+            else:
+                output = partial(
+                    crop_samples,
+                    width=xw,
+                    height=xh,
+                    mode=crop_mode,
+                    offset_width=offsw,
+                    offset_height=offsh,
+                )
+        ns = self.custom_noise.make_noise_sampler(x, *args, normalized=False, **kwargs)
+        del x
+
+        def noise_sampler(*args, **kwargs):
+            return output(
+                scale_noise(ns(*args, **kwargs), factor, normalized=normalize),
+            )
+
+        return noise_sampler
+
+
+class WaveletFilteredNoise(CustomNoiseItemBase):
+    def __init__(self, factor, *, normalize, noise, normalize_noise=False, **kwargs):
+        super().__init__(
+            factor,
+            noise=noise,
+            normalize=normalize,
+            normalize_noise=normalize_noise,
+            **kwargs,
+        )
+
+    def clone_key(self, k):
+        if k == "noise":
+            return self.noise.clone()
+        return super().clone_key(k)
+
+    def make_noise_sampler(
+        self,
+        x,
+        sigma_min,
+        sigma_max,
+        *args,
+        normalized=True,
+        **kwargs,
+    ):
+        factor = self.factor
+        normalize = self.get_normalize("normalize", normalized)
+        internal_ns = self.noise.make_noise_sampler(
+            x,
+            *args,
+            sigma_min=sigma_min,
+            sigma_max=sigma_max,
+            normalized=self.normalize_noise,
+            **kwargs,
+        )
+        ns_kwargs = getattr(self, "ns_kwargs", {}).copy()
+        # print("WF:NS KWARGS", ns_kwargs)
+        kwargs |= ns_kwargs
+        ns = WaveletNoiseGenerator(
+            x,
+            *args,
+            sigma_min=sigma_min,
+            sigma_max=sigma_max,
+            normalized=False,
+            noise_sampler=internal_ns,
+            **kwargs,
+        )
+
+        def noise_sampler(sigma, sigma_next):
+            return scale_noise(
+                ns(sigma, sigma_next),
+                factor,
+                normalized=normalize,
+            )
+
+        return noise_sampler
+
+
+class BlendFilterNoise(CustomNoiseItemBase):
+    def __init__(
+        self,
+        factor,
+        *,
+        noise,
+        blend_mode,
+        ffilter,
+        ffilter_scale,
+        ffilter_strength,
+        ffilter_threshold,
+        enhance_mode,
+        enhance_strength,
+        affect,
+        normalize_result,
+        normalize_noise,
+    ):
+        if len(noise.items) == 0:
+            raise ValueError("BlendFilterNoise requires at least one noise item")
+        super().__init__(
+            factor,
+            noise=noise.clone(),
+            blend_mode=blend_mode,
+            ffilter=ffilter,
+            ffilter_scale=ffilter_scale,
+            ffilter_strength=ffilter_strength,
+            ffilter_threshold=ffilter_threshold,
+            enhance_mode=enhance_mode,
+            enhance_strength=enhance_strength,
+            affect=affect,
+            normalize_result=normalize_result,
+            normalize_noise=normalize_noise,
+        )
+
+    def clone_key(self, k):
+        if k == "noise":
+            return self.noise.clone()
+        return super().clone_key(k)
+
+    def apply_effects(self, noise, sigma):
+        blu = external.MODULES.bleh.py.latent_utils
+        if self.ffilter:
+            noise = blu.ffilter(
+                noise,
+                self.ffilter_threshold,
+                self.ffilter_scale,
+                self.ffilter,
+                self.ffilter_strength,
+            )
+        if self.enhance_mode != "none" and self.enhance_strength != 0:
+            noise = blu.enhance_tensor(
+                noise,
+                self.enhance_mode,
+                self.enhance_strength,
+                sigma=sigma,
+                skip_multiplier=0,
+                adjust_scale=False,
+            )
+        return noise
+
+    def make_noise_sampler(self, x, *args, normalized=True, **kwargs):
+        factor = self.factor
+        noise_items = self.noise.items
+        noise_samplers = tuple(
+            ni.make_noise_sampler(x, *args, normalized=False, **kwargs)
+            for ni in noise_items
+        )
+        num_samplers = len(noise_samplers)
+        normalize_noise = self.get_normalize(
+            "normalize_noise",
+            normalized or num_samplers > 1,
+        )
+        normalize_result = self.get_normalize("normalize_result", normalized)
+        noise_effects = self.affect in {"noise", "both"}
+        result_effects = self.affect in {"result", "both"}
+        noise_init = torch.zeros_like(x)
+
+        def noise_sampler(s, sn):
+            noise = noise_init.clone()
+            for ni, ns in zip(noise_items, noise_samplers):
+                curr_noise = scale_noise(ns(s, sn), normalized=normalize_noise)
+                if noise_effects:
+                    curr_noise = self.apply_effects(curr_noise, s)
+                if self.blend_mode == "simple_add":
+                    noise += curr_noise.mul_(ni.factor)
+                else:
+                    noise = utils.BLENDING_MODES[self.blend_mode](
+                        noise,
+                        curr_noise,
+                        ni.factor,
+                    )
+            del curr_noise
+            noise = scale_noise(noise, factor, normalized=normalize_result)
+            if result_effects:
+                noise = self.apply_effects(noise, s)
+            return noise
+
+        return noise_sampler
+
+
+class BlehOpsNoise(CustomNoiseItemBase):
+    def __init__(
+        self,
+        factor,
+        *,
+        noise,
+        rules,
+        normalize,
+    ):
+        if len(noise.items) == 0:
+            raise ValueError("BlehOpsNoise requires at least one noise item")
+        super().__init__(
+            factor,
+            noise=noise.clone(),
+            rules=rules,
+            normalize=normalize,
+        )
+
+    def clone_key(self, k):
+        if k == "noise":
+            return self.noise.clone()
+        return super().clone_key(k)
+
+    def make_noise_sampler(self, x, *args, normalized=True, **kwargs):
+        bops = external.MODULES.bleh.py.nodes.ops
+        factor = self.factor
+        normalize = self.get_normalize("normalize", normalized)
+        rulegroup = self.rules
+        internal_ns = self.noise.make_noise_sampler(
+            x,
+            *args,
+            normalized=False,
+            **kwargs,
+        )
+
+        def noise_sampler(s, sn):
+            noise = internal_ns(s, sn)
+            if len(rulegroup.rules):
+                state = {
+                    bops.CondType.TYPE: bops.PatchType.LATENT,
+                    bops.CondType.PERCENT: 0.0,
+                    bops.CondType.BLOCK: -1,
+                    bops.CondType.STAGE: -1,
+                    "sigma": None if s is None else s,
+                    "h": noise,
+                    "hsp": x.detach().clone(),
+                    "target": "h",
+                }
+                noise = rulegroup.eval(state, toplevel=True)["h"]
+            return scale_noise(noise, factor, normalized=normalize)
+
+        return noise_sampler
+
 
 NOISE_SAMPLERS: dict[NoiseType, Callable] = {
-    NoiseType.BROWNIAN: NoiseSampler.wrap(sampling.BrownianTreeNoiseSampler),
-    NoiseType.GAUSSIAN: NoiseSampler.simple(torch.randn_like),
-    NoiseType.UNIFORM: NoiseSampler.simple(uniform_noise_like),
-    NoiseType.PERLIN: NoiseSampler.simple(rand_perlin_like),
-    NoiseType.STUDENTT: NoiseSampler.simple(studentt_noise_like),
-    NoiseType.ONEF_PINKISH: NoiseSampler.simple(partial(onef_noise_like, alpha=-0.5)),
-    NoiseType.ONEF_GREENISH: NoiseSampler.simple(partial(onef_noise_like, alpha=0.5)),
-    NoiseType.ONEF_PINKISHGREENISH: NoiseSampler.simple(
-        lambda x: onef_noise_like(x, alpha=0.5)
-        .add_(onef_noise_like(x, alpha=-0.5))
-        .mul_(0.5),
-    ),
-    NoiseType.ONEF_PINKISH_MIX: NoiseSampler.simple(
-        lambda x: onef_noise_like(x, alpha=-0.5)
-        .mul_(-1.0)
-        .add_(onef_noise_like(x, alpha=-0.5))
-        .mul_(0.5),
-    ),
-    NoiseType.ONEF_GREENISH_MIX: NoiseSampler.simple(
-        lambda x: onef_noise_like(x, alpha=0.5)
-        .mul_(-1.0)
-        .add_(onef_noise_like(x, alpha=0.5))
-        .mul_(0.5),
-    ),
-    NoiseType.WHITE: NoiseSampler.simple(
+    NoiseType.BROWNIAN: NoiseSampler.wrap(BrownianNoiseGenerator),
+    NoiseType.DISTRO: NoiseSampler.wrap(DistroNoiseGenerator),
+    NoiseType.GAUSSIAN: NoiseSampler.wrap(GaussianNoiseGenerator),
+    NoiseType.UNIFORM: NoiseSampler.wrap(UniformNoiseGenerator),
+    NoiseType.PERLIN: NoiseSampler.wrap(PerlinOldNoiseGenerator),
+    NoiseType.STUDENTT: NoiseSampler.wrap(StudentTNoiseGenerator),
+    NoiseType.ONEF_PINKISH: NoiseSampler.wrap(partial(OneFNoiseGenerator, alpha=-0.5)),
+    NoiseType.ONEF_GREENISH: NoiseSampler.wrap(partial(OneFNoiseGenerator, alpha=0.5)),
+    NoiseType.ONEF_PINKISHGREENISH: NoiseSampler.wrap(
         partial(
-            powerlaw_noise_like,
+            MixedNoiseGenerator,
+            name="onef_pinkishgreenish",
+            noise_mix=(
+                partial(OneFNoiseGenerator, alpha=0.5),
+                partial(OneFNoiseGenerator, alpha=-0.5),
+            ),
+            output_fun=lambda t: t.mul_(0.5),
+        ),
+    ),
+    NoiseType.ONEF_PINKISH_MIX: NoiseSampler.wrap(
+        partial(
+            MixedNoiseGenerator,
+            name="onef_pinkish_mix",
+            noise_mix=(
+                (partial(OneFNoiseGenerator, alpha=0.5), lambda t: t.mul_(-1.0)),
+                partial(OneFNoiseGenerator, alpha=0.5),
+            ),
+            output_fun=lambda t: t.mul_(0.5),
+        ),
+    ),
+    NoiseType.ONEF_GREENISH_MIX: NoiseSampler.wrap(
+        partial(
+            MixedNoiseGenerator,
+            name="onef_greenish_mix",
+            noise_mix=(
+                (partial(OneFNoiseGenerator, alpha=0.5), lambda t: t.mul_(-1.0)),
+                partial(OneFNoiseGenerator, alpha=0.5),
+            ),
+            output_fun=lambda t: t.mul_(0.5),
+        ),
+    ),
+    NoiseType.WHITE: NoiseSampler.wrap(
+        partial(
+            PowerLawNoiseGenerator,
             alpha=0.0,
             use_sign=True,
         ),
     ),
-    NoiseType.GREY: NoiseSampler.simple(
+    NoiseType.GREY: NoiseSampler.wrap(
         partial(
-            powerlaw_noise_like,
+            PowerLawNoiseGenerator,
             alpha=0.0,
             use_sign=False,
         ),
     ),
-    NoiseType.VELVET: NoiseSampler.simple(
+    NoiseType.VELVET: NoiseSampler.wrap(
         partial(
-            powerlaw_noise_like,
+            PowerLawNoiseGenerator,
             alpha=1.0,
             use_sign=True,
             div_max_dims=(-3, -2, -1),
         ),
     ),
-    NoiseType.VIOLET: NoiseSampler.simple(
+    NoiseType.VIOLET: NoiseSampler.wrap(
         partial(
-            powerlaw_noise_like,
+            PowerLawNoiseGenerator,
             alpha=0.5,
             use_sign=True,
             div_max_dims=(-3, -2, -1),
         ),
     ),
-    NoiseType.PINK_OLD: NoiseSampler.simple(pink_noise_old_like),
-    NoiseType.HIGHRES_PYRAMID: NoiseSampler.simple(highres_pyramid_noise_like),
-    NoiseType.PYRAMID: NoiseSampler.simple(pyramid_noise_like),
-    NoiseType.RAINBOW_MILD: NoiseSampler.simple(
-        lambda x: green_noise_like(x)
-        .mul_(0.55)
-        .add_(rand_perlin_like(x).mul_(0.7))
-        .mul_(1.15),
+    NoiseType.WAVELET: NoiseSampler.wrap(WaveletNoiseGenerator),
+    NoiseType.PINK_OLD: NoiseSampler.wrap(PinkOldNoiseGenerator),
+    NoiseType.HIGHRES_PYRAMID: NoiseSampler.wrap(HighresPyramidNoiseGenerator),
+    NoiseType.PYRAMID: NoiseSampler.wrap(PyramidNoiseGenerator),
+    NoiseType.RAINBOW_MILD: NoiseSampler.wrap(
+        partial(
+            MixedNoiseGenerator,
+            name="rainbow_mild",
+            noise_mix=(
+                (GreenTestNoiseGenerator, lambda t: t.mul_(0.55)),
+                (GreenTestNoiseGenerator, lambda t: t.mul_(0.7)),
+            ),
+            output_fun=lambda t: t.mul_(1.15),
+        ),
     ),
-    NoiseType.RAINBOW_INTENSE: NoiseSampler.simple(
-        lambda x: green_noise_like(x)
-        .mul_(0.75)
-        .add_(rand_perlin_like(x).mul_(0.5))
-        .mul_(1.15),
+    NoiseType.RAINBOW_INTENSE: NoiseSampler.wrap(
+        partial(
+            MixedNoiseGenerator,
+            name="rainbow_intense",
+            noise_mix=(
+                (GreenTestNoiseGenerator, lambda t: t.mul_(0.75)),
+                (GreenTestNoiseGenerator, lambda t: t.mul_(0.5)),
+            ),
+            output_fun=lambda t: t.mul_(1.15),
+        ),
     ),
-    NoiseType.LAPLACIAN: NoiseSampler.simple(laplacian_noise_like),
-    NoiseType.POWER_OLD: NoiseSampler.simple(power_noise_old_like),
-    NoiseType.GREEN_TEST: NoiseSampler.simple(green_noise_like),
-    NoiseType.PYRAMID_OLD: NoiseSampler.simple(pyramid_old_noise_like),
-    NoiseType.PYRAMID_BISLERP: NoiseSampler.simple(
-        partial(pyramid_noise_like, upscale_mode="bislerp"),
+    NoiseType.LAPLACIAN: NoiseSampler.wrap(LaplacianNoiseGenerator),
+    NoiseType.POWER_OLD: NoiseSampler.wrap(PowerOldNoiseGenerator),
+    NoiseType.GREEN_TEST: NoiseSampler.wrap(GreenTestNoiseGenerator),
+    NoiseType.PYRAMID_OLD: NoiseSampler.wrap(PyramidOldNoiseGenerator),
+    NoiseType.PYRAMID_BISLERP: NoiseSampler.wrap(
+        partial(PyramidNoiseGenerator, upscale_mode="bislerp"),
     ),
-    NoiseType.HIGHRES_PYRAMID_BISLERP: NoiseSampler.simple(
-        partial(highres_pyramid_noise_like, upscale_mode="bislerp"),
+    NoiseType.HIGHRES_PYRAMID_BISLERP: NoiseSampler.wrap(
+        partial(HighresPyramidNoiseGenerator, upscale_mode="bislerp"),
     ),
-    NoiseType.PYRAMID_AREA: NoiseSampler.simple(
-        partial(pyramid_noise_like, upscale_mode="area"),
+    NoiseType.PYRAMID_AREA: NoiseSampler.wrap(
+        partial(PyramidNoiseGenerator, upscale_mode="area"),
     ),
-    NoiseType.HIGHRES_PYRAMID_AREA: NoiseSampler.simple(
-        partial(highres_pyramid_noise_like, upscale_mode="area"),
+    NoiseType.HIGHRES_PYRAMID_AREA: NoiseSampler.wrap(
+        partial(HighresPyramidNoiseGenerator, upscale_mode="area"),
     ),
-    NoiseType.PYRAMID_OLD_BISLERP: NoiseSampler.simple(
-        partial(pyramid_old_noise_like, upscale_mode="bislerp"),
+    NoiseType.PYRAMID_OLD_BISLERP: NoiseSampler.wrap(
+        partial(PyramidOldNoiseGenerator, upscale_mode="bislerp"),
     ),
-    NoiseType.PYRAMID_OLD_AREA: NoiseSampler.simple(
-        partial(pyramid_old_noise_like, upscale_mode="area"),
+    NoiseType.PYRAMID_OLD_AREA: NoiseSampler.wrap(
+        partial(PyramidOldNoiseGenerator, upscale_mode="area"),
     ),
-    NoiseType.PYRAMID_DISCOUNT5: NoiseSampler.simple(
-        partial(pyramid_noise_like, discount=0.5),
+    NoiseType.PYRAMID_DISCOUNT5: NoiseSampler.wrap(
+        partial(PyramidNoiseGenerator, discount=0.5),
     ),
-    NoiseType.PYRAMID_MIX: NoiseSampler.simple(
-        lambda x: pyramid_noise_like(x, discount=0.6)
-        .mul_(0.2)
-        .add_(pyramid_noise_like(x, discount=0.6).mul_(-0.8)),
+    NoiseType.PYRAMID_MIX: NoiseSampler.wrap(
+        partial(
+            MixedNoiseGenerator,
+            name="pyramid_mix",
+            noise_mix=(
+                (partial(PyramidNoiseGenerator, discount=0.6), lambda t: t.mul_(0.2)),
+                (partial(PyramidNoiseGenerator, discount=0.6), lambda t: t.mul_(-0.8)),
+            ),
+        ),
     ),
-    NoiseType.PYRAMID_MIX_AREA: NoiseSampler.simple(
-        lambda x: pyramid_noise_like(x, discount=0.5, upscale_mode="area")
-        .mul_(0.2)
-        .add_(pyramid_noise_like(x, discount=0.5, upscale_mode="area").mul_(-0.8)),
+    NoiseType.PYRAMID_MIX_AREA: NoiseSampler.wrap(
+        partial(
+            MixedNoiseGenerator,
+            name="pyramid_mix_area",
+            noise_mix=(
+                (
+                    partial(PyramidNoiseGenerator, discount=0.5, upscale_mode="area"),
+                    lambda t: t.mul_(0.2),
+                ),
+                (
+                    partial(PyramidNoiseGenerator, discount=0.5, upscale_mode="area"),
+                    lambda t: t.mul_(-0.8),
+                ),
+            ),
+        ),
     ),
-    NoiseType.PYRAMID_MIX_BISLERP: NoiseSampler.simple(
-        lambda x: pyramid_noise_like(x, discount=0.5, upscale_mode="bislerp")
-        .mul_(0.2)
-        .add_(pyramid_noise_like(x, discount=0.5, upscale_mode="bislerp").mul_(-0.8)),
+    NoiseType.PYRAMID_MIX_BISLERP: NoiseSampler.wrap(
+        partial(
+            MixedNoiseGenerator,
+            name="pyramid_mix_bislerp",
+            noise_mix=(
+                (
+                    partial(
+                        PyramidNoiseGenerator,
+                        discount=0.5,
+                        upscale_mode="bislerp",
+                    ),
+                    lambda t: t.mul_(0.2),
+                ),
+                (
+                    partial(
+                        PyramidNoiseGenerator,
+                        discount=0.5,
+                        upscale_mode="bislerp",
+                    ),
+                    lambda t: t.mul_(-0.8),
+                ),
+            ),
+        ),
     ),
 }
 
@@ -1275,6 +1559,7 @@ def get_noise_sampler(
     cpu: bool = True,
     factor: float = 1.0,
     normalized=False,
+    **kwargs,
 ) -> Callable:
     if noise_type is None:
         noise_type = NoiseType.GAUSSIAN
@@ -1293,4 +1578,5 @@ def get_noise_sampler(
         cpu=cpu,
         factor=factor,
         normalized=normalized,
+        **kwargs,
     )
