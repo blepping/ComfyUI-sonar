@@ -2216,6 +2216,12 @@ class SonarBlendFilterNoiseNode(
     @classmethod
     def INPUT_TYPES(cls):
         result = super().INPUT_TYPES(include_rescale=False, include_chain=False)
+        bleh_filter_presets = (
+            () if bleh is None else tuple(bleh.py.latent_utils.FILTER_PRESETS.keys())
+        )
+        bleh_enhance_methods = (
+            () if bleh is None else ("none", *bleh.py.latent_utils.ENHANCE_METHODS)
+        )
         result["required"] |= {
             "sonar_custom_noise": (
                 WILDCARD_NOISE,
@@ -2224,7 +2230,7 @@ class SonarBlendFilterNoiseNode(
                 },
             ),
             "blend_mode": (("simple_add", *utils.BLENDING_MODES.keys()),),
-            "ffilter": (tuple(bleh.py.latent_utils.FILTER_PRESETS.keys()),),
+            "ffilter": (bleh_filter_presets,),
             "ffilter_custom": ("STRING", {"default": ""}),
             "ffilter_scale": (
                 "FLOAT",
@@ -2250,7 +2256,7 @@ class SonarBlendFilterNoiseNode(
                 "INT",
                 {"default": 1, "min": 1, "max": 32},
             ),
-            "enhance_mode": (("none", *bleh.py.latent_utils.ENHANCE_METHODS),),
+            "enhance_mode": (bleh_enhance_methods,),
             "enhance_strength": (
                 "FLOAT",
                 {
@@ -2385,11 +2391,18 @@ class KRestartSamplerCustomNoise(metaclass=IntegratedNode):
 
     @classmethod
     def INPUT_TYPES(cls):
-        get_normal_schedulers = getattr(
-            restart.nodes,
-            "get_supported_normal_schedulers",
-            restart.nodes.get_supported_restart_schedulers,
-        )
+        if restart is not None:
+            get_normal_schedulers = getattr(
+                restart.nodes,
+                "get_supported_normal_schedulers",
+                restart.nodes.get_supported_restart_schedulers,
+            )
+            restart_normal_schedulers = get_normal_schedulers()
+            restart_schedulers = restart.nodes.get_supported_restart_schedulers()
+            restart_default_segments = restart.restart_sampling.DEFAULT_SEGMENTS
+        else:
+            restart_default_segments = ""
+            restart_normal_schedulers = restart_schedulers = ()
         return {
             "required": {
                 "model": ("MODEL",),
@@ -2410,7 +2423,7 @@ class KRestartSamplerCustomNoise(metaclass=IntegratedNode):
                     },
                 ),
                 "sampler": ("SAMPLER",),
-                "scheduler": (get_normal_schedulers(),),
+                "scheduler": (restart_normal_schedulers,),
                 "positive": ("CONDITIONING",),
                 "negative": ("CONDITIONING",),
                 "latent_image": ("LATENT",),
@@ -2420,13 +2433,11 @@ class KRestartSamplerCustomNoise(metaclass=IntegratedNode):
                 "segments": (
                     "STRING",
                     {
-                        "default": restart.restart_sampling.DEFAULT_SEGMENTS,
+                        "default": restart_default_segments,
                         "multiline": False,
                     },
                 ),
-                "restart_scheduler": (
-                    restart.nodes.get_supported_restart_schedulers(),
-                ),
+                "restart_scheduler": (restart_schedulers,),
                 "chunked_mode": ("BOOLEAN", {"default": True}),
             },
             "optional": {
