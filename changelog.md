@@ -2,6 +2,10 @@
 
 Note, only relatively significant changes to user-visible functionality will be included here. Most recent changes at the top.
 
+## 20250227
+
+* Add 5D latent (video models) support for most custom noise types.
+
 ## 20250130
 
 *Note*: May change seeds.

@@ -79,7 +79,6 @@ class NoiseError(Exception):
 
 class NoiseGenerator:
     name = "unknown"
-    SAVE_X = False
     MIN_DIMS = 1
     MAX_DIMS = 0
 
@@ -100,7 +99,7 @@ class NoiseGenerator:
             setattr(self, k, kwarg_params.pop(k))
         self.options = kwarg_params
         self.update_x(x)
-        print("CREATE NG", self, kwargs)
+        # print("CREATE NG", self, kwargs)
 
     @classmethod
     @property
@@ -114,11 +113,13 @@ class NoiseGenerator:
         }
 
     def update_x(self, x):
-        self.x = None if not self.SAVE_X else x.detach().clone()
         self.shape = x.shape
-        self.batch, self.channels, self.height, self.width = (
-            x.shape if x.ndim == 4 else (None,) * 4
-        )
+        if x.ndim in {4, 5}:
+            self.batch, self.channels = x.shape[:2]
+            self.height, self.width = x.shape[-2:]
+            self.frames = x.shape[-3] if x.ndim == 5 else None
+        else:
+            self.batch = self.channels = self.frames = self.height = self.width = None
         self.device = x.device
         self.gen_device = torch.device("cpu") if self.cpu else self.device
         self.layout = x.layout
@@ -133,14 +134,11 @@ class NoiseGenerator:
             layout=self.layout,
             device=self.gen_device,
         )
-        # print("GEN NOISE", noise)
         if to_device and noise.device != self.device:
             noise = tensor_to(noise, self.device)
-        # print("MADE NOISE", noise)
         return noise
 
     def output_hook(self, noise):
-        # print("NOISE OUT1", noise)
         if noise.device != self.device:
             noise = tensor_to(noise, self.device)
         return scale_noise(
@@ -165,9 +163,35 @@ class NoiseGenerator:
         return f"<NoiseGenerator({self.name}): device={self.device}, shape={self.shape}, dtype={self.dtype}, {pretty_params}>"
 
 
-class MixedNoiseGenerator(NoiseGenerator):
-    MIN_DIMS = MAX_DIMS = 4
+class FramesToChannelsNoiseGenerator(NoiseGenerator):
+    MIN_DIMS = 4
+    MAX_DIMS = 5
 
+    def get_adjusted_shape(self):
+        if self.frames:
+            return (self.batch, self.channels * self.frames, self.height, self.width)
+        return (self.batch, self.channels, self.height, self.width)
+
+    def fix_output_frames(self, noise):
+        if not self.frames:
+            return noise
+        return noise.reshape(
+            self.batch,
+            self.channels,
+            self.frames,
+            self.height,
+            self.width,
+        )
+
+    def rand_like(self, *args, **kwargs):
+        noise = super().rand_like(*args, **kwargs)
+        adjusted_shape = self.get_adjusted_shape()
+        if noise.shape != adjusted_shape:
+            return noise.reshape(*adjusted_shape)
+        return noise
+
+
+class MixedNoiseGenerator(NoiseGenerator):
     @classmethod
     @property
     def ng_params(cls):
@@ -180,15 +204,20 @@ class MixedNoiseGenerator(NoiseGenerator):
         }
 
     def __init__(self, x, *args, **kwargs):
+        min_dim = max_dim = None
+        self.name = kwargs["name"]
+        for item in kwargs["noise_mix"]:
+            ng_class = item[0] if isinstance(item, (tuple, list)) else item
+            cmin, cmax = ng_class.MIN_DIMS, ng_class.MAX_DIMS
+            min_dim = max(min_dim if min_dim is not None else cmin, cmin)
+            max_dim = min(max_dim if max_dim is not None else cmax, cmax)
+        self.MIN_DIMS = min_dim
+        self.MAX_DIMS = max_dim
         super().__init__(x, *args, **kwargs)
         ng_list = []
-        for item in self.noise_mix:
-            if isinstance(item, (tuple, list)):
-                ng_class, transform_fun = item
-            else:
-                ng_class, transform_fun = item, None
+        for ng_class, ng_class_kwargs, transform_fun in self.noise_mix:
             ng_kwargs = {k: v for k, v in kwargs.items() if k in self.pass_args}
-            ng_list.append((ng_class(x, **ng_kwargs), transform_fun))
+            ng_list.append((ng_class(x, **ng_class_kwargs, **ng_kwargs), transform_fun))
         self.ng_list = ng_list
 
     def generate(self, *args):
@@ -242,9 +271,8 @@ class BrownianNoiseGenerator(NoiseGenerator):
         return self.brownian_tree_ns(*args)
 
 
-class PerlinOldNoiseGenerator(NoiseGenerator):
+class PerlinOldNoiseGenerator(FramesToChannelsNoiseGenerator):
     name = "perlin_old"
-    MIN_DIMS = MAX_DIMS = 4
 
     @classmethod
     @property
@@ -437,18 +465,18 @@ class PerlinOldNoiseGenerator(NoiseGenerator):
         blend = utils.BLENDING_MODES[self.blend_mode]
         noise = self.rand_like(fun=torch.rand).div_(self.div_fac)
 
-        _batch, channels, noise_height, noise_width = noise.shape
+        channels, height, width = noise.shape[1:]
         for _ in range(self.iterations):
             noise += self.perlin_noise(
-                (noise_height, noise_width),
-                (noise_height, noise_width),
-                batch_size=channels,  # This should be the number of channels.
+                (height, self.width),
+                (height, width),
+                batch_size=channels,
                 blend=blend,
                 dtype=noise.dtype,
                 layout=noise.layout,
                 device=noise.device,
             )
-        return noise
+        return self.fix_output_frames(noise)
 
 
 class UniformNoiseGenerator(NoiseGenerator):
@@ -473,9 +501,8 @@ class UniformNoiseGenerator(NoiseGenerator):
         )
 
 
-class HighresPyramidNoiseGenerator(NoiseGenerator):
+class HighresPyramidNoiseGenerator(FramesToChannelsNoiseGenerator):
     name = "highres_pyramid"
-    MIN_DIMS = MAX_DIMS = 4
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -502,15 +529,10 @@ class HighresPyramidNoiseGenerator(NoiseGenerator):
         }
 
     def generate(self, s, sn):
-        (
-            b,
-            c,
-            h,
-            w,
-        ) = self.shape  # EDIT: w and h get over-written, rename for a different variant!
-
+        adjusted_shape = self.get_adjusted_shape()
+        b, c, h, w = adjusted_shape
         orig_w, orig_h = w, h
-        noise = self.uniform_ng(s, sn)
+        noise = self.uniform_ng(s, sn).reshape(*adjusted_shape)
         rs = (
             torch.rand(
                 self.iterations,
@@ -531,12 +553,11 @@ class HighresPyramidNoiseGenerator(NoiseGenerator):
             ).mul_(self.discount**i)
             if h >= orig_h * 15 or w >= orig_w * 15:
                 break  # Lowest resolution is 1x1
-        return noise
+        return self.fix_output_frames(noise)
 
 
-class PyramidOldNoiseGenerator(NoiseGenerator):
+class PyramidOldNoiseGenerator(FramesToChannelsNoiseGenerator):
     name = "pyramid_old"
-    MIN_DIMS = MAX_DIMS = 4
 
     @classmethod
     @property
@@ -549,10 +570,11 @@ class PyramidOldNoiseGenerator(NoiseGenerator):
         }
 
     def generate(self, *_args):
-        b, c, h, w = self.shape
+        adjusted_shape = self.get_adjusted_shape()
+        b, c, h, w = adjusted_shape
         orig_h, orig_w = h, w
         noise = torch.zeros(
-            size=self.shape,
+            size=adjusted_shape,
             dtype=self.dtype,
             layout=self.layout,
             device=self.gen_device,
@@ -574,12 +596,11 @@ class PyramidOldNoiseGenerator(NoiseGenerator):
                 orig_h,
                 mode=self.upscale_mode,
             ).mul_(self.discount**i)
-        return noise
+        return self.fix_output_frames(noise)
 
 
-class PyramidNoiseGenerator(NoiseGenerator):
+class PyramidNoiseGenerator(FramesToChannelsNoiseGenerator):
     name = "pyramid"
-    MIN_DIMS = MAX_DIMS = 4
 
     @classmethod
     @property
@@ -592,12 +613,10 @@ class PyramidNoiseGenerator(NoiseGenerator):
 
     # Modified from https://wandb.ai/johnowhitaker/multires_noise/reports/Multi-Resolution-Noise-for-Diffusion-Model-Training--VmlldzozNjYyOTU2
     def generate(self, *_args):
-        b, c, w, h = (
-            self.shape
-        )  # NOTE: w and h get over-written, rename for a different variant!
-
-        orig_w, orig_h = w, h
         noise = self.rand_like()
+        b, c, h, w = noise.shape
+        orig_w, orig_h = w, h
+
         for i in range(self.iterations):
             r = (
                 torch.rand(1, generator=self.generator).cpu().item() * 2 + 2
@@ -621,7 +640,7 @@ class PyramidNoiseGenerator(NoiseGenerator):
             )
             if w == 1 or h == 1:
                 break  # Lowest resolution is 1x1
-        return noise
+        return self.fix_output_frames(noise)
 
 
 class StudentTNoiseGenerator(NoiseGenerator):
@@ -653,9 +672,10 @@ class StudentTNoiseGenerator(NoiseGenerator):
         return torch.copysign(torch.pow(torch.abs(noise), self.pow_fac), noise)
 
 
-class GreenTestNoiseGenerator(NoiseGenerator):
+class GreenTestNoiseGenerator(FramesToChannelsNoiseGenerator):
     name = "green_test"
-    MIN_DIMS = MAX_DIMS = 4
+    MIN_DIMS = 4
+    MAX_DIMS = 5
 
     @classmethod
     @property
@@ -677,7 +697,7 @@ class GreenTestNoiseGenerator(NoiseGenerator):
         power[0, 0] = self.power_base
         noise = torch.fft.ifft2(torch.fft.fft2(noise) / torch.sqrt(power))
         noise *= scale / noise.std()
-        return torch.real(noise)
+        return self.fix_output_frames(torch.real(noise))
 
 
 class PinkOldNoiseGenerator(NoiseGenerator):
@@ -694,9 +714,10 @@ class PinkOldNoiseGenerator(NoiseGenerator):
         return self.rand_like() * spectral_density
 
 
-class OneFNoiseGenerator(NoiseGenerator):
+class OneFNoiseGenerator(FramesToChannelsNoiseGenerator):
     name = "onef"
-    MIN_DIMS = MAX_DIMS = 4
+    MIN_DIMS = 4
+    MAX_DIMS = 5
 
     @classmethod
     @property
@@ -712,19 +733,19 @@ class OneFNoiseGenerator(NoiseGenerator):
 
     # Referenced from: https://github.com/WASasquatch/PowerNoiseSuite
     def generate(self, *_args):
-        batch, _channels, height, width = self.shape
+        # batch, _channels, height, width = self.shape
 
         noise = self.rand_like()
 
-        freq_x = tensor_to(torch.fft.fftfreq(height, self.hfac), noise)
-        freq_y = tensor_to(torch.fft.fftfreq(width, self.wfac), noise)
+        freq_x = tensor_to(torch.fft.fftfreq(self.height, self.hfac), noise)
+        freq_y = tensor_to(torch.fft.fftfreq(self.width, self.wfac), noise)
         fx, fy = torch.meshgrid(freq_x, freq_y, indexing="ij")
 
         power = (fx**2 + fy**2) ** (-self.alpha / 2.0)
         if self.k != 0:
             power = self.k / power
         power[0, 0] = self.base_power
-        power = power.unsqueeze(0).expand(batch, 1, height, width)
+        power = power.unsqueeze(0).expand(self.batch, 1, self.height, self.width)
 
         noise_fft = torch.fft.fftn(noise)
         noise_fft /= (
@@ -733,7 +754,7 @@ class OneFNoiseGenerator(NoiseGenerator):
             else power.to(noise_fft.dtype)
         )
 
-        return torch.fft.ifftn(noise_fft).real
+        return self.fix_output_frames(torch.fft.ifftn(noise_fft).real)
 
 
 class PowerLawNoiseGenerator(NoiseGenerator):
@@ -1258,9 +1279,10 @@ class PowerOldNoiseGenerator(NoiseGenerator):
 
 
 # Idea from https://github.com/ClownsharkBatwing/RES4LYF/ (wave and mode defaults also from that source)
-class WaveletNoiseGenerator(NoiseGenerator):
+class WaveletNoiseGenerator(FramesToChannelsNoiseGenerator):
     name = "wavelet"
-    MIN_DIMS = MAX_DIMS = 4
+    MIN_DIMS = 4
+    MAX_DIMS = 5
 
     def __init__(self, *args, **kwargs):
         if not HAVE_WAVELETS:
@@ -1311,11 +1333,21 @@ class WaveletNoiseGenerator(NoiseGenerator):
         }
 
     def generate(self, *args):
+        adjusted_shape = self.get_adjusted_shape()
         noise = (
             self.rand_like()
             if self.noise_sampler is None
             else self.noise_sampler(*args)
         )
+        if noise.shape != adjusted_shape:
+            noise = noise.reshape(*adjusted_shape)
+        if self.frames:
+            noise = noise.reshape(
+                self.batch,
+                self.channels * self.frames,
+                self.height,
+                self.width,
+            )
         yl, yh = self.wavelet_forward(noise)
         if self.yl_scale != 1:
             yl *= self.yl_scale
@@ -1332,7 +1364,7 @@ class WaveletNoiseGenerator(NoiseGenerator):
                 for lidx in range(min(ht.shape[2], len(hscale))):
                     # print(">>    SCALE IDX", lidx)
                     ht[:, :, lidx, :, :] *= hscale[lidx]
-        return self.wavelet_inverse((yl, yh))
+        return self.fix_output_frames(self.wavelet_inverse((yl, yh)))
 
 
 __all__ = (

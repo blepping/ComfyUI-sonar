@@ -636,7 +636,7 @@ class SonarPowerNoiseNode(SonarCustomNoiseNodeBase):
                     "max": 100.0,
                     "step": 0.001,
                     "round": False,
-                    "tooltip": "Attempts to desaturate thelatent by injecting the average across channels (controlled by channel_correction). Applied after mix.",
+                    "tooltip": "Attempts to desaturate the latent by injecting the average across channels (controlled by channel_correction). Applied after mix.",
                 },
             ),
             "channel_correlation": (

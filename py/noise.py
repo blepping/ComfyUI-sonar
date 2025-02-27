@@ -1388,8 +1388,8 @@ NOISE_SAMPLERS: dict[NoiseType, Callable] = {
             MixedNoiseGenerator,
             name="onef_pinkishgreenish",
             noise_mix=(
-                partial(OneFNoiseGenerator, alpha=0.5),
-                partial(OneFNoiseGenerator, alpha=-0.5),
+                (OneFNoiseGenerator, {"alpha": 0.5}, None),
+                (OneFNoiseGenerator, {"alpha": -0.5}, None),
             ),
             output_fun=lambda t: t.mul_(0.5),
         ),
@@ -1399,8 +1399,8 @@ NOISE_SAMPLERS: dict[NoiseType, Callable] = {
             MixedNoiseGenerator,
             name="onef_pinkish_mix",
             noise_mix=(
-                (partial(OneFNoiseGenerator, alpha=0.5), lambda t: t.mul_(-1.0)),
-                partial(OneFNoiseGenerator, alpha=0.5),
+                (OneFNoiseGenerator, {"alpha": 0.5}, lambda t: t.mul_(-1.0)),
+                (OneFNoiseGenerator, {"alpha": 0.5}, None),
             ),
             output_fun=lambda t: t.mul_(0.5),
         ),
@@ -1410,8 +1410,8 @@ NOISE_SAMPLERS: dict[NoiseType, Callable] = {
             MixedNoiseGenerator,
             name="onef_greenish_mix",
             noise_mix=(
-                (partial(OneFNoiseGenerator, alpha=0.5), lambda t: t.mul_(-1.0)),
-                partial(OneFNoiseGenerator, alpha=0.5),
+                (OneFNoiseGenerator, {"alpha": 0.5}, lambda t: t.mul_(-1.0)),
+                (OneFNoiseGenerator, {"alpha": 0.5}, None),
             ),
             output_fun=lambda t: t.mul_(0.5),
         ),
@@ -1455,8 +1455,8 @@ NOISE_SAMPLERS: dict[NoiseType, Callable] = {
             MixedNoiseGenerator,
             name="rainbow_mild",
             noise_mix=(
-                (GreenTestNoiseGenerator, lambda t: t.mul_(0.55)),
-                (GreenTestNoiseGenerator, lambda t: t.mul_(0.7)),
+                (GreenTestNoiseGenerator, {}, lambda t: t.mul_(0.55)),
+                (GreenTestNoiseGenerator, {}, lambda t: t.mul_(0.7)),
             ),
             output_fun=lambda t: t.mul_(1.15),
         ),
@@ -1466,8 +1466,8 @@ NOISE_SAMPLERS: dict[NoiseType, Callable] = {
             MixedNoiseGenerator,
             name="rainbow_intense",
             noise_mix=(
-                (GreenTestNoiseGenerator, lambda t: t.mul_(0.75)),
-                (GreenTestNoiseGenerator, lambda t: t.mul_(0.5)),
+                (GreenTestNoiseGenerator, {}, lambda t: t.mul_(0.75)),
+                (GreenTestNoiseGenerator, {}, lambda t: t.mul_(0.5)),
             ),
             output_fun=lambda t: t.mul_(1.15),
         ),
@@ -1502,8 +1502,8 @@ NOISE_SAMPLERS: dict[NoiseType, Callable] = {
             MixedNoiseGenerator,
             name="pyramid_mix",
             noise_mix=(
-                (partial(PyramidNoiseGenerator, discount=0.6), lambda t: t.mul_(0.2)),
-                (partial(PyramidNoiseGenerator, discount=0.6), lambda t: t.mul_(-0.8)),
+                (PyramidNoiseGenerator, {"discount": 0.6}, lambda t: t.mul_(0.2)),
+                (PyramidNoiseGenerator, {"discount": 0.6}, lambda t: t.mul_(-0.8)),
             ),
         ),
     ),
@@ -1513,11 +1513,13 @@ NOISE_SAMPLERS: dict[NoiseType, Callable] = {
             name="pyramid_mix_area",
             noise_mix=(
                 (
-                    partial(PyramidNoiseGenerator, discount=0.5, upscale_mode="area"),
+                    PyramidNoiseGenerator,
+                    {"discount": 0.5, "upscale_mode": "area"},
                     lambda t: t.mul_(0.2),
                 ),
                 (
-                    partial(PyramidNoiseGenerator, discount=0.5, upscale_mode="area"),
+                    PyramidNoiseGenerator,
+                    {"discount": 0.5, "upscale_mode": "area"},
                     lambda t: t.mul_(-0.8),
                 ),
             ),
@@ -1529,19 +1531,19 @@ NOISE_SAMPLERS: dict[NoiseType, Callable] = {
             name="pyramid_mix_bislerp",
             noise_mix=(
                 (
-                    partial(
-                        PyramidNoiseGenerator,
-                        discount=0.5,
-                        upscale_mode="bislerp",
-                    ),
+                    PyramidNoiseGenerator,
+                    {
+                        "discount": 0.5,
+                        "upscale_mode": "bislerp",
+                    },
                     lambda t: t.mul_(0.2),
                 ),
                 (
-                    partial(
-                        PyramidNoiseGenerator,
-                        discount=0.5,
-                        upscale_mode="bislerp",
-                    ),
+                    PyramidNoiseGenerator,
+                    {
+                        "discount": 0.5,
+                        "upscale_mode": "bislerp",
+                    },
                     lambda t: t.mul_(-0.8),
                 ),
             ),
