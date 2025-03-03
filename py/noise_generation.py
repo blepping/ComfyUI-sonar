@@ -626,14 +626,14 @@ class PyramidNoiseGenerator(FramesToChannelsNoiseGenerator):
                 torch.randn(
                     b,
                     c,
-                    w,
                     h,
+                    w,
                     device=noise.device,
                     layout=noise.layout,
                     dtype=noise.dtype,
                 ),
-                orig_h,
                 orig_w,
+                orig_h,
                 mode=self.upscale_mode,
             ).mul_(
                 self.discount**i,
