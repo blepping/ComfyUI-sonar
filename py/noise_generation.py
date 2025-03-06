@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import math
 from enum import Enum, auto
-from functools import lru_cache
 from typing import Callable
 
 import torch
@@ -93,7 +92,7 @@ class NoiseGenerator:
         if self.MAX_DIMS > 0 and x.ndim > self.MAX_DIMS:
             errstr = f"Noise generator {self.name} requires at most {self.MAX_DIMS} dimension(s) but got input with shape {x.shape}"
             raise ValueError(errstr)
-        params = self.ng_params
+        params = self.ng_params()
         kwarg_params = params | kwargs
         for k in params:
             setattr(self, k, kwarg_params.pop(k))
@@ -102,7 +101,6 @@ class NoiseGenerator:
         # print("CREATE NG", self, kwargs)
 
     @classmethod
-    @property
     def ng_params(cls):
         return {
             "normalized": True,
@@ -159,7 +157,7 @@ class NoiseGenerator:
         return self.output_hook(self.generate(*args, **kwargs))
 
     def __str__(self):
-        pretty_params = ", ".join(f"{k}={getattr(self, k)!s}" for k in self.ng_params)
+        pretty_params = ", ".join(f"{k}={getattr(self, k)!s}" for k in self.ng_params())
         return f"<NoiseGenerator({self.name}): device={self.device}, shape={self.shape}, dtype={self.dtype}, {pretty_params}>"
 
 
@@ -193,9 +191,8 @@ class FramesToChannelsNoiseGenerator(NoiseGenerator):
 
 class MixedNoiseGenerator(NoiseGenerator):
     @classmethod
-    @property
     def ng_params(cls):
-        return super().ng_params | {
+        return super().ng_params() | {
             "name": "mixed_noise",
             "normalized": True,
             "pass_args": frozenset(("cpu",)),
@@ -236,9 +233,8 @@ class GaussianNoiseGenerator(NoiseGenerator):
     name = "gaussian"
 
     @classmethod
-    @property
     def ng_params(cls):
-        return super().ng_params | {"normalized": False}
+        return super().ng_params() | {"normalized": False}
 
     def generate(self, *_args):
         return self.rand_like()
@@ -263,9 +259,8 @@ class BrownianNoiseGenerator(NoiseGenerator):
         )
 
     @classmethod
-    @property
     def ng_params(cls):
-        return super().ng_params | {"normalized": False}
+        return super().ng_params() | {"normalized": False}
 
     def generate(self, *args):
         return self.brownian_tree_ns(*args)
@@ -275,9 +270,8 @@ class PerlinOldNoiseGenerator(FramesToChannelsNoiseGenerator):
     name = "perlin_old"
 
     @classmethod
-    @property
     def ng_params(cls):
-        return super().ng_params | {
+        return super().ng_params() | {
             "div_fac": 2.0,
             "iterations": 2,
             "blend_mode": "lerp",
@@ -483,9 +477,8 @@ class UniformNoiseGenerator(NoiseGenerator):
     name = "uniform"
 
     @classmethod
-    @property
     def ng_params(cls):
-        return super().ng_params | {
+        return super().ng_params() | {
             "normalized": False,
             "sub_fac": 0.5,
             "mul_fac": 3.46,
@@ -518,9 +511,8 @@ class HighresPyramidNoiseGenerator(FramesToChannelsNoiseGenerator):
         )
 
     @classmethod
-    @property
     def ng_params(cls):
-        return super().ng_params | {
+        return super().ng_params() | {
             "normalized": True,
             "uniform_normalized": False,
             "discount": 0.7,
@@ -560,9 +552,8 @@ class PyramidOldNoiseGenerator(FramesToChannelsNoiseGenerator):
     name = "pyramid_old"
 
     @classmethod
-    @property
     def ng_params(cls):
-        return super().ng_params | {
+        return super().ng_params() | {
             "discount": 0.8,
             "iterations": 5,
             "upscale_mode": "nearest-exact",
@@ -603,9 +594,8 @@ class PyramidNoiseGenerator(FramesToChannelsNoiseGenerator):
     name = "pyramid"
 
     @classmethod
-    @property
     def ng_params(cls):
-        return super().ng_params | {
+        return super().ng_params() | {
             "discount": 0.7,
             "upscale_mode": "bilinear",
             "iterations": 10,
@@ -647,9 +637,8 @@ class StudentTNoiseGenerator(NoiseGenerator):
     name = "studentt"
 
     @classmethod
-    @property
     def ng_params(cls):
-        return super().ng_params | {
+        return super().ng_params() | {
             "loc": 0,
             "scale": 0.2,
             "df": 1,
@@ -678,9 +667,8 @@ class GreenTestNoiseGenerator(FramesToChannelsNoiseGenerator):
     MAX_DIMS = 5
 
     @classmethod
-    @property
     def ng_params(cls):
-        return super().ng_params | {
+        return super().ng_params() | {
             "scale_fac": 1.0,
             "x_pow": 2,
             "y_pow": 2,
@@ -704,9 +692,8 @@ class PinkOldNoiseGenerator(NoiseGenerator):
     name = "pink_old"
 
     @classmethod
-    @property
     def ng_params(cls):
-        return super().ng_params | {"alpha": 2.0, "k": 1.0, "freq": 1.0}
+        return super().ng_params() | {"alpha": 2.0, "k": 1.0, "freq": 1.0}
 
     # Completely wrong implementation here.
     def generate(self, *_args):
@@ -720,9 +707,8 @@ class OneFNoiseGenerator(FramesToChannelsNoiseGenerator):
     MAX_DIMS = 5
 
     @classmethod
-    @property
     def ng_params(cls):
-        return super().ng_params | {
+        return super().ng_params() | {
             "alpha": 2.0,
             "k": 1.0,
             "hfac": 1.0,
@@ -761,9 +747,8 @@ class PowerLawNoiseGenerator(NoiseGenerator):
     name = "powerlaw"
 
     @classmethod
-    @property
     def ng_params(cls):
-        return super().ng_params | {
+        return super().ng_params() | {
             "alpha": 2.0,
             "div_max_dims": None,
             "use_sign": False,
@@ -789,9 +774,8 @@ class LaplacianNoiseGenerator(NoiseGenerator):
     name = "laplacian"
 
     @classmethod
-    @property
     def ng_params(cls):
-        return super().ng_params | {"loc": 0, "scale": 1.0, "div_fac": 4.0}
+        return super().ng_params() | {"loc": 0, "scale": 1.0, "div_fac": 4.0}
 
     def generate(self, *_args):
         noise = self.rand_like().div_(self.div_fac)
@@ -815,16 +799,18 @@ class DistroNoiseGenerator(NoiseGenerator):
 
     def __init__(self, x, *args, **kwargs):
         super().__init__(x, *args, **kwargs)
-        if self.distro not in self.distro_params:
+        if self.distro not in self.distro_params():
             raise ValueError("Bad distro")
 
+    _distro_params = None
+
     @classmethod
-    @property
-    @lru_cache(maxsize=1)
     def distro_params(cls):
+        if cls._distro_params is not None:
+            return cls._distro_params
         td = torch.distributions
         tt = torch.Tensor
-        return {
+        cls._distro_params = {
             # Simple
             "exponential": (
                 tt.exponential_,
@@ -1129,28 +1115,35 @@ class DistroNoiseGenerator(NoiseGenerator):
                 },
             ),
         }
+        return cls._distro_params
+
+    _build_params = None
 
     @classmethod
-    @lru_cache(maxsize=1)
     def build_params(cls):
-        return {
+        if cls._build_params is not None:
+            return cls._build_params
+        cls._build_params = {
             f"{tykey}_{pkey}": pval
-            for tykey, tyval in cls.distro_params.items()
+            for tykey, tyval in cls.distro_params().items()
             for pkey, pval in tyval[1].items()
             if not pkey.startswith("_")
         }
+        return cls._build_params
+
+    _ng_params = None
 
     @classmethod
-    @property
-    @lru_cache(maxsize=1)
     def ng_params(cls):
+        if cls._ng_params is not None:
+            return cls._ng_params
         dparams = {
             k: v["default"]
             for k, v in cls.build_params().items()
             if not k.startswith("_")
         }
-        return (
-            super().ng_params
+        cls._ng_params = (
+            super().ng_params()
             | {
                 "distro": "normal",
                 "quantile_norm": 0.85,
@@ -1162,6 +1155,7 @@ class DistroNoiseGenerator(NoiseGenerator):
             }
             | dparams
         )
+        return cls._ng_params
 
     def norm_output(self, noise):
         if noise.ndim > len(self.shape):
@@ -1227,7 +1221,7 @@ class DistroNoiseGenerator(NoiseGenerator):
 
     def generate(self, *_args):
         distro = self.distro
-        dfun, ddef = self.distro_params[distro]
+        dfun, ddef = self.distro_params()[distro]
         is_simple = distro in self.simple_distros
         dkwargs = self.get_distro_kwargs(distro, ddef, simple=is_simple)
         if is_simple:
@@ -1250,9 +1244,8 @@ class PowerOldNoiseGenerator(NoiseGenerator):
     name = "power_old"
 
     @classmethod
-    @property
     def ng_params(cls):
-        return super().ng_params | {"alpha": 2, "k": 1, "normalized": False}
+        return super().ng_params() | {"alpha": 2, "k": 1, "normalized": False}
 
     def generate(self, *_args):
         tensor = self.rand_like()
@@ -1318,9 +1311,8 @@ class WaveletNoiseGenerator(FramesToChannelsNoiseGenerator):
             )
 
     @classmethod
-    @property
     def ng_params(cls):
-        return super().ng_params | {
+        return super().ng_params() | {
             "mode": "periodization",
             "level": 3,
             "wave": "haar",

@@ -468,7 +468,6 @@ class SonarEuler(SonarSampler):
         )
 
     @classmethod
-    @torch.no_grad()
     def sampler(
         cls,
         model,
@@ -562,7 +561,6 @@ class SonarEulerAncestral(SonarSampler):
         )
 
     @classmethod
-    @torch.no_grad()
     def sampler(
         cls,
         model,
@@ -760,7 +758,6 @@ class SonarDPMPPSDE(SonarSampler):
         )
 
     @classmethod
-    @torch.no_grad()
     def sampler(
         cls,
         model,

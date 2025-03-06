@@ -14,6 +14,7 @@ from comfy import model_management, samplers
 from . import external, noise, utils
 from .external import IntegratedNode
 from .noise import NoiseType
+from .noise_generation import DistroNoiseGenerator
 from .sonar import (
     GuidanceConfig,
     GuidanceType,
@@ -1337,10 +1338,9 @@ class SonarAdvancedDistroNoiseNode(SonarCustomNoiseNodeBase):
 
     @classmethod
     def INPUT_TYPES(cls):
-        ngcls = cls.get_item_class().ns_factory
-        distro_params = ngcls.distro_params
+        distro_params = DistroNoiseGenerator.distro_params()
         variants = tuple(sorted(distro_params.keys()))
-        combined_params = ngcls.build_params()
+        combined_params = DistroNoiseGenerator.build_params()
 
         result = super().INPUT_TYPES()
         result["required"] |= {
@@ -2113,7 +2113,6 @@ class SamplerNodeConfigOverride(metaclass=IntegratedNode):
         )
 
     @classmethod
-    @torch.no_grad()
     def sampler_function(
         cls,
         model,

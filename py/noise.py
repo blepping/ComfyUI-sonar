@@ -275,9 +275,8 @@ class Advanced1fNoise(AdvancedNoiseBase):
 class AdvancedPowerLawNoise(AdvancedNoiseBase):
     ns_factory_arg_keys = ("alpha", "div_max_dims", "use_sign")
 
-    @classmethod
     @property
-    def ns_factory(cls):
+    def ns_factory(self):
         return PowerLawNoiseGenerator
 
 
@@ -292,9 +291,8 @@ class AdvancedDistroNoise(AdvancedNoiseBase):
         *distro_params.keys(),
     )
 
-    @classmethod
     @property
-    def ns_factory(cls):
+    def ns_factory(self):
         return DistroNoiseGenerator
 
 
