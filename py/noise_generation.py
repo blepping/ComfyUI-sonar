@@ -20,7 +20,7 @@ except ImportError:
 from . import utils
 from .utils import quantile_normalize, scale_noise, tensor_to
 
-# ruff: noqa: D412, D413, D417, D212, D407, ANN002, ANN003, FBT001, FBT002, S311
+# ruff: noqa: D413, D417, D212, ANN002, ANN003
 
 
 class NoiseType(Enum):

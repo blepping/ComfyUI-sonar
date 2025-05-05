@@ -105,6 +105,8 @@ class NoisyLatentLikeNode(metaclass=IntegratedNode):
                     {
                         "default": 1.0,
                         "step": 0.001,
+                        "min": -10000.0,
+                        "max": 10000.0,
                         "round": False,
                         "tooltip": "Multiplier for the strength of the generated noise. Performed after mul_by_sigmas_opt.",
                     },
@@ -1016,6 +1018,8 @@ class SonarResizedNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMix
                 {
                     "default": 0,
                     "step": 8,
+                    "min": -8000,
+                    "max": 8000,
                     "tooltip": "This offsets the cropped view by the specified size. Positive values will move it toward the right, negative values will move it toward the left. The offsets will be adjusted to to fit in the available space. For example, if you have crop_mode set to top_right then setting a positive offset isn't going to do anything: it's already as far right as it can go.",
                 },
             ),
@@ -1024,6 +1028,8 @@ class SonarResizedNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMix
                 {
                     "default": 0,
                     "step": 8,
+                    "min": -8000,
+                    "max": 8000,
                     "tooltip": "This offsets the cropped view by the specified size. Positive values will move it toward the bottom, negative values will move it toward the top. The offsets will be adjusted to to fit in the available space. For example, if you have crop_mode set to bottom_right then setting a positive offset isn't going to do anything: it's already as far down as it can go.",
                 },
             ),
@@ -1126,6 +1132,8 @@ class SonarAdvancedPyramidNoiseNode(SonarCustomNoiseNodeBase):
                 {
                     "default": 0.0,
                     "step": 0.001,
+                    "min": -1000.0,
+                    "max": 1000.0,
                     "round": False,
                     "tooltip": "When set to 0 will use the variant default.",
                 },
@@ -1178,6 +1186,8 @@ class SonarAdvanced1fNoiseNode(SonarCustomNoiseNodeBase):
                 {
                     "default": 0.25,
                     "step": 0.001,
+                    "min": -1000.0,
+                    "max": 1000.0,
                     "round": False,
                     "tooltip": "Similar to the advanced power noise node, positive values increase low frequencies (with colorful effects), negative values increase high frequencies.",
                 },
@@ -1187,6 +1197,8 @@ class SonarAdvanced1fNoiseNode(SonarCustomNoiseNodeBase):
                 {
                     "default": 1.0,
                     "step": 0.001,
+                    "min": -1000.0,
+                    "max": 1000.0,
                     "round": False,
                     "tooltip": "Currently no description of exactly what it does, it's just another knob you can try turning for a different effect.",
                 },
@@ -1196,6 +1208,8 @@ class SonarAdvanced1fNoiseNode(SonarCustomNoiseNodeBase):
                 {
                     "default": 1.0,
                     "step": 0.001,
+                    "min": -1000.0,
+                    "max": 1000.0,
                     "round": False,
                     "tooltip": "Vertical frequency scaling factor.",
                 },
@@ -1205,6 +1219,8 @@ class SonarAdvanced1fNoiseNode(SonarCustomNoiseNodeBase):
                 {
                     "default": 1.0,
                     "step": 0.001,
+                    "min": -1000.0,
+                    "max": 1000.0,
                     "round": False,
                     "tooltip": "Horizontal frequency scaling factor.",
                 },
@@ -1259,6 +1275,8 @@ class SonarAdvancedPowerLawNoiseNode(SonarCustomNoiseNodeBase):
                 {
                     "default": 0.5,
                     "step": 0.001,
+                    "min": -1000.0,
+                    "max": 1000.0,
                     "round": False,
                     "tooltip": "Alpha parameter of the generated noise. Positive values (low frequency noise) tend to produce colorful results.",
                 },
@@ -1605,6 +1623,8 @@ class SonarToComfyNOISENode(metaclass=IntegratedNode):
                     {
                         "default": 1.0,
                         "step": 0.001,
+                        "min": -1000.0,
+                        "max": 1000.0,
                         "round": False,
                         "tooltip": "Simple multiplier applied to noise after all other scaling and normalization effects. If set to 0, no noise will be generated (same as disabling noise).",
                     },
@@ -1802,8 +1822,8 @@ class SamplerNodeSonarEulerAncestral(SamplerNodeSonarEuler):
                     "FLOAT",
                     {
                         "default": 1.0,
-                        "min": 0.0,
-                        "max": 100.0,
+                        "min": -1000.0,
+                        "max": 1000.0,
                         "step": 0.01,
                         "round": False,
                         "tooltip": "Multiplier for noise added during ancestral or SDE sampling.",
@@ -1813,8 +1833,8 @@ class SamplerNodeSonarEulerAncestral(SamplerNodeSonarEuler):
                     "FLOAT",
                     {
                         "default": 1.0,
-                        "min": 0.0,
-                        "max": 100.0,
+                        "min": -1000.0,
+                        "max": 1000.0,
                         "step": 0.01,
                         "round": False,
                         "tooltip": "Basically controls the ancestralness of the sampler. When set to 0, you will get a non-ancestral (or SDE) sampler.",
@@ -1887,8 +1907,8 @@ class SamplerNodeSonarDPMPPSDE(SamplerNodeSonarEuler):
                     "FLOAT",
                     {
                         "default": 1.0,
-                        "min": 0.0,
-                        "max": 100.0,
+                        "min": -1000.0,
+                        "max": 1000.0,
                         "step": 0.01,
                         "round": False,
                         "tooltip": "Multiplier for noise added during ancestral or SDE sampling.",
@@ -1898,8 +1918,8 @@ class SamplerNodeSonarDPMPPSDE(SamplerNodeSonarEuler):
                     "FLOAT",
                     {
                         "default": 1.0,
-                        "min": 0.0,
-                        "max": 100.0,
+                        "min": -1000.0,
+                        "max": 1000.0,
                         "step": 0.01,
                         "round": False,
                         "tooltip": "Basically controls the ancestralness of the sampler. When set to 0, you will get a non-ancestral (or SDE) sampler.",
@@ -1975,6 +1995,7 @@ class SamplerNodeConfigOverride(metaclass=IntegratedNode):
                     {
                         "default": 1.0,
                         "step": 0.01,
+                        "max": 1000.0,
                         "round": False,
                         "tooltip": "Basically controls the ancestralness of the sampler. When set to 0, you will get a non-ancestral (or SDE) sampler.",
                     },
@@ -1984,6 +2005,8 @@ class SamplerNodeConfigOverride(metaclass=IntegratedNode):
                     {
                         "default": 1.0,
                         "step": 0.01,
+                        "min": -1000.0,
+                        "max": 1000.0,
                         "round": False,
                         "tooltip": "Multiplier for noise added during ancestral or SDE sampling.",
                     },
@@ -1992,8 +2015,9 @@ class SamplerNodeConfigOverride(metaclass=IntegratedNode):
                     "FLOAT",
                     {
                         "default": 0.0,
-                        "min": 0.0,
                         "step": 0.01,
+                        "min": -1000.0,
+                        "max": 1000.0,
                         "round": False,
                         "tooltip": "Churn was the predececessor of ETA. Only used by a few types of samplers (notably Euler non-ancestral). Not used by any ancestral or SDE samplers.",
                     },
@@ -2003,6 +2027,8 @@ class SamplerNodeConfigOverride(metaclass=IntegratedNode):
                     {
                         "default": 0.5,
                         "step": 0.01,
+                        "min": -1000.0,
+                        "max": 1000.0,
                         "round": False,
                         "tooltip": "Used by dpmpp_sde.",
                     },
@@ -2045,11 +2071,10 @@ class SamplerNodeConfigOverride(metaclass=IntegratedNode):
                 "yaml_parameters": (
                     "STRING",
                     {
-                        "tooltip": "Allows specifying custom parameters via YAML. This input can be converted to a multiline text widget. Note: When specifying paramaters this way, there is no error checking.",
+                        "tooltip": "Allows specifying custom parameters via YAML. Note: When specifying paramaters this way, there is no error checking.",
                         "placeholder": "# YAML or JSON here",
                         "dynamicPrompts": False,
                         "multiline": True,
-                        "defaultInput": True,
                     },
                 ),
             },

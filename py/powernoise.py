@@ -25,8 +25,6 @@ from .nodes import (
 from .noise import CustomNoiseItemBase
 from .utils import scale_noise
 
-# ruff: noqa: ANN003, FBT001, FBT002
-
 PREVIEW_FORMAT = comfy.latent_formats.SD15()
 
 
@@ -295,7 +293,14 @@ class PowerFilter:
 
 
 class PowerNoiseItem(CustomNoiseItemBase):
-    def __init__(self, factor, *, channel_correlation, power_filter=None, **kwargs):
+    def __init__(
+        self,
+        factor,
+        *,
+        channel_correlation,
+        power_filter=None,
+        **kwargs: dict,
+    ):
         if isinstance(channel_correlation, str):
             channel_correlation = torch.tensor(
                 tuple(
@@ -363,6 +368,7 @@ class PowerNoiseItem(CustomNoiseItemBase):
     def make_noise_sampler(
         self,
         x: Tensor,
+        *,
         sigma_min: float | None,
         sigma_max: float | None,
         seed: int | None,
@@ -461,7 +467,15 @@ def rfft2_to_fft2(x):
 
 
 class PowerFilterNoiseItem(PowerNoiseItem):
-    def __init__(self, factor, *, noise, normalize_noise, normalize_result, **kwargs):
+    def __init__(
+        self,
+        factor,
+        *,
+        noise,
+        normalize_noise,
+        normalize_result,
+        **kwargs: dict,
+    ):
         super().__init__(
             factor,
             noise=noise.clone(),
@@ -478,6 +492,7 @@ class PowerFilterNoiseItem(PowerNoiseItem):
     def make_noise_sampler(
         self,
         x: Tensor,
+        *,
         sigma_min: float | None,
         sigma_max: float | None,
         seed: int | None,
@@ -664,7 +679,7 @@ class SonarPowerNoiseNode(SonarCustomNoiseNodeBase):
     def go(
         self,
         preview="none",
-        **kwargs,
+        **kwargs: dict,
     ):
         result = super().go(**kwargs)
         if preview == "none":
