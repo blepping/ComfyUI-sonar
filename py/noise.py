@@ -13,9 +13,9 @@ from torch import Tensor
 from . import external, utils
 from .noise_generation import *
 from .sonar import SonarGuidanceMixin
-from .utils import crop_samples, scale_noise
+from .utils import crop_samples, quantile_normalize, scale_noise
 
-# ruff: noqa: D412, D413, D417, D212, D407, ANN002, ANN003, FBT001, FBT002, S311
+# ruff: noqa: ANN002, ANN003, FBT001
 
 
 class CustomNoiseItemBase(abc.ABC):
@@ -409,35 +409,37 @@ class GuidedNoise(CustomNoiseItemBase):
                 mode="bicubic",
                 align_corners=True,
             )
-        match self.method:
-            case "linear":
+        if self.method == "linear":
 
-                def noise_sampler(s, sn):
-                    return scale_noise(
-                        SonarGuidanceMixin.guidance_linear(
-                            ns(s, sn),
-                            ref_latent,
-                            guidance_factor,
-                        ),
-                        factor,
-                        normalized=normalize_result,
-                    )
+            def noise_sampler(s, sn):
+                return scale_noise(
+                    SonarGuidanceMixin.guidance_linear(
+                        ns(s, sn),
+                        ref_latent,
+                        guidance_factor,
+                    ),
+                    factor,
+                    normalized=normalize_result,
+                )
 
-            case "euler":
+        elif self.method == "euler":
 
-                def noise_sampler(s, sn):
-                    return scale_noise(
-                        SonarGuidanceMixin.guidance_euler(
-                            s,
-                            sn,
-                            ns(s, sn),
-                            x,
-                            ref_latent,
-                            guidance_factor,
-                        ),
-                        factor,
-                        normalized=normalize_result,
-                    )
+            def noise_sampler(s, sn):
+                return scale_noise(
+                    SonarGuidanceMixin.guidance_euler(
+                        s,
+                        sn,
+                        ns(s, sn),
+                        x,
+                        ref_latent,
+                        guidance_factor,
+                    ),
+                    factor,
+                    normalized=normalize_result,
+                )
+
+        else:
+            raise ValueError("Bad method")
 
         return noise_sampler
 
@@ -574,21 +576,20 @@ class RepeatedNoise(CustomNoiseItemBase):
             if skip_permute:
                 return noise.clone()
             noise_dims = len(noise.shape)
-            match rands[1] % permute_options:
-                case 0:
-                    if rands[2] <= u32_max // 5:
-                        # 10% of the time we return the original tensor instead of flipping or inverting
-                        noise = noise.clone()
-                        if rands[2] & 1 == 1:
-                            noise *= -1.0
-                    else:
-                        dims = tuple({rands[2] % noise_dims, rands[3] % noise_dims})
-                        noise = torch.flip(noise, dims)
-
-                case 1:
-                    dim = rands[2] % noise_dims
-                    count = rands[3] % noise.shape[dim]
-                    noise = torch.roll(noise, count, dims=(dim,)).clone()
+            rep_mode = rands[1] % permute_options
+            if rep_mode == 0:
+                if rands[2] <= u32_max // 5:
+                    # 10% of the time we return the original tensor instead of flipping or inverting
+                    noise = noise.clone()
+                    if rands[2] & 1 == 1:
+                        noise *= -1.0
+                else:
+                    dims = tuple({rands[2] % noise_dims, rands[3] % noise_dims})
+                    noise = torch.flip(noise, dims)
+            elif rep_mode == 1:
+                dim = rands[2] % noise_dims
+                count = rands[3] % noise.shape[dim]
+                noise = torch.roll(noise, count, dims=(dim,)).clone()
             return scale_noise(noise, factor, normalized=normalize)
 
         return noise_sampler
@@ -623,16 +624,15 @@ class ModulatedNoise(CustomNoiseItemBase):
             modulation_strength=modulation_strength,
             ref_latent_opt=None if ref_latent_opt is None else ref_latent_opt.clone(),
         )
-
-        match self.modulation_type:
-            case "intensity":
-                self.modulation_function = self.intensity_based_multiplicative_noise
-            case "frequency":
-                self.modulation_function = self.frequency_based_noise
-            case "spectral_signum":
-                self.modulation_function = self.spectral_modulate_noise
-            case _:
-                self.modulation_function = None
+        mt = self.modulation_type
+        if mt == "intensity":
+            self.modulation_function = self.intensity_based_multiplicative_noise
+        elif mt == "frequency":
+            self.modulation_function = self.frequency_based_noise
+        elif mt == "spectral_signum":
+            self.modulation_function = self.spectral_modulate_noise
+        else:
+            self.modulation_function = None
 
     def clone_key(self, k):
         if k == "ref_latent_opt":
@@ -1314,6 +1314,75 @@ class BlendFilterNoise(CustomNoiseItemBase):
             if result_effects:
                 noise = self.apply_effects(noise, s)
             return noise
+
+        return noise_sampler
+
+
+class QuantileFilteredNoise(CustomNoiseItemBase):
+    def __init__(
+        self,
+        factor,
+        *,
+        normalize,
+        noise,
+        normalize_noise=False,
+        quantile: float,
+        norm_flatten: bool,
+        norm_dim: int,
+        norm_pow: float,
+        norm_fac: float,
+    ):
+        super().__init__(
+            factor,
+            noise=noise,
+            normalize=normalize,
+            normalize_noise=normalize_noise,
+            quantile=quantile,
+            norm_flatten=norm_flatten,
+            norm_dim=norm_dim,
+            norm_pow=norm_pow,
+            norm_fac=norm_fac,
+        )
+
+    def clone_key(self, k):
+        if k == "noise":
+            return self.noise.clone()
+        return super().clone_key(k)
+
+    def make_noise_sampler(
+        self,
+        x,
+        sigma_min,
+        sigma_max,
+        *args,
+        normalized=True,
+        **kwargs,
+    ):
+        factor = self.factor
+        normalize = self.get_normalize("normalize", normalized)
+        ns = self.noise.make_noise_sampler(
+            x,
+            *args,
+            sigma_min=sigma_min,
+            sigma_max=sigma_max,
+            normalized=self.normalize_noise,
+            **kwargs,
+        )
+        noise_filter = partial(
+            quantile_normalize,
+            quantile=self.quantile,
+            dim=self.norm_dim,
+            flatten=self.norm_flatten,
+            nq_fac=self.norm_fac,
+            pow_fac=self.norm_pow,
+        )
+
+        def noise_sampler(sigma, sigma_next):
+            return scale_noise(
+                noise_filter(ns(sigma, sigma_next)),
+                factor,
+                normalized=normalize,
+            )
 
         return noise_sampler
 

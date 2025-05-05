@@ -1351,6 +1351,111 @@ class SonarAdvancedPowerLawNoiseNode(SonarCustomNoiseNodeBase):
         )
 
 
+class SonarQuantileFilteredNoiseNode(SonarCustomNoiseNodeBase):
+    DESCRIPTION = "Custom noise type that allows filtering noise based on the quantile"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        result = super().INPUT_TYPES(include_chain=False, include_rescale=False)
+        result["required"] |= {
+            "custom_noise": (
+                WILDCARD_NOISE,
+                {
+                    "tooltip": f"Custom noise type to filter.\n{NOISE_INPUT_TYPES_HINT}",
+                },
+            ),
+            "quantile": (
+                "FLOAT",
+                {
+                    "default": 0.85,
+                    "min": 0.0,
+                    "max": 1.0,
+                    "step": 0.001,
+                    "round": False,
+                    "tooltip": "When enabled, will normalize generated noise to this quantile (i.e. 0.75 means outliers >75% will be clipped). Set to 1.0 or 0.0 to disable quantile normalization. A value like 0.75 or 0.85 should be reasonable, it really depends on the input and how many of the values are extreme.",
+                },
+            ),
+            "dim": (
+                ("global", "0", "1", "2", "3", "4"),
+                {
+                    "default": "1",
+                    "tooltip": "Controls what dimensions quantile normalization uses. Dimensions start from 0. Image latents have dimensions: batch, channel, row, column. Video latents have dimensions: batch, channel, frame, row, column.",
+                },
+            ),
+            "flatten": (
+                "BOOLEAN",
+                {
+                    "default": True,
+                    "tooltip": "Controls whether the noise is flattened before quantile normalization. You can try disabling it but they may have a very strong row/column influence.",
+                },
+            ),
+            "norm_factor": (
+                "FLOAT",
+                {
+                    "default": 1.0,
+                    "min": 0.00001,
+                    "max": 10000.0,
+                    "step": 0.001,
+                    "tooltip": "Multiplier on the input noise just before it is clipped to the quantile min/max. Generally should be left at the default.",
+                },
+            ),
+            "norm_power": (
+                "FLOAT",
+                {
+                    "default": 0.5,
+                    "min": -10000.0,
+                    "max": 10000.0,
+                    "step": 0.001,
+                    "tooltip": "The absolute value of the noise is raised to this power after it is clipped to the quantile min/max. You can use negative values here, but anything below -0.3 will probably produce pretty strange effects. Generally should be left at the default.",
+                },
+            ),
+            "normalize_noise": (
+                "BOOLEAN",
+                {
+                    "default": False,
+                    "tooltip": "Controls whether the noise source is normalized before quantile filtering occurs.",
+                },
+            ),
+            "normalize": (
+                ("default", "forced", "disabled"),
+                {
+                    "default": "disabled",
+                    "tooltip": "Controls whether the generated noise is normalized to 1.0 strength after quantile filtering.",
+                },
+            ),
+        }
+        return result
+
+    @classmethod
+    def get_item_class(cls):
+        return noise.QuantileFilteredNoise
+
+    def go(
+        self,
+        *,
+        factor: float,
+        quantile: float,
+        dim: str,
+        flatten: bool,
+        norm_power: float,
+        norm_factor: float,
+        normalize_noise: bool,
+        normalize: str,
+        custom_noise: object,
+    ):
+        return super().go(
+            factor,
+            noise=custom_noise,
+            quantile=quantile,
+            norm_dim=None if dim == "global" else int(dim),
+            norm_flatten=flatten,
+            norm_pow=norm_power,
+            norm_fac=norm_factor,
+            normalize=normalize,
+            normalize_noise=normalize_noise,
+        )
+
+
 class SonarAdvancedDistroNoiseNode(SonarCustomNoiseNodeBase):
     DESCRIPTION = "Custom noise type that allows specifying parameters for Distro variants. See: https://pytorch.org/docs/stable/distributions.html"
 
@@ -2224,6 +2329,7 @@ NODE_CLASS_MAPPINGS = {
     "SonarBlendedNoise": SonarBlendedNoiseNode,
     "SonarResizedNoise": SonarResizedNoiseNode,
     "SonarWaveletFilteredNoise": SonarWaveletFilteredNoiseNode,
+    "SonarQuantileFilteredNoise": SonarQuantileFilteredNoiseNode,
     "SONAR_CUSTOM_NOISE to NOISE": SonarToComfyNOISENode,
 }
 

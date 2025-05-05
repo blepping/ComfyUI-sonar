@@ -156,6 +156,12 @@ yh_scales: null
 
 ***
 
+## `SonarQuantileFilteredNoise`
+
+Allows quantile normalizing of arbitrary noise generators, works like the `SonarAdvancedDistroNoise` node (see below).
+
+***
+
 ### `SonarAdvancedDistroNoise`
 
 See: https://pytorch.org/docs/stable/distributions.html
