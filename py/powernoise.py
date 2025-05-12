@@ -368,9 +368,9 @@ class PowerNoiseItem(CustomNoiseItemBase):
     def make_noise_sampler(
         self,
         x: Tensor,
-        *,
         sigma_min: float | None,
         sigma_max: float | None,
+        *,
         seed: int | None,
         cpu: bool = True,
         normalized=True,
@@ -492,9 +492,9 @@ class PowerFilterNoiseItem(PowerNoiseItem):
     def make_noise_sampler(
         self,
         x: Tensor,
-        *,
         sigma_min: float | None,
         sigma_max: float | None,
+        *,
         seed: int | None,
         cpu: bool = True,
         normalized=True,
