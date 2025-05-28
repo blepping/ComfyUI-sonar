@@ -2,6 +2,11 @@
 
 Note, only relatively significant changes to user-visible functionality will be included here. Most recent changes at the top.
 
+## 20250528
+
+* Added `override_sigma`, `override_sigma_next`, `override_sigma_min` and `override_sigma_max` options that can be set in the `SonarCustomNoiseAdv` node YAML options. This enables using noise generators that require a sigma in stuff like initial noise (for example, Brownian). You will need to manually find and set the correct values yourself.
+* Added Collatz noise based on the Collatz conjecture. Very experimental, very slow, likely to change and quite possibly just plain bad. But you can try it.
+
 ## 20250505
 
 * Added `SonarQuantileFilteredNoise` node.

@@ -969,6 +969,7 @@ class SonarResizedNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMix
                 {
                     "default": 1152,
                     "min": 16,
+                    "max": 1024 * 1024 * 1024,
                     "step": 8,
                     "tooltip": "Note: This should almost always be set to a higher value than the image you're actually sampling.",
                 },
@@ -978,6 +979,7 @@ class SonarResizedNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMix
                 {
                     "default": 1152,
                     "min": 16,
+                    "max": 1024 * 1024 * 1024,
                     "step": 8,
                     "tooltip": "Note: This should almost always be set to a higher value than the image you're actually sampling.",
                 },
@@ -1348,6 +1350,91 @@ class SonarAdvancedPowerLawNoiseNode(SonarCustomNoiseNodeBase):
             div_max_dims=self.MAX_DIMS_MAP.get(div_max_dims),
             use_sign=use_sign,
             use_div_max_abs=use_div_max_abs,
+        )
+
+
+class SonarAdvancedCollatzNoiseNode(SonarCustomNoiseNodeBase):
+    DESCRIPTION = "Custom noise type that allows specifying parameters for Collatz noise. Very experimental, also very slow."
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        result = super().INPUT_TYPES()
+        result["required"] |= {
+            "adjust_scale": (
+                "BOOLEAN",
+                {
+                    "default": True,
+                },
+            ),
+            "use_initial": (
+                "BOOLEAN",
+                {
+                    "default": True,
+                },
+            ),
+            "iteration_sign_flipping": (
+                "BOOLEAN",
+                {
+                    "default": False,
+                },
+            ),
+            "chain_length": (
+                "STRING",
+                {
+                    "default": "1, 2, 3, 4",
+                    "tooltip": "Comma-separated list of chain lengths. Cannot be empty. Iterations will cycle through the list and wrap.",
+                },
+            ),
+            "iterations": ("INT", {"default": 500, "min": 1, "max": 10000}),
+            "rmin": ("FLOAT", {"default": -100.0, "min": -100000.0, "max": 100000.0}),
+            "rmax": ("FLOAT", {"default": 100.0, "min": -100000.0, "max": 100000.0}),
+            "flatten": ("BOOLEAN", {"default": False}),
+            "dims": (
+                "STRING",
+                {
+                    "default": "-1, -2",
+                    "tooltip": "Comma-separated list of dimensions. Cannot be empty. May be negative to count from the end of the list. Iterations will cycle through the list and wrap.",
+                },
+            ),
+        }
+        return result
+
+    @classmethod
+    def get_item_class(cls):
+        return noise.AdvancedCollatzNoise
+
+    def go(
+        self,
+        *,
+        factor,
+        rescale,
+        adjust_scale,
+        use_initial,
+        iteration_sign_flipping,
+        chain_length,
+        iterations,
+        rmin,
+        rmax,
+        flatten,
+        dims,
+        sonar_custom_noise_opt=None,
+    ):
+        if rmin > rmax:
+            rmin, rmax = rmax, rmin
+        dims = tuple(int(i) for i in dims.split(","))
+        return super().go(
+            factor,
+            rescale=rescale,
+            sonar_custom_noise_opt=sonar_custom_noise_opt,
+            adjust_scale=adjust_scale,
+            use_initial=use_initial,
+            iteration_sign_flipping=iteration_sign_flipping,
+            chain_length=tuple(int(i) for i in chain_length.split(",")),
+            iterations=iterations,
+            rmin=rmin,
+            rmax=rmax,
+            flatten=flatten,
+            dims=dims,
         )
 
 
@@ -2316,6 +2403,7 @@ NODE_CLASS_MAPPINGS = {
     "SonarAdvancedPyramidNoise": SonarAdvancedPyramidNoiseNode,
     "SonarAdvanced1fNoise": SonarAdvanced1fNoiseNode,
     "SonarAdvancedPowerLawNoise": SonarAdvancedPowerLawNoiseNode,
+    "SonarAdvancedCollatzNoise": SonarAdvancedCollatzNoiseNode,
     "SonarAdvancedDistroNoise": SonarAdvancedDistroNoiseNode,
     "SonarCustomNoise": SonarCustomNoiseNode,
     "SonarCustomNoiseAdv": SonarCustomNoiseAdvNode,

@@ -18,13 +18,20 @@ except ImportError:
     HAVE_WAVELETS = False
 
 from . import utils
-from .utils import quantile_normalize, scale_noise, tensor_to
+from .utils import (
+    fallback,
+    normalize_to_scale,
+    quantile_normalize,
+    scale_noise,
+    tensor_to,
+)
 
 # ruff: noqa: D413, D417, D212, ANN002, ANN003
 
 
 class NoiseType(Enum):
     BROWNIAN = auto()
+    COLLATZ = auto()
     DISTRO = auto()
     GAUSSIAN = auto()
     GREEN_TEST = auto()
@@ -1356,11 +1363,119 @@ class WaveletNoiseGenerator(FramesToChannelsNoiseGenerator):
                 for lidx in range(min(ht.shape[2], len(hscale))):
                     # print(">>    SCALE IDX", lidx)
                     ht[:, :, lidx, :, :] *= hscale[lidx]
-        return self.fix_output_frames(self.wavelet_inverse((yl, yh)))
+        result = self.fix_output_frames(self.wavelet_inverse((yl, yh)))
+        if result.shape == noise.shape:
+            return result
+        return result[tuple(slice(0, dl) for dl in noise.shape)]
+
+
+class CollatzNoiseGenerator(NoiseGenerator):
+    name = "collatz"
+
+    @classmethod
+    def ng_params(cls):
+        return super().ng_params() | {
+            "adjust_scale": True,
+            "use_initial": True,
+            "iteration_sign_flipping": False,
+            "chain_length": (1, 2, 3, 4),
+            "iterations": 500,
+            "rmin": -100.0,
+            "rmax": 100.0,
+            "flatten": False,
+            "dims": (-1, -2),
+        }
+
+    @staticmethod
+    def _get_iter_slices(n_dims, dim, offset, stride) -> tuple:
+        return tuple(
+            slice(None) if didx != dim else slice(offset, None, stride)
+            for didx in range(n_dims)
+        )
+
+    def _generate_iteration(
+        self,
+        *,
+        dim: int,
+        chain_length: int,
+        flatten: False,
+        shape=None,
+    ):
+        dtype, device = self.dtype, self.device
+        out_shape = shape = fallback(shape, self.shape)
+        if dim >= len(shape):
+            raise ValueError("Requested dimension out of range")
+        rmin = self.rmin
+        rmaxsubmin = self.rmax - self.rmin
+        if flatten:
+            shape = torch.Size((*shape[:dim], math.prod(shape[dim:])))
+        size = shape[dim]
+        chain_length = min(size, chain_length)
+        n_chunks = math.ceil(size / chain_length)
+        result_shape = tuple(
+            (chain_length * n_chunks) if idx == dim else sz
+            for idx, sz in enumerate(shape)
+        )
+        chunk_shape = tuple(
+            n_chunks if idx == dim else sz for idx, sz in enumerate(shape)
+        )
+        result = torch.zeros(result_shape, dtype=dtype, device=device)
+        noise = torch.rand(
+            chunk_shape,
+            generator=self.generator,
+            dtype=dtype,
+            device=self.gen_device,
+            layout=self.layout,
+        )
+        if noise.device != self.device:
+            noise = tensor_to(noise, self.device)
+        for chainidx in range(chain_length):
+            if chainidx == 0 and self.use_initial:
+                result[self._get_iter_slices(result.ndim, dim, 0, chain_length)] = noise
+                continue
+            chunk = (
+                noise
+                if chainidx == 0
+                else result[
+                    self._get_iter_slices(result.ndim, dim, chainidx - 1, chain_length)
+                ]
+            )
+            result[self._get_iter_slices(result.ndim, dim, chainidx, chain_length)] = (
+                torch.where(
+                    ((chunk * rmaxsubmin + rmin).trunc() % 2) == 0,
+                    chunk * 0.5,
+                    chunk * 3.0 + chunk.sign(),
+                )
+            )
+        return result[
+            tuple(slice(None, sz) for sz in (shape if flatten else out_shape))
+        ].reshape(out_shape)
+
+    def generate(self, *_args):
+        out_dims = len(self.shape)
+        dims = tuple(dim if dim >= 0 else out_dims + dim for dim in self.dims)
+        n_dims, n_chainlens = len(dims), len(self.chain_length)
+        if not all(0 <= d < out_dims for d in dims):
+            raise ValueError("Dimension out of range")
+        dtype, device = self.dtype, self.device
+        result = torch.zeros(self.shape, dtype=dtype, device=device)
+        for iteration in range(self.iterations):
+            temp = self._generate_iteration(
+                dim=dims[iteration % n_dims],
+                chain_length=self.chain_length[iteration % n_chainlens],
+                flatten=self.flatten,
+            )
+            if self.iteration_sign_flipping and (iteration & 1) == 1:
+                temp.neg_()
+            result += temp
+        if self.adjust_scale:
+            result = normalize_to_scale(result, -1.0, 1.0, dim=1)
+        return result
 
 
 __all__ = (
     "BrownianNoiseGenerator",
+    "CollatzNoiseGenerator",
     "DistroNoiseGenerator",
     "GaussianNoiseGenerator",
     "GreenTestNoiseGenerator",

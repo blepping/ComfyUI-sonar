@@ -13,7 +13,7 @@ from torch import Tensor
 from . import external, utils
 from .noise_generation import *
 from .sonar import SonarGuidanceMixin
-from .utils import crop_samples, quantile_normalize, scale_noise
+from .utils import crop_samples, fallback, quantile_normalize, scale_noise
 
 # ruff: noqa: ANN002, ANN003, FBT001
 
@@ -81,13 +81,20 @@ class CustomNoiseItem(CustomNoiseItemBase):
         **kwargs,
     ):
         ns_kwargs = getattr(self, "ns_kwargs", {}).copy()
-        # print("NS KWARGS", ns_kwargs)
-
-        return get_noise_sampler(
+        override_sigma, override_sigma_next, override_sigma_min, override_sigma_max = (
+            ns_kwargs.pop(k, None)
+            for k in (
+                "override_sigma",
+                "override_sigma_next",
+                "override_sigma_min",
+                "override_sigma_max",
+            )
+        )
+        ns = get_noise_sampler(
             self.noise_type,
             x,
-            sigma_min,
-            sigma_max,
+            fallback(override_sigma_min, sigma_min),
+            fallback(override_sigma_max, sigma_max),
             seed=ns_kwargs.pop("seed", seed),
             cpu=ns_kwargs.pop("cpu", cpu),
             factor=self.factor,
@@ -98,6 +105,16 @@ class CustomNoiseItem(CustomNoiseItemBase):
             **ns_kwargs,
             **kwargs,
         )
+        if override_sigma is None and override_sigma_next is None:
+            return ns
+
+        def noise_sampler(sigma, sigma_next):
+            return ns(
+                fallback(override_sigma, sigma),
+                fallback(override_sigma_next, sigma_next),
+            )
+
+        return noise_sampler
 
 
 class CustomNoiseChain:
@@ -294,6 +311,24 @@ class AdvancedDistroNoise(AdvancedNoiseBase):
     @property
     def ns_factory(self):
         return DistroNoiseGenerator
+
+
+class AdvancedCollatzNoise(AdvancedNoiseBase):
+    ns_factory_arg_keys = (
+        "adjust_scale",
+        "use_initial",
+        "iteration_sign_flipping",
+        "chain_length",
+        "iterations",
+        "rmin",
+        "rmax",
+        "flatten",
+        "dims",
+    )
+
+    @property
+    def ns_factory(self):
+        return CollatzNoiseGenerator
 
 
 class CompositeNoise(CustomNoiseItemBase):
@@ -1616,6 +1651,7 @@ NOISE_SAMPLERS: dict[NoiseType, Callable] = {
             ),
         ),
     ),
+    NoiseType.COLLATZ: NoiseSampler.wrap(CollatzNoiseGenerator),
 }
 
 

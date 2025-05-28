@@ -83,6 +83,7 @@ def tensor_to(
     return tensor.to(dest, non_blocking=non_blocking)
 
 
+# Initial version based on Studentt distribution normalizatino from https://github.com/Clybius/ComfyUI-Extra-Samplers/
 def quantile_normalize(
     noise: torch.Tensor,
     *,
@@ -136,6 +137,19 @@ def quantile_normalize(
             noise.reshape(tempshape).movedim(1, qdim).reshape(orig_shape).contiguous()
         )
     return noise
+
+
+def normalize_to_scale(latent, target_min, target_max, *, dim=(-3, -2, -1)):
+    min_val, max_val = (
+        latent.amin(dim=dim, keepdim=True),
+        latent.amax(dim=dim, keepdim=True),
+    )
+    normalized = (latent - min_val).div_(max_val - min_val)
+    return (
+        normalized.mul_(target_max - target_min)
+        .add_(target_min)
+        .clamp_(target_min, target_max)
+    )
 
 
 def adjust_slice(s: slice, size: int, offset: int) -> slice:
@@ -194,3 +208,7 @@ def crop_samples(
     wslice = adjust_slice(wslice, tw, offset_width)
     hslice = adjust_slice(hslice, th, offset_height)
     return tensor[..., hslice, wslice]
+
+
+def fallback(val, default=None):
+    return val if val is not None else default
