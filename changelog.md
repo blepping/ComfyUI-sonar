@@ -4,6 +4,7 @@ Note, only relatively significant changes to user-visible functionality will be 
 
 ## 20250602
 
+* Fixed broken calculation for Collatz noise.
 * Added `SonarPatternBreakNoise` node that allows breaking patterns in the noise.
 * Added `SonarShuffledNoise` node that allows shuffling elements along user-specified dimensions.
 * Added a strategy option to the `SonarQuantileFilteredNoise` node.

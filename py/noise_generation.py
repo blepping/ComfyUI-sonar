@@ -1453,7 +1453,7 @@ class CollatzNoiseGenerator(NoiseGenerator):
                     chunk == 1,
                     noise,
                     torch.where(
-                        chunk % 2 == 0,
+                        chunk % 2 < 1,
                         chunk // 2 if integer_division else chunk / 2,
                         chunk * 3 + chunk.sign(),
                     ),
