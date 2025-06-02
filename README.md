@@ -154,6 +154,7 @@ My version was initially based on this Sonar sampler implementation for Diffuser
 * Original `SonarPowerNoise` contributed by [elias-gaeros](https://github.com/elias-gaeros/). Additionally, he provided a lot of guidance with refactoring it to allow separate filtering and other enhancements and answered a multitude of dumb questions. To say those changes are only co-authored is probably giving myself too much credit. Thank you! Your patience and help is very much appreciated.
 * New 1/f (onef) and power law (white, grey, violet, velvet) noise types referenced from https://github.com/WASasquatch/PowerNoiseSuite
 * Wavelet noise idea (and some of the default settings) from https://github.com/ClownsharkBatwing/RES4LYF
+* Pattern break algorithm adapted from https://github.com/Extraltodeus/noise_latent_perlinpinpin
 
 ## Errata
 

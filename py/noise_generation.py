@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 from enum import Enum, auto
+from functools import partial
 from typing import Callable
 
 import torch
@@ -1377,13 +1378,14 @@ class CollatzNoiseGenerator(NoiseGenerator):
         return super().ng_params() | {
             "adjust_scale": True,
             "use_initial": True,
-            "iteration_sign_flipping": False,
-            "chain_length": (1, 2, 3, 4),
+            "iteration_sign_flipping": True,
+            "chain_length": (1, 1, 2, 2, 3, 3),
             "iterations": 500,
-            "rmin": -100.0,
-            "rmax": 100.0,
+            "rmin": -8000.0,
+            "rmax": 8000.0,
             "flatten": False,
-            "dims": (-1, -2),
+            "dims": (-1, -1, -2, -2),
+            "variant": 2,
         }
 
     @staticmethod
@@ -1400,13 +1402,14 @@ class CollatzNoiseGenerator(NoiseGenerator):
         chain_length: int,
         flatten: False,
         shape=None,
+        integer_division=True,
     ):
         dtype, device = self.dtype, self.device
         out_shape = shape = fallback(shape, self.shape)
         if dim >= len(shape):
             raise ValueError("Requested dimension out of range")
-        rmin = self.rmin
-        rmaxsubmin = self.rmax - self.rmin
+        rmin, rmax = self.rmin, self.rmax
+        rmaxsubmin = rmax - rmin
         if flatten:
             shape = torch.Size((*shape[:dim], math.prod(shape[dim:])))
         size = shape[dim]
@@ -1419,14 +1422,19 @@ class CollatzNoiseGenerator(NoiseGenerator):
         chunk_shape = tuple(
             n_chunks if idx == dim else sz for idx, sz in enumerate(shape)
         )
-        result = torch.zeros(result_shape, dtype=dtype, device=device)
-        noise = torch.rand(
-            chunk_shape,
-            generator=self.generator,
-            dtype=dtype,
-            device=self.gen_device,
-            layout=self.layout,
+        result = torch.zeros(result_shape, dtype=torch.float32, device=device)
+        noise = (
+            torch.rand(
+                chunk_shape,
+                generator=self.generator,
+                dtype=torch.float32,
+                device=self.gen_device,
+                layout=self.layout,
+            )
+            .mul_(rmaxsubmin + 1)
+            .add_(rmin)
         )
+        # noise = torch.where((noise % 2.0) < 1, noise + 1, noise)
         if noise.device != self.device:
             noise = tensor_to(noise, self.device)
         for chainidx in range(chain_length):
@@ -1442,11 +1450,16 @@ class CollatzNoiseGenerator(NoiseGenerator):
             )
             result[self._get_iter_slices(result.ndim, dim, chainidx, chain_length)] = (
                 torch.where(
-                    ((chunk * rmaxsubmin + rmin).trunc() % 2) == 0,
-                    chunk * 0.5,
-                    chunk * 3.0 + chunk.sign(),
+                    chunk == 1,
+                    noise,
+                    torch.where(
+                        chunk % 2 == 0,
+                        chunk // 2 if integer_division else chunk / 2,
+                        chunk * 3 + chunk.sign(),
+                    ),
                 )
             )
+        result = result.sub_(rmin).div_(rmaxsubmin).to(dtype=dtype)
         return result[
             tuple(slice(None, sz) for sz in (shape if flatten else out_shape))
         ].reshape(out_shape)
@@ -1459,14 +1472,20 @@ class CollatzNoiseGenerator(NoiseGenerator):
             raise ValueError("Dimension out of range")
         dtype, device = self.dtype, self.device
         result = torch.zeros(self.shape, dtype=dtype, device=device)
+        gen_function = partial(
+            self._generate_iteration,
+            integer_division=self.variant == 2,
+        )
+        it_scale = 1.0 / self.iterations
         for iteration in range(self.iterations):
-            temp = self._generate_iteration(
+            temp = gen_function(
                 dim=dims[iteration % n_dims],
                 chain_length=self.chain_length[iteration % n_chainlens],
                 flatten=self.flatten,
+            ).mul_(
+                it_scale
+                * (-1 if self.iteration_sign_flipping and (iteration & 1) == 1 else 1),
             )
-            if self.iteration_sign_flipping and (iteration & 1) == 1:
-                temp.neg_()
             result += temp
         if self.adjust_scale:
             result = normalize_to_scale(result, -1.0, 1.0, dim=1)

@@ -92,6 +92,7 @@ def quantile_normalize(
     flatten: bool = True,
     nq_fac: float = 1.0,
     pow_fac: float = 0.5,
+    strategy: str = "clamp",
 ) -> torch.Tensor:
     if quantile is None or quantile <= 0 or quantile >= 1:
         return noise
@@ -110,7 +111,7 @@ def quantile_normalize(
             flatdim = 0
         elif qdim in {0, 1}:
             flatdim = qdim + 1
-        elif qdim in {2, 3}:
+        elif 1 < qdim < 4:  # 2, 3
             noise = noise.movedim(qdim, 1)
             tempshape = noise.shape
             flatdim = 2
@@ -127,7 +128,16 @@ def quantile_normalize(
     )
     nq_shape = tuple(nq.shape) + (1,) * (noise.ndim - nq.ndim)
     nq = nq.mul_(nq_fac).reshape(*nq_shape)
-    noise = noise.clamp(-nq, nq)
+    if strategy == "clamp":
+        noise = noise.clamp(-nq, nq)
+    elif strategy == "zero":
+        noise = torch.where((noise < -nq) | (noise > nq), 0, noise)
+    elif strategy == "half":
+        noise = torch.where((noise < -nq) | (noise > nq), noise * 0.5, noise)
+    elif strategy == "tenth":
+        noise = torch.where((noise < -nq) | (noise > nq), noise * 0.1, noise)
+    else:
+        raise ValueError("Unknown strategy")
     noise = torch.copysign(
         torch.pow(torch.abs(noise), pow_fac),
         noise,
@@ -212,3 +222,27 @@ def crop_samples(
 
 def fallback(val, default=None):
     return val if val is not None else default
+
+
+# Pattern break algorithm adapted from https://github.com/Extraltodeus/noise_latent_perlinpinpin
+def pattern_break(
+    noise: torch.Tensor,
+    *,
+    percentage: float = 0.5,
+    detail_level=0.0,
+    restore_scale=True,
+    blend_function=torch.lerp,
+):
+    orig_dtype = noise.dtype
+    if restore_scale:
+        orig_min, orig_max = noise.min().item(), noise.max().item()
+    noise = normalize_to_scale(noise.to(dtype=torch.float32), -1.0, 1.0, dim=())
+    result = torch.remainder(torch.abs(noise) * 1000000, 11) / 11
+    result = (
+        ((1 + detail_level / 10) * torch.erfinv(2 * result - 1) * (2**0.5))
+        .mul_(0.2)
+        .clamp_(-1, 1)
+    )
+    if restore_scale:
+        noise = normalize_to_scale(noise, orig_min, orig_max, dim=())
+    return blend_function(noise, result, percentage).to(dtype=orig_dtype)

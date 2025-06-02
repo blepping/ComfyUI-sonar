@@ -2,6 +2,14 @@
 
 Note, only relatively significant changes to user-visible functionality will be included here. Most recent changes at the top.
 
+## 20250602
+
+* Added `SonarPatternBreakNoise` node that allows breaking patterns in the noise.
+* Added `SonarShuffledNoise` node that allows shuffling elements along user-specified dimensions.
+* Added a strategy option to the `SonarQuantileFilteredNoise` node.
+* Added variants to Collatz noise. Variant one is maybe similar to the original iteration.
+* Added `SonarNoiseImage` node that allows generating noisy images or adding noise to existing images.
+
 ## 20250528
 
 * Added `override_sigma`, `override_sigma_next`, `override_sigma_min` and `override_sigma_max` options that can be set in the `SonarCustomNoiseAdv` node YAML options. This enables using noise generators that require a sigma in stuff like initial noise (for example, Brownian). You will need to manually find and set the correct values yourself.

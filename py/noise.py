@@ -13,7 +13,13 @@ from torch import Tensor
 from . import external, utils
 from .noise_generation import *
 from .sonar import SonarGuidanceMixin
-from .utils import crop_samples, fallback, quantile_normalize, scale_noise
+from .utils import (
+    crop_samples,
+    fallback,
+    pattern_break,
+    quantile_normalize,
+    scale_noise,
+)
 
 # ruff: noqa: ANN002, ANN003, FBT001
 
@@ -324,6 +330,7 @@ class AdvancedCollatzNoise(AdvancedNoiseBase):
         "rmax",
         "flatten",
         "dims",
+        "variant",
     )
 
     @property
@@ -1366,6 +1373,7 @@ class QuantileFilteredNoise(CustomNoiseItemBase):
         norm_dim: int,
         norm_pow: float,
         norm_fac: float,
+        strategy: str,
     ):
         super().__init__(
             factor,
@@ -1377,6 +1385,7 @@ class QuantileFilteredNoise(CustomNoiseItemBase):
             norm_dim=norm_dim,
             norm_pow=norm_pow,
             norm_fac=norm_fac,
+            strategy=strategy,
         )
 
     def clone_key(self, k):
@@ -1410,6 +1419,7 @@ class QuantileFilteredNoise(CustomNoiseItemBase):
             flatten=self.norm_flatten,
             nq_fac=self.norm_fac,
             pow_fac=self.norm_pow,
+            strategy=self.strategy,
         )
 
         def noise_sampler(sigma, sigma_next):
@@ -1417,6 +1427,158 @@ class QuantileFilteredNoise(CustomNoiseItemBase):
                 noise_filter(ns(sigma, sigma_next)),
                 factor,
                 normalized=normalize,
+            )
+
+        return noise_sampler
+
+
+class ShuffledNoise(CustomNoiseItemBase):
+    def __init__(
+        self,
+        factor,
+        *,
+        dims: tuple,
+        flatten: bool,
+        percentage: float,
+        noise,
+    ):
+        super().__init__(
+            factor,
+            noise=noise,
+            dims=dims,
+            flatten=flatten,
+            percentage=percentage,
+        )
+
+    def clone_key(self, k):
+        if k == "noise":
+            return self.noise.clone()
+        return super().clone_key(k)
+
+    def make_noise_sampler(
+        self,
+        x,
+        sigma_min,
+        sigma_max,
+        *args,
+        normalized=True,
+        **kwargs,
+    ):
+        factor = self.factor
+        dims = {x.ndim + d if d < 0 else d for d in self.dims}
+        if not all(-1 < d < x.ndim for d in dims):
+            raise ValueError("Dimension out of range")
+        min_dim = min(dims) if dims else -1
+        max_dim = max(dims) if dims else -1
+        if max_dim == min_dim:
+            max_dim = -1
+        flatten = self.flatten
+        percentage = self.percentage
+        ns = self.noise.make_noise_sampler(
+            x,
+            *args,
+            sigma_min=sigma_min,
+            sigma_max=sigma_max,
+            normalized=normalized,
+            **kwargs,
+        )
+        if self.percentage == 0:
+            return ns
+
+        def noise_sampler(sigma, sigma_next):
+            noise = scale_noise(
+                ns(sigma, sigma_next),
+                factor,
+                normalized=normalized,
+            )
+            if not dims:
+                return noise
+            orig_shape = noise.shape
+            if flatten:
+                noise = noise.flatten(start_dim=min_dim, end_dim=max_dim)
+                shuffles = ((min_dim, noise.shape[min_dim]),)
+            else:
+                shuffles = tuple((d, noise.shape[d]) for d in dims)
+            for d, sz in shuffles:
+                adj_sz = int(sz * percentage)
+                if adj_sz == 0:
+                    continue
+                get_idxs = tuple(
+                    torch.randperm(sz)[:adj_sz] if d == i else slice(None)
+                    for i in range(noise.ndim)
+                )
+                set_idxs = (
+                    ...
+                    if percentage == 1.0
+                    else tuple(
+                        torch.randperm(sz)[:adj_sz] if d == i else slice(None)
+                        for i in range(noise.ndim)
+                    )
+                )
+                noise[set_idxs] = noise[get_idxs]
+            return noise.reshape(orig_shape) if flatten else noise
+
+        return noise_sampler
+
+
+class PatternBreakNoise(CustomNoiseItemBase):
+    def __init__(
+        self,
+        factor,
+        *,
+        noise,
+        detail_level: float,
+        blend_mode: str,
+        percentage: float,
+        restore_scale: bool,
+    ):
+        super().__init__(
+            factor,
+            noise=noise,
+            detail_level=detail_level,
+            percentage=percentage,
+            restore_scale=restore_scale,
+            blend_function=utils.BLENDING_MODES[blend_mode],
+        )
+
+    def clone_key(self, k):
+        if k == "noise":
+            return self.noise.clone()
+        return super().clone_key(k)
+
+    def make_noise_sampler(
+        self,
+        x,
+        sigma_min,
+        sigma_max,
+        *args,
+        normalized=True,
+        **kwargs,
+    ):
+        factor = self.factor
+        ns = self.noise.make_noise_sampler(
+            x,
+            *args,
+            sigma_min=sigma_min,
+            sigma_max=sigma_max,
+            normalized=normalized if self.percentage == 0 else False,
+            **kwargs,
+        )
+        if self.percentage == 0:
+            return ns
+        noise_filter = partial(
+            pattern_break,
+            percentage=self.percentage,
+            detail_level=self.detail_level,
+            blend_function=self.blend_function,
+            restore_scale=self.restore_scale,
+        )
+
+        def noise_sampler(sigma, sigma_next):
+            return scale_noise(
+                noise_filter(ns(sigma, sigma_next)),
+                factor,
+                normalized=normalized,
             )
 
         return noise_sampler

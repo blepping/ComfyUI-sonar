@@ -1,3 +1,5 @@
+# ruff: noqa: EM102
+
 from __future__ import annotations
 
 import abc
@@ -246,6 +248,282 @@ class NoisyLatentLikeNode(metaclass=IntegratedNode):
             ).to(result)
         result = result.to(orig_device)
         return ({"samples": result},)
+
+
+class SonarNoiseImageNode(metaclass=IntegratedNode):
+    DESCRIPTION = "Allows adding noise to an image or generating images full of noise."
+    RETURN_TYPES = ("IMAGE",)
+    CATEGORY = "image"
+
+    FUNCTION = "go"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "noise_type": (
+                    tuple(NoiseType.get_names()),
+                    {
+                        "default": "gaussian",
+                        "tooltip": "Sets the type of noise to generate. Has no effect when the custom_noise_opt input is connected.",
+                    },
+                ),
+                "seed": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 0xFFFFFFFFFFFFFFFF,
+                        "tooltip": "Seed to use for generated noise.",
+                    },
+                ),
+                "image": (
+                    "IMAGE",
+                    {
+                        "tooltip": "Image noise will be added to.",
+                    },
+                ),
+                "noise_min": (
+                    "FLOAT",
+                    {
+                        "default": 0.0,
+                        "step": 0.001,
+                        "min": -1000.0,
+                        "max": 1000.0,
+                        "round": False,
+                        "tooltip": "Generated noise will be normalized to have values between noise_min and noise_max. If you set them both to the same value then this disables normalization.",
+                    },
+                ),
+                "noise_max": (
+                    "FLOAT",
+                    {
+                        "default": 1.0,
+                        "step": 0.001,
+                        "min": -1000.0,
+                        "max": 1000.0,
+                        "round": False,
+                        "tooltip": "Generated noise will be normalized to have values between noise_min and noise_max. If you set them both to the same value then this disables normalization.",
+                    },
+                ),
+                "noise_multiplier": (
+                    "FLOAT",
+                    {
+                        "default": 1.0,
+                        "step": 0.001,
+                        "min": -1000.0,
+                        "max": 1000.0,
+                        "round": False,
+                        "tooltip": "Multiplier for the strength of the generated noise. This is performed after noise_min/max scaling.",
+                    },
+                ),
+                "channel_mode": (
+                    (
+                        "RGB",
+                        "RGBA",
+                        "R",
+                        "G",
+                        "B",
+                        "A",
+                        "RA",
+                        "GA",
+                        "BA",
+                        "RG",
+                        "RB",
+                        "GB",
+                        "RGA",
+                        "RBA",
+                        "GBA",
+                    ),
+                    {
+                        "default": "RGB",
+                        "tooltip": "RGBA will also add noise to the alpha channel as well if it exists. Only used for 3 or 4 channel images, for other numbers of channels (i.e. one channel) then all channels will be targeted.",
+                    },
+                ),
+                "blend_mode": (
+                    ("simple_add", *utils.BLENDING_MODES.keys()),
+                    {
+                        "default": "simple_add",
+                        "tooltip": "Controls how the generated noise is combined with the image. simple_add just adds it and blend_strength is ignored in that case.",
+                    },
+                ),
+                "blend_strength": (
+                    "FLOAT",
+                    {
+                        "default": 0.5,
+                        "step": 0.001,
+                        "min": -1000.0,
+                        "max": 1000.0,
+                        "round": False,
+                        "tooltip": "Multiplier for the strength of the generated noise.",
+                    },
+                ),
+                "overflow_mode": (
+                    ("clamp", "rescale"),
+                    {
+                        "default": "clamp",
+                        "tooltip": "When set to clamp, values above/below 0, 1 will be set to those values. When set to rescale, the image values will be rescaled such that the minimum value is 0 and the maximum is 1.",
+                    },
+                ),
+                "greyscale_mode": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "tooltip": "When enabled, generated noise will be averaged so the same amount value is added to all specified channels.",
+                    },
+                ),
+                "pure_noise_mode": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "tooltip": "When enabled, the original image is only used for its shape and you will be adding noise to an image full of zeros (black), suitable for creating pure noise images.",
+                    },
+                ),
+                "dtype": (
+                    ("default", "float32", "float64", "float16", "bfloat16"),
+                    {
+                        "default": "default",
+                        "tooltip": "When set to default it will use the same type as the input tensor (probably float32). You can manually set the dtype if you want, though it likely isn't going to matter. Using dtypes with limited range (float16, bfloat16) isn't recommended.",
+                    },
+                ),
+                "cpu_noise": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": "Controls whether noise will be generated on GPU or CPU.",
+                    },
+                ),
+                "normalize": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": "Controls whether the generated noise is normalized to 1.0 strength before scaling. Generally should be left enabled.",
+                    },
+                ),
+            },
+            "optional": {
+                "custom_noise_opt": (
+                    WILDCARD_NOISE,
+                    {
+                        "tooltip": f"Allows connecting a custom noise chain. When connected, noise_type has no effect.\n{NOISE_INPUT_TYPES_HINT}",
+                    },
+                ),
+            },
+        }
+
+    @classmethod
+    def go(  # noqa: PLR0914
+        cls,
+        *,
+        noise_type: str,
+        seed: int,
+        image: torch.Tensor,
+        noise_multiplier: float,
+        noise_min: float,
+        noise_max: float,
+        channel_mode: str,
+        blend_mode: str,
+        blend_strength: float,
+        overflow_mode: str,
+        greyscale_mode: bool,
+        dtype: str,
+        pure_noise_mode: bool,
+        cpu_noise: bool,
+        normalize: bool,
+        custom_noise_opt: object | None = None,
+    ):
+        sigma_min, sigma_max, sigma, sigma_next = (None,) * 4
+        orig_image = image = (
+            torch.zeros_like(image) if pure_noise_mode else image.detach().clone()
+        )
+        if image.ndim == 3:
+            image = image.unsqueeze(0)
+        elif image.ndim != 4:
+            raise ValueError(
+                f"Expected image tensor with 3 or 4 dimensions, got {image.ndim}",
+            )
+        blend_function = (
+            utils.BLENDING_MODES[blend_mode]
+            if blend_mode != "simple_add"
+            else lambda a, b, _t: a + b
+        )
+        if noise_min > noise_max:
+            noise_min, noise_max = noise_max, noise_min
+        image = image.movedim(-1, 1)
+        channels = image.shape[1]
+        channel_map = {"R": 0, "B": 1, "G": 2, "A": 3}
+        channel_mode = channel_mode.upper()
+        if channels == 3 or channels == 4:  # noqa: PLR1714
+            channel_targets = tuple(
+                channel_map[c]
+                for c in "RGBA"
+                if c in channel_mode and channel_map[c] < channels
+            )
+        else:
+            channel_targets = tuple(range(channels))
+        want_device = (
+            torch.device("cpu") if cpu_noise else model_management.get_torch_device()
+        )
+        image = image.to(
+            device=want_device,
+            dtype={
+                "float32": torch.float32,
+                "float64": torch.float64,
+                "bfloat16": torch.bfloat16,
+                "float16": torch.float16,
+            }.get(
+                dtype,
+                image.dtype,
+            ),
+        )
+        pyrandst = random.getstate()
+        randst = torch.random.get_rng_state()
+        try:
+            random.seed(seed)
+            torch.random.manual_seed(seed)
+            if custom_noise_opt is not None:
+                ns = custom_noise_opt.make_noise_sampler(
+                    image,
+                    sigma_min=sigma_min,
+                    sigma_max=sigma_max,
+                    seed=seed,
+                    cpu=cpu_noise,
+                    normalized=normalize,
+                )
+            else:
+                ns = noise.get_noise_sampler(
+                    NoiseType[noise_type.upper()],
+                    image,
+                    sigma_min,
+                    sigma_max,
+                    seed=seed,
+                    cpu=cpu_noise,
+                    normalized=normalize,
+                )
+            result = ns(sigma, sigma_next)
+        finally:
+            torch.random.set_rng_state(randst)
+            random.setstate(pyrandst)
+        del ns
+        result = utils.scale_noise(result, normalized=True)
+        if greyscale_mode:
+            result = result.mean(dim=1, keepdim=True).expand(image.shape).contiguous()
+        if noise_max != 0 and noise_min != noise_max:  # noqa: PLR1714
+            result = utils.normalize_to_scale(result, noise_min, noise_max)
+        result *= noise_multiplier
+        image[:, channel_targets, ...] = blend_function(
+            image[:, channel_targets, ...],
+            result[:, channel_targets, ...],
+            blend_strength,
+        )
+        if overflow_mode == "rescale":
+            image = utils.normalize_to_scale(image, 0.0, 1.0)
+        else:
+            image = image.clip_(0, 1)
+        image = image.movedim(1, -1).to(
+            device=orig_image.device,
+            dtype=orig_image.dtype,
+        )
+        return (image,)
 
 
 class SonarCustomNoiseNodeBase(metaclass=IntegratedNode):
@@ -1354,7 +1632,7 @@ class SonarAdvancedPowerLawNoiseNode(SonarCustomNoiseNodeBase):
 
 
 class SonarAdvancedCollatzNoiseNode(SonarCustomNoiseNodeBase):
-    DESCRIPTION = "Custom noise type that allows specifying parameters for Collatz noise. Very experimental, also very slow."
+    DESCRIPTION = "Custom noise type that allows specifying parameters for Collatz noise. Very experimental, also very slow. It might just about work as initial noise with non-ancestral sampling but if you get weird results I recommend mixing it with other noise types or possibly using ancestral/SDE sampling."
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -1375,25 +1653,50 @@ class SonarAdvancedCollatzNoiseNode(SonarCustomNoiseNodeBase):
             "iteration_sign_flipping": (
                 "BOOLEAN",
                 {
-                    "default": False,
+                    "default": True,
                 },
             ),
             "chain_length": (
                 "STRING",
                 {
-                    "default": "1, 2, 3, 4",
+                    "default": "1, 1, 2, 2, 3, 3",
                     "tooltip": "Comma-separated list of chain lengths. Cannot be empty. Iterations will cycle through the list and wrap.",
                 },
             ),
             "iterations": ("INT", {"default": 500, "min": 1, "max": 10000}),
-            "rmin": ("FLOAT", {"default": -100.0, "min": -100000.0, "max": 100000.0}),
-            "rmax": ("FLOAT", {"default": 100.0, "min": -100000.0, "max": 100000.0}),
+            "rmin": (
+                "FLOAT",
+                {
+                    "default": -8000.0,
+                    "min": -100000.0,
+                    "max": 100000.0,
+                    "tooltip": "Going as low as -9500 should be safe.",
+                },
+            ),
+            "rmax": (
+                "FLOAT",
+                {
+                    "default": 8000.0,
+                    "min": -100000.0,
+                    "max": 100000.0,
+                    "tooltip": "I don't recommend going over 9500 here as that is where the Collatz chain starts to reach values that can't be accurately represented with a 32bit float.",
+                },
+            ),
             "flatten": ("BOOLEAN", {"default": False}),
             "dims": (
                 "STRING",
                 {
-                    "default": "-1, -2",
+                    "default": "-1, -1, -2, -2",
                     "tooltip": "Comma-separated list of dimensions. Cannot be empty. May be negative to count from the end of the list. Iterations will cycle through the list and wrap.",
+                },
+            ),
+            "variant": (
+                "INT",
+                {
+                    "default": 2,
+                    "min": 1,
+                    "max": 2,
+                    "tooltip": "Variant 1 may act like the original version, not the correct algorithm for Collatz though. Variant 2 is (hopefully) more correct. There will likely be more variants in the future.",
                 },
             ),
         }
@@ -1406,17 +1709,18 @@ class SonarAdvancedCollatzNoiseNode(SonarCustomNoiseNodeBase):
     def go(
         self,
         *,
-        factor,
-        rescale,
-        adjust_scale,
-        use_initial,
-        iteration_sign_flipping,
-        chain_length,
-        iterations,
-        rmin,
-        rmax,
-        flatten,
-        dims,
+        factor: float,
+        rescale: float,
+        adjust_scale: bool,
+        use_initial: bool,
+        iteration_sign_flipping: bool,
+        chain_length: int,
+        iterations: int,
+        rmin: float,
+        rmax: float,
+        flatten: bool,
+        dims: str,
+        variant: int,
         sonar_custom_noise_opt=None,
     ):
         if rmin > rmax:
@@ -1435,6 +1739,7 @@ class SonarAdvancedCollatzNoiseNode(SonarCustomNoiseNodeBase):
             rmax=rmax,
             flatten=flatten,
             dims=dims,
+            variant=variant,
         )
 
 
@@ -1510,6 +1815,13 @@ class SonarQuantileFilteredNoiseNode(SonarCustomNoiseNodeBase):
                     "tooltip": "Controls whether the generated noise is normalized to 1.0 strength after quantile filtering.",
                 },
             ),
+            "strategy": (
+                ("clamp", "half", "tenth", "zero"),
+                {
+                    "default": "clamp",
+                    "tooltip": "Determines how to treat outliers.",
+                },
+            ),
         }
         return result
 
@@ -1528,6 +1840,7 @@ class SonarQuantileFilteredNoiseNode(SonarCustomNoiseNodeBase):
         norm_factor: float,
         normalize_noise: bool,
         normalize: str,
+        strategy: str,
         custom_noise: object,
     ):
         return super().go(
@@ -1539,7 +1852,143 @@ class SonarQuantileFilteredNoiseNode(SonarCustomNoiseNodeBase):
             norm_pow=norm_power,
             norm_fac=norm_factor,
             normalize=normalize,
+            strategy=strategy,
             normalize_noise=normalize_noise,
+        )
+
+
+class SonarShuffledNoiseNode(SonarCustomNoiseNodeBase):
+    DESCRIPTION = "Custom noise type that allows shuffling noise along some dimension"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        result = super().INPUT_TYPES(include_chain=False, include_rescale=False)
+        result["required"] |= {
+            "custom_noise": (
+                WILDCARD_NOISE,
+                {
+                    "tooltip": f"Custom noise type to filter.\n{NOISE_INPUT_TYPES_HINT}",
+                },
+            ),
+            "dims": (
+                "STRING",
+                {
+                    "default": "-1",
+                    "tooltip": "Comma separated list of dimensions to shuffle. May be negative to count from the end.",
+                },
+            ),
+            "flatten": (
+                "BOOLEAN",
+                {
+                    "default": False,
+                    "tooltip": "Controls whether to flatten starting from the dimension before the shuffle operation. May be slow as this requires flattening and then reshaping the tensor back to the correct shape. Flattening will occur between the lowest and highest dimension in the list, other dimensions will be ignored. If they are the same, then it will just flatten from the lowest dimension.",
+                },
+            ),
+            "percentage": (
+                "FLOAT",
+                {
+                    "default": 1.0,
+                    "min": 0.0,
+                    "max": 1.0,
+                    "tooltip": "Percentage of elements to shuffle in the specified dimensions.",
+                },
+            ),
+        }
+        return result
+
+    @classmethod
+    def get_item_class(cls):
+        return noise.ShuffledNoise
+
+    def go(
+        self,
+        *,
+        factor: float,
+        dims: str,
+        flatten: bool,
+        percentage: float,
+        custom_noise: object,
+    ):
+        dims = dims.strip()
+        dims = () if not dims else tuple(int(i) for i in dims.split(","))
+        return super().go(
+            factor,
+            noise=custom_noise,
+            dims=dims,
+            flatten=flatten,
+            percentage=percentage,
+        )
+
+
+class SonarPatternBreakNoiseNode(SonarCustomNoiseNodeBase):
+    DESCRIPTION = "Custom noise type that allows breaking patterns in the noise with configurable strength"
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        result = super().INPUT_TYPES(include_chain=False, include_rescale=False)
+        result["required"] |= {
+            "custom_noise": (
+                WILDCARD_NOISE,
+                {
+                    "tooltip": f"Custom noise type to filter.\n{NOISE_INPUT_TYPES_HINT}",
+                },
+            ),
+            "detail_level": (
+                "FLOAT",
+                {
+                    "default": 0.0,
+                    "min": -10000.0,
+                    "max": 10000.0,
+                    "tooltip": "Controls the detail level of the noise when break_pattern is non-zero. No effect when strength is 0.",
+                },
+            ),
+            "blend_mode": (
+                tuple(utils.BLENDING_MODES.keys()),
+                {
+                    "default": "lerp",
+                    "tooltip": "Function to use for blending original noise with pattern broken noise. If you have ComfyUI-bleh then you will have access to many more blend modes.",
+                },
+            ),
+            "percentage": (
+                "FLOAT",
+                {
+                    "default": 1.0,
+                    "min": -10000.0,
+                    "max": 10000.0,
+                    "tooltip": "Percentage pattern-broken noise to mix with the original noise. Going outside of 0.0 through 1.0 is unlikely to work well with normal blend modes.",
+                },
+            ),
+            "restore_scale": (
+                "BOOLEAN",
+                {
+                    "default": True,
+                    "tooltip": "Controls whether the original min/max values get preserved. Not sure which is better, it is slightly slower to do this though.",
+                },
+            ),
+        }
+        return result
+
+    @classmethod
+    def get_item_class(cls):
+        return noise.PatternBreakNoise
+
+    def go(
+        self,
+        *,
+        factor: float,
+        blend_mode: str,
+        detail_level: float,
+        percentage: float,
+        restore_scale: bool,
+        custom_noise: object,
+    ):
+        return super().go(
+            factor,
+            noise=custom_noise,
+            blend_mode=blend_mode,
+            detail_level=detail_level,
+            percentage=percentage,
+            restore_scale=restore_scale,
         )
 
 
@@ -2400,6 +2849,7 @@ NODE_CLASS_MAPPINGS = {
     "SonarGuidanceConfig": GuidanceConfigNode,
     "SamplerConfigOverride": SamplerNodeConfigOverride,
     "NoisyLatentLike": NoisyLatentLikeNode,
+    "SonarNoiseImage": SonarNoiseImageNode,
     "SonarAdvancedPyramidNoise": SonarAdvancedPyramidNoiseNode,
     "SonarAdvanced1fNoise": SonarAdvanced1fNoiseNode,
     "SonarAdvancedPowerLawNoise": SonarAdvancedPowerLawNoiseNode,
@@ -2413,6 +2863,8 @@ NODE_CLASS_MAPPINGS = {
     "SonarScheduledNoise": SonarScheduledNoiseNode,
     "SonarGuidedNoise": SonarGuidedNoiseNode,
     "SonarRandomNoise": SonarRandomNoiseNode,
+    "SonarShuffledNoise": SonarShuffledNoiseNode,
+    "SonarPatternBreakNoise": SonarPatternBreakNoiseNode,
     "SonarChannelNoise": SonarChannelNoiseNode,
     "SonarBlendedNoise": SonarBlendedNoiseNode,
     "SonarResizedNoise": SonarResizedNoiseNode,
@@ -2447,7 +2899,10 @@ class SonarBlendFilterNoiseNode(
                     "tooltip": f"Custom noise input.\n{NOISE_INPUT_TYPES_HINT}",
                 },
             ),
-            "blend_mode": (("simple_add", *utils.BLENDING_MODES.keys()),),
+            "blend_mode": (
+                ("simple_add", *utils.BLENDING_MODES.keys()),
+                {"default": "simple_add"},
+            ),
             "ffilter": (bleh_filter_presets,),
             "ffilter_custom": ("STRING", {"default": ""}),
             "ffilter_scale": (
