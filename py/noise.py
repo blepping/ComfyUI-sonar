@@ -197,9 +197,10 @@ class NoiseSampler:
         seed: int | None = None,
         cpu: bool = False,
         transform: Callable = lambda t: t,
-        make_noise_sampler: Callable | None = None,
         normalized=False,
         factor: float = 1.0,
+        *,
+        make_noise_sampler: Callable,
         **kwargs,
     ):
         self.factor = factor
@@ -322,7 +323,6 @@ class AdvancedDistroNoise(AdvancedNoiseBase):
 class AdvancedCollatzNoise(AdvancedNoiseBase):
     ns_factory_arg_keys = (
         "adjust_scale",
-        "use_initial",
         "iteration_sign_flipping",
         "chain_length",
         "iterations",
@@ -330,12 +330,108 @@ class AdvancedCollatzNoise(AdvancedNoiseBase):
         "rmax",
         "flatten",
         "dims",
-        "variant",
+        "output_mode",
+        "noise_dtype",
+        "quantile",
+        "quantile_strategy",
+        "integer_math",
+        "add_preserves_sign",
+        "even_multiplier",
+        "even_addition",
+        "odd_multiplier",
+        "odd_addition",
+        "chain_offset",
+        "seed_mode",
+        "break_loops",
     )
 
     @property
     def ns_factory(self):
         return CollatzNoiseGenerator
+
+    def make_noise_sampler(self, x, *args, normalized=True, **kwargs):
+        seed_ns = (
+            self.seed_custom_noise.make_noise_sampler(
+                x,
+                *args,
+                normalized=False,
+                **kwargs,
+            )
+            if self.seed_custom_noise is not None
+            else None
+        )
+        mix_ns = (
+            self.mix_custom_noise.make_noise_sampler(
+                x,
+                *args,
+                normalized=False,
+                **kwargs,
+            )
+            if self.mix_custom_noise is not None
+            and self.output_mode.startswith("noise_")
+            else None
+        )
+        return super().make_noise_sampler(
+            x,
+            *args,
+            normalized=normalized,
+            seed_noise_sampler=seed_ns,
+            mix_noise_sampler=mix_ns,
+        )
+
+
+class AdvancedWaveletNoise(AdvancedNoiseBase):
+    ns_factory_arg_keys = (
+        "octave_scale_mode",
+        "octave_rescale_mode",
+        "post_octave_rescale_mode",
+        "initial_amplitude",
+        "persistence",
+        "octaves",
+        "octave_height_factor",
+        "octave_width_factor",
+        "height_factor",
+        "width_factor",
+        "min_height",
+        "min_width",
+        "update_blend",
+        "update_blend_function",
+    )
+
+    @property
+    def ns_factory(self):
+        return WaveletNoiseGenerator
+
+    def make_noise_sampler(self, x, *args, normalized=True, **kwargs):
+        if x.ndim < 4:
+            raise ValueError("Can only handle 4+ dimensional latents")
+        height, width = x.shape[-2:]
+        result = super().make_noise_sampler(x, *args, normalized=normalized, **kwargs)
+        wavelet_ng = result.noise_sampler
+        max_height = (
+            int(max(height, *(od.height for od in wavelet_ng.octave_data)))
+            if wavelet_ng.octave_data
+            else height
+        )
+        max_width = (
+            int(max(width, *(od.width for od in wavelet_ng.octave_data)))
+            if wavelet_ng.octave_data
+            else width
+        )
+        internal_ns = (
+            self.custom_noise.make_noise_sampler(
+                x.new_zeros(*x.shape[:-2], max_height, max_width)
+                if max_width != width or max_height != height
+                else x,
+                *args,
+                normalized=self.normalize_noise,
+                **kwargs,
+            )
+            if self.custom_noise is not None
+            else None
+        )
+        wavelet_ng.set_internal_noise_sampler(internal_ns)
+        return result
 
 
 class CompositeNoise(CustomNoiseItemBase):
@@ -1240,7 +1336,7 @@ class WaveletFilteredNoise(CustomNoiseItemBase):
         ns_kwargs = getattr(self, "ns_kwargs", {}).copy()
         # print("WF:NS KWARGS", ns_kwargs)
         kwargs |= ns_kwargs
-        ns = WaveletNoiseGenerator(
+        ns = WaveletFilterNoiseGenerator(
             x,
             *args,
             sigma_min=sigma_min,
@@ -1528,9 +1624,10 @@ class PatternBreakNoise(CustomNoiseItemBase):
         *,
         noise,
         detail_level: float,
-        blend_mode: str,
         percentage: float,
         restore_scale: bool,
+        blend_mode: str = "lerp",
+        blend_function=None,
     ):
         super().__init__(
             factor,
@@ -1538,7 +1635,7 @@ class PatternBreakNoise(CustomNoiseItemBase):
             detail_level=detail_level,
             percentage=percentage,
             restore_scale=restore_scale,
-            blend_function=utils.BLENDING_MODES[blend_mode],
+            blend_function=blend_function or utils.BLENDING_MODES[blend_mode],
         )
 
     def clone_key(self, k):
@@ -1663,8 +1760,8 @@ NOISE_SAMPLERS: dict[NoiseType, Callable] = {
             MixedNoiseGenerator,
             name="onef_pinkish_mix",
             noise_mix=(
-                (OneFNoiseGenerator, {"alpha": 0.5}, lambda t: t.mul_(-1.0)),
-                (OneFNoiseGenerator, {"alpha": 0.5}, None),
+                (OneFNoiseGenerator, {"alpha": -0.5}, lambda t: t.mul_(-1.0)),
+                (OneFNoiseGenerator, {"alpha": -0.5}, None),
             ),
             output_fun=lambda t: t.mul_(0.5),
         ),

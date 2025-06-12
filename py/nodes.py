@@ -308,7 +308,7 @@ class SonarNoiseImageNode(metaclass=IntegratedNode):
                 "noise_multiplier": (
                     "FLOAT",
                     {
-                        "default": 1.0,
+                        "default": 0.5,
                         "step": 0.001,
                         "min": -1000.0,
                         "max": 1000.0,
@@ -1641,36 +1641,49 @@ class SonarAdvancedCollatzNoiseNode(SonarCustomNoiseNodeBase):
             "adjust_scale": (
                 "BOOLEAN",
                 {
-                    "default": True,
-                },
-            ),
-            "use_initial": (
-                "BOOLEAN",
-                {
-                    "default": True,
-                },
-            ),
-            "iteration_sign_flipping": (
-                "BOOLEAN",
-                {
-                    "default": True,
+                    "default": False,
+                    "tooltip": "When enabled, the output will be normalized to values between -1 and 1 using the last two dimensions (if there are four or more), otherwise dimensions after the first.",
                 },
             ),
             "chain_length": (
                 "STRING",
                 {
                     "default": "1, 1, 2, 2, 3, 3",
-                    "tooltip": "Comma-separated list of chain lengths. Cannot be empty. Iterations will cycle through the list and wrap.",
+                    "tooltip": "Comma-separated list of chain lengths. Cannot be empty. Iterations will cycle through the list and wrap. Controls the length of Collatz chains. Note: Using a high chain length may be very slow, especially if combined with many iterations.",
                 },
             ),
-            "iterations": ("INT", {"default": 500, "min": 1, "max": 10000}),
+            "chain_offset": (
+                "INT",
+                {
+                    "default": 5,
+                    "min": 0,
+                    "max": 10000,
+                    "tooltip": "Uses values starting at the specified offset. Note: This entails generating chains of length chain_length + chain_offset, which may be quite slow if you use high values.",
+                },
+            ),
+            "iterations": (
+                "INT",
+                {
+                    "default": 10,
+                    "min": 1,
+                    "max": 10000,
+                    "tooltip": "Number of iterations to run. Warning: Collatz noise (my implementation, anyway) is EXTREMELY slow.",
+                },
+            ),
+            "iteration_sign_flipping": (
+                "BOOLEAN",
+                {
+                    "default": True,
+                    "tooltip": "Controls whether we cycle between flipping the sign on the output from each iteration. May average out weirdness... Or make stuff weirder.",
+                },
+            ),
             "rmin": (
                 "FLOAT",
                 {
                     "default": -8000.0,
                     "min": -100000.0,
                     "max": 100000.0,
-                    "tooltip": "Going as low as -9500 should be safe.",
+                    "tooltip": "Minimum value a chain can start with. Going as low as -9500 should be safe with float32.",
                 },
             ),
             "rmax": (
@@ -1679,10 +1692,9 @@ class SonarAdvancedCollatzNoiseNode(SonarCustomNoiseNodeBase):
                     "default": 8000.0,
                     "min": -100000.0,
                     "max": 100000.0,
-                    "tooltip": "I don't recommend going over 9500 here as that is where the Collatz chain starts to reach values that can't be accurately represented with a 32bit float.",
+                    "tooltip": "Maximum value a chain can start with. I don't recommend going over 9500 if you are using the float32 dtype here as that is where the Collatz chain starts to reach values that can't be accurately represented.",
                 },
             ),
-            "flatten": ("BOOLEAN", {"default": False}),
             "dims": (
                 "STRING",
                 {
@@ -1690,13 +1702,128 @@ class SonarAdvancedCollatzNoiseNode(SonarCustomNoiseNodeBase):
                     "tooltip": "Comma-separated list of dimensions. Cannot be empty. May be negative to count from the end of the list. Iterations will cycle through the list and wrap.",
                 },
             ),
-            "variant": (
-                "INT",
+            "flatten": (
+                "BOOLEAN",
                 {
-                    "default": 2,
-                    "min": 1,
-                    "max": 2,
-                    "tooltip": "Variant 1 may act like the original version, not the correct algorithm for Collatz though. Variant 2 is (hopefully) more correct. There will likely be more variants in the future.",
+                    "default": False,
+                    "tooltip": "Controls whether dimensions past the current one selected from the dims parameter will get flattened.",
+                },
+            ),
+            "output_mode": (
+                (
+                    "values",
+                    "ratios",
+                    "mults",
+                    "adds",
+                    "seed_x_mults",
+                    "seed_x_adds",
+                    "noise_x_ratios",
+                    "noise_x_mults",
+                    "noise_x_adds",
+                ),
+                {
+                    "default": "values",
+                },
+            ),
+            "quantile": (
+                "FLOAT",
+                {
+                    "default": 0.5,
+                    "min": 0.0,
+                    "max": 1.0,
+                    "tooltip": "The initial output of each iteration will be run through quantile normalization. Setting the parameter to 0 or 1 will disable quantile normalization.",
+                },
+            ),
+            "quantile_strategy": (
+                tuple(utils.quantile_handlers.keys()),
+                {
+                    "default": "clamp",
+                    "tooltip": "Determines how to treat outliers. zero and reverse_zero modes are only useful if you're going to do something like add the result to some other noise. zero will return zero for anything outside the quantile range, reverse_zero only _keeps_ the outliers and zeros everything else.",
+                },
+            ),
+            "noise_dtype": (
+                ("float32", "float64", "float16", "bfloat16"),
+                {
+                    "default": "float32",
+                    "tooltip": "Generally should be left at the default. Only float32 and float64 will work if you have quantile normalization enabled.",
+                },
+            ),
+            "even_multiplier": (
+                "FLOAT",
+                {
+                    "default": 0.5,
+                    "min": -10000.0,
+                    "max": 1000.0,
+                    "tooltip": "Multiplier to use when the previous link in the chain is even. Collatz uses 0.5 (divides by two) here.",
+                },
+            ),
+            "even_addition": (
+                "FLOAT",
+                {
+                    "default": 0.0,
+                    "min": -10000.0,
+                    "max": 1000.0,
+                    "tooltip": "Value to add when the previous link in the chain is even. Collatz uses 0 here.",
+                },
+            ),
+            "odd_multiplier": (
+                "FLOAT",
+                {
+                    "default": 3.0,
+                    "min": -10000.0,
+                    "max": 1000.0,
+                    "tooltip": "Multiplier to use when the previous link in the chain is odd. Collatz uses 3 here.",
+                },
+            ),
+            "odd_addition": (
+                "FLOAT",
+                {
+                    "default": 1.0,
+                    "min": -10000.0,
+                    "max": 1000.0,
+                    "tooltip": "Value to add when the previous link in the chain is odd. Collatz uses 1 here.",
+                },
+            ),
+            "integer_math": (
+                "BOOLEAN",
+                {
+                    "default": True,
+                    "tooltip": "Controls whether the results during chain generation get truncated to an integer value or not. Should be enabled if you actually want to generate accurate Collatz chains.",
+                },
+            ),
+            "add_preserves_sign": (
+                "BOOLEAN",
+                {
+                    "default": True,
+                    "tooltip": "Controls whether additions use the same sign as the item they're being added to.",
+                },
+            ),
+            "break_loops": (
+                "BOOLEAN",
+                {
+                    "default": True,
+                    "tooltip": "Controls whether the chain resets back to the seed value once it reaches 1 or 0. Generally should be left enabled, otherwise the chain will oscillate between only a few values for the rest of the length (at least with the Collatz rules).",
+                },
+            ),
+            "seed_mode": (
+                ("default", "force_odd", "force_even"),
+                {
+                    "default": "default",
+                    "tooltip": "Default mode just uses whatever the original seed value was. force_odd/force_even will force it to the specified parity by adding one if it doesn't match. Starting from odd seeds might result in longer chains. Enabling the force modes may cause the initial seeds to exceed rmax by one.",
+                },
+            ),
+        }
+        result["optional"] |= {
+            "seed_custom_noise": (
+                WILDCARD_NOISE,
+                {
+                    "tooltip": f"Optional custom noise to use for initial values for Collatz chains. May be slow as it will generate noise according to the original input size and then crop it. Does this noise type have enough warnings about it being slow? Yeah. Connecting something here will probably make it even slower!\n{NOISE_INPUT_TYPES_HINT}",
+                },
+            ),
+            "mix_custom_noise": (
+                WILDCARD_NOISE,
+                {
+                    "tooltip": f"Optional custom noise to use with the output modes starting with 'noise'.\n{NOISE_INPUT_TYPES_HINT}",
                 },
             ),
         }
@@ -1712,7 +1839,6 @@ class SonarAdvancedCollatzNoiseNode(SonarCustomNoiseNodeBase):
         factor: float,
         rescale: float,
         adjust_scale: bool,
-        use_initial: bool,
         iteration_sign_flipping: bool,
         chain_length: int,
         iterations: int,
@@ -1720,7 +1846,21 @@ class SonarAdvancedCollatzNoiseNode(SonarCustomNoiseNodeBase):
         rmax: float,
         flatten: bool,
         dims: str,
-        variant: int,
+        output_mode: str,
+        noise_dtype: str,
+        quantile: float,
+        quantile_strategy: str,
+        integer_math: bool,
+        add_preserves_sign: bool,
+        even_multiplier: float,
+        even_addition: float,
+        odd_multiplier: float,
+        odd_addition: float,
+        chain_offset: int,
+        seed_mode: str,
+        break_loops: bool,
+        seed_custom_noise: object | None = None,
+        mix_custom_noise: object | None = None,
         sonar_custom_noise_opt=None,
     ):
         if rmin > rmax:
@@ -1731,7 +1871,6 @@ class SonarAdvancedCollatzNoiseNode(SonarCustomNoiseNodeBase):
             rescale=rescale,
             sonar_custom_noise_opt=sonar_custom_noise_opt,
             adjust_scale=adjust_scale,
-            use_initial=use_initial,
             iteration_sign_flipping=iteration_sign_flipping,
             chain_length=tuple(int(i) for i in chain_length.split(",")),
             iterations=iterations,
@@ -1739,7 +1878,26 @@ class SonarAdvancedCollatzNoiseNode(SonarCustomNoiseNodeBase):
             rmax=rmax,
             flatten=flatten,
             dims=dims,
-            variant=variant,
+            output_mode=output_mode,
+            quantile=quantile,
+            quantile_strategy=quantile_strategy,
+            integer_math=integer_math,
+            add_preserves_sign=add_preserves_sign,
+            even_multiplier=even_multiplier,
+            even_addition=even_addition,
+            odd_multiplier=odd_multiplier,
+            odd_addition=odd_addition,
+            chain_offset=chain_offset,
+            break_loops=break_loops,
+            seed_mode=seed_mode,
+            noise_dtype={
+                "float32": torch.float32,
+                "float64": torch.float64,
+                "float16": torch.float16,
+                "bfloat16": torch.bfloat16,
+            }.get(noise_dtype, torch.float32),
+            seed_custom_noise=seed_custom_noise,
+            mix_custom_noise=mix_custom_noise,
         )
 
 
@@ -1816,10 +1974,10 @@ class SonarQuantileFilteredNoiseNode(SonarCustomNoiseNodeBase):
                 },
             ),
             "strategy": (
-                ("clamp", "half", "tenth", "zero"),
+                tuple(utils.quantile_handlers.keys()),
                 {
                     "default": "clamp",
-                    "tooltip": "Determines how to treat outliers.",
+                    "tooltip": "Determines how to treat outliers. zero and reverse_zero modes are only useful if you're going to do something like add the result to some other noise. zero will return zero for anything outside the quantile range, reverse_zero only _keeps_ the outliers and zeros everything else.",
                 },
             ),
         }
@@ -2155,6 +2313,192 @@ class SonarWaveletFilteredNoiseNode(
             normalize_noise=normalize_noise,
             noise=custom_noise,
             yaml_parameters=yaml_parameters,
+        )
+
+
+class SonarWaveletNoiseNode(
+    SonarCustomNoiseNodeBase,
+    SonarNormalizeNoiseNodeMixin,
+):
+    DESCRIPTION = "Custom noise type that allows generating wavelet noise. Very simple explanation of how a single octave works:\n1) Generate some noise.\n2) Scale it down 50%.\n3) Scale it back up to the original size.\n4) Subtract the scaled noise from the original noise.\nScaling the noise down and then back up blurs it, so this is essentially sharpening the noise."
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        result = super().INPUT_TYPES()
+        result["required"] |= {
+            "octaves": (
+                "INT",
+                {
+                    "default": 4,
+                    "min": -100,
+                    "max": 100,
+                    "tooltip": "Number of octaves to generate. You can use a negative number here to run the octaves in reverse order though it may produce weird results/not work very well.",
+                },
+            ),
+            "octave_height_factor": (
+                "FLOAT",
+                {
+                    "default": 0.5,
+                    "min": 0.001,
+                    "max": 10000.0,
+                    "tooltip": "Wavelet noise works by scaling noise by this factor in each octave, then scaling it back up to the original size. After that, the scaled noise is subtracted from the original noise.",
+                },
+            ),
+            "octave_width_factor": (
+                "FLOAT",
+                {
+                    "default": 0.5,
+                    "min": 0.001,
+                    "max": 10000.0,
+                    "tooltip": "Wavelet noise works by scaling noise by this factor in each octave, then scaling it back up to the original size. After that, the scaled noise is subtracted from the original noise.",
+                },
+            ),
+            "octave_scale_mode": (
+                utils.UPSCALE_METHODS,
+                {
+                    "tooltip": "Scaling mode used within each octave to produce the scaled noise. By default this will be scaling down that octave's noise.",
+                    "default": "adaptive_avg_pool2d",
+                },
+            ),
+            "octave_rescale_mode": (
+                utils.UPSCALE_METHODS,
+                {
+                    "tooltip": "Scaling mode used within each octave to scale the noise back up to that octave's original size.",
+                    "default": "bilinear",
+                },
+            ),
+            "post_octave_rescale_mode": (
+                utils.UPSCALE_METHODS,
+                {
+                    "tooltip": "Scaling mode used to scale the output of an octave back up to the actual latent size.",
+                    "default": "bilinear",
+                },
+            ),
+            "initial_amplitude": (
+                "FLOAT",
+                {
+                    "default": 1.0,
+                    "min": -10000.0,
+                    "max": 10000.0,
+                    "tooltip": "Basically the strength an octave gets added to the total. This will be scaled by persistance after each octave.",
+                },
+            ),
+            "persistence": (
+                "FLOAT",
+                {
+                    "default": 0.5,
+                    "min": -10000.0,
+                    "max": 10000.0,
+                    "tooltip": "Multiplier applied to amplitude after each octave. 0.5 means the first octave uses initial_amplitude, the second uses half of that and so on.",
+                },
+            ),
+            "height_factor": (
+                "FLOAT",
+                {
+                    "default": 2.0,
+                    "min": 0.001,
+                    "max": 10000.0,
+                    "tooltip": "Scaling factor for height, calculated after each octave. 2.0 means divide by two. Note: It's possible to use values below 1 here but be careful as it's very easy to reach absurd latent sizes with only a few octaves.",
+                },
+            ),
+            "width_factor": (
+                "FLOAT",
+                {
+                    "tooltip": "Scaling factor for width, calculated after each octave. 2.0 means divide by two. Note: It's possible to use values below 1 here but be careful as it's very easy to reach absurd latent sizes with only a few octaves.",
+                    "default": 2.0,
+                    "min": 0.001,
+                    "max": 10000.0,
+                },
+            ),
+            "update_blend": (
+                "FLOAT",
+                {
+                    "tooltip": "Controls how original_noise - scaled_noise is blended with original_noise. The default is to use 100% original_noise - scaled_noise.",
+                    "default": 1.0,
+                    "min": -10000.0,
+                    "max": 10000.0,
+                },
+            ),
+            "update_blend_mode": (
+                ("simple_add", *utils.BLENDING_MODES.keys()),
+                {
+                    "default": "lerp",
+                    "tooltip": "Controls how the enhanced noise from each octave is blended with that octave's raw noise. With normal wavelet noise there's no blending and you use 100% enhanced noise.",
+                },
+            ),
+            "normalize_noise": (
+                "BOOLEAN",
+                {
+                    "default": False,
+                    "tooltip": "Controls whether the noise source is normalized before wavelet filtering occurs.",
+                },
+            ),
+            "normalize": (
+                ("default", "forced", "disabled"),
+                {
+                    "tooltip": "Controls whether the generated noise is normalized to 1.0 strength. For weird blend modes, you may want to set this to forced.",
+                },
+            ),
+        }
+        result["optional"] |= {
+            "custom_noise": (
+                WILDCARD_NOISE,
+                {
+                    "tooltip": f"Optional: Custom noise input. If unconnected will default to Gaussian noise. Note: When connected, the noise for all octaves will be generated at the maximum scale and then cropped which may be slow.\n{NOISE_INPUT_TYPES_HINT}",
+                },
+            ),
+        }
+        return result
+
+    @classmethod
+    def get_item_class(cls):
+        return noise.AdvancedWaveletNoise
+
+    def go(
+        self,
+        *,
+        factor,
+        rescale,
+        normalize,
+        octaves: int,
+        octave_height_factor: float,
+        octave_width_factor: float,
+        octave_scale_mode: str,
+        octave_rescale_mode: str,
+        post_octave_rescale_mode: str,
+        initial_amplitude: float,
+        persistence: float,
+        height_factor: float,
+        width_factor: float,
+        update_blend: float,
+        update_blend_mode: str,
+        normalize_noise: bool,
+        custom_noise=None,
+        sonar_custom_noise_opt=None,
+    ):
+        if persistence == 0 or initial_amplitude == 0 or octaves == 0:
+            raise ValueError(
+                "Persistence, initial amplitude and octaves must be non-zero",
+            )
+        return super().go(
+            factor,
+            rescale=rescale,
+            sonar_custom_noise_opt=sonar_custom_noise_opt,
+            octaves=octaves,
+            octave_height_factor=octave_height_factor,
+            octave_width_factor=octave_width_factor,
+            octave_scale_mode=octave_scale_mode,
+            octave_rescale_mode=octave_rescale_mode,
+            post_octave_rescale_mode=post_octave_rescale_mode,
+            initial_amplitude=initial_amplitude,
+            persistence=persistence,
+            height_factor=height_factor,
+            width_factor=width_factor,
+            update_blend=update_blend,
+            update_blend_function=utils.BLENDING_MODES[update_blend_mode],
+            normalize=self.get_normalize(normalize),
+            normalize_noise=normalize_noise,
+            custom_noise=custom_noise,
         )
 
 
@@ -2868,6 +3212,7 @@ NODE_CLASS_MAPPINGS = {
     "SonarChannelNoise": SonarChannelNoiseNode,
     "SonarBlendedNoise": SonarBlendedNoiseNode,
     "SonarResizedNoise": SonarResizedNoiseNode,
+    "SonarWaveletNoise": SonarWaveletNoiseNode,
     "SonarWaveletFilteredNoise": SonarWaveletFilteredNoiseNode,
     "SonarQuantileFilteredNoise": SonarQuantileFilteredNoiseNode,
     "SONAR_CUSTOM_NOISE to NOISE": SonarToComfyNOISENode,

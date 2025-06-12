@@ -16,6 +16,7 @@ UPSCALE_METHODS = (
     "area",
     "bicubic",
     "bislerp",
+    "adaptive_avg_pool2d",
 )
 
 
@@ -26,6 +27,8 @@ def scale_samples(
     *,
     mode: str = "bicubic",
 ) -> torch.Tensor:
+    if mode == "adaptive_avg_pool2d":
+        return torch.nn.functional.adaptive_avg_pool2d(samples, (height, width))
     return common_upscale(samples, width, height, mode, None)
 
 
@@ -83,6 +86,33 @@ def tensor_to(
     return tensor.to(dest, non_blocking=non_blocking)
 
 
+def _quantile_norm_scaledown(noise: torch.Tensor, nq: torch.Tensor) -> torch.Tensor:
+    mv = noise.abs().max().detach().item()
+    return noise if mv == 0 else torch.where(noise.abs() > nq, noise * (nq / mv), noise)
+
+
+quantile_handlers = {
+    "clamp": lambda noise, nq: noise.clamp(-nq, nq),
+    "scale_down": _quantile_norm_scaledown,
+    "tanh": lambda noise, nq: noise.tanh().mul_(nq.abs()),
+    "tanh_outliers": lambda noise, nq: torch.where(
+        noise.abs() > nq,
+        noise.tanh().mul_(nq.abs()),
+        noise,
+    ),
+    "sigmoid": lambda noise, nq: noise.sigmoid().mul_(nq.abs()).copysign(noise),
+    "sigmoid_outliers": lambda noise, nq: torch.where(
+        noise.abs() > nq,
+        noise.sigmoid().mul_(nq.abs()).copysign(noise),
+        noise,
+    ),
+    "tenth": lambda noise, nq: torch.where(noise.abs() > nq, noise * 0.1, noise),
+    "half": lambda noise, nq: torch.where(noise.abs() > nq, noise * 0.5, noise),
+    "zero": lambda noise, nq: torch.where(noise.abs() > nq, 0, noise),
+    "reverse_zero": lambda noise, nq: torch.where(noise.abs() >= nq, noise, 0),
+}
+
+
 # Initial version based on Studentt distribution normalizatino from https://github.com/Clybius/ComfyUI-Extra-Samplers/
 def quantile_normalize(
     noise: torch.Tensor,
@@ -93,6 +123,7 @@ def quantile_normalize(
     nq_fac: float = 1.0,
     pow_fac: float = 0.5,
     strategy: str = "clamp",
+    strategy_handler=None,
 ) -> torch.Tensor:
     if quantile is None or quantile <= 0 or quantile >= 1:
         return noise
@@ -128,20 +159,15 @@ def quantile_normalize(
     )
     nq_shape = tuple(nq.shape) + (1,) * (noise.ndim - nq.ndim)
     nq = nq.mul_(nq_fac).reshape(*nq_shape)
-    if strategy == "clamp":
-        noise = noise.clamp(-nq, nq)
-    elif strategy == "zero":
-        noise = torch.where((noise < -nq) | (noise > nq), 0, noise)
-    elif strategy == "half":
-        noise = torch.where((noise < -nq) | (noise > nq), noise * 0.5, noise)
-    elif strategy == "tenth":
-        noise = torch.where((noise < -nq) | (noise > nq), noise * 0.1, noise)
-    else:
-        raise ValueError("Unknown strategy")
-    noise = torch.copysign(
-        torch.pow(torch.abs(noise), pow_fac),
-        noise,
+    handler = (
+        quantile_handlers.get(strategy)
+        if strategy_handler is None
+        else strategy_handler
     )
+    if handler is None:
+        raise ValueError("Unknown strategy")
+    noise = handler(noise, nq)
+    noise = noise.abs().pow(pow_fac).copysign(noise)
     if flatdim is not None and qdim in {2, 3}:
         return (
             noise.reshape(tempshape).movedim(1, qdim).reshape(orig_shape).contiguous()
@@ -246,3 +272,14 @@ def pattern_break(
     if restore_scale:
         noise = normalize_to_scale(noise, orig_min, orig_max, dim=())
     return blend_function(noise, result, percentage).to(dtype=orig_dtype)
+
+
+def trunc_decimals(x: torch.Tensor, decimals: int = 3) -> torch.Tensor:
+    x_i = x.trunc()
+    x_f = x - x_i
+    scale = 10.0**decimals
+    return x_i.add_(x_f.mul_(scale).trunc_().mul_(1.0 / scale))
+
+
+def maybe_apply(val, cond, fun):
+    return fun(val) if cond else val

@@ -3,8 +3,7 @@ from __future__ import annotations
 
 import math
 from enum import Enum, auto
-from functools import partial
-from typing import Callable
+from typing import TYPE_CHECKING, Callable, ClassVar, NamedTuple
 
 import torch
 from comfy.k_diffusion import sampling
@@ -18,6 +17,8 @@ try:
 except ImportError:
     HAVE_WAVELETS = False
 
+from comfy.model_management import throw_exception_if_processing_interrupted
+
 from . import utils
 from .utils import (
     fallback,
@@ -26,6 +27,9 @@ from .utils import (
     scale_noise,
     tensor_to,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 # ruff: noqa: D413, D417, D212, ANN002, ANN003
 
@@ -106,7 +110,6 @@ class NoiseGenerator:
             setattr(self, k, kwarg_params.pop(k))
         self.options = kwarg_params
         self.update_x(x)
-        # print("CREATE NG", self, kwargs)
 
     @classmethod
     def ng_params(cls):
@@ -131,14 +134,25 @@ class NoiseGenerator:
         self.layout = x.layout
         self.dtype = x.dtype
 
-    def rand_like(self, *, fun=torch.randn, cpu=None, to_device=True):
-        cpu = cpu if cpu is not None else self.cpu
+    def rand_like(
+        self,
+        *,
+        fun=torch.randn,
+        cpu=None,
+        to_device=True,
+        shape=None,
+        dtype=None,
+        layout=None,
+        device=None,
+        generator=None,
+    ):
+        cpu = fallback(cpu, self.cpu)
         noise = fun(
-            *self.shape,
-            generator=self.generator,
-            dtype=self.dtype,
-            layout=self.layout,
-            device=self.gen_device,
+            *fallback(shape, self.shape),
+            generator=fallback(generator, self.generator),
+            dtype=fallback(dtype, self.dtype),
+            layout=fallback(layout, self.layout),
+            device=fallback(device, "cpu" if cpu else self.gen_device),
         )
         if to_device and noise.device != self.device:
             noise = tensor_to(noise, self.device)
@@ -189,8 +203,10 @@ class FramesToChannelsNoiseGenerator(NoiseGenerator):
             self.width,
         )
 
-    def rand_like(self, *args, **kwargs):
-        noise = super().rand_like(*args, **kwargs)
+    def rand_like(self, *args, shape=None, **kwargs):
+        noise = super().rand_like(*args, shape=shape, **kwargs)
+        if shape is not None:
+            return noise
         adjusted_shape = self.get_adjusted_shape()
         if noise.shape != adjusted_shape:
             return noise.reshape(*adjusted_shape)
@@ -1280,8 +1296,8 @@ class PowerOldNoiseGenerator(NoiseGenerator):
 
 
 # Idea from https://github.com/ClownsharkBatwing/RES4LYF/ (wave and mode defaults also from that source)
-class WaveletNoiseGenerator(FramesToChannelsNoiseGenerator):
-    name = "wavelet"
+class WaveletFilterNoiseGenerator(FramesToChannelsNoiseGenerator):
+    name = "waveletfilter"
     MIN_DIMS = 4
     MAX_DIMS = 5
 
@@ -1370,101 +1386,396 @@ class WaveletNoiseGenerator(FramesToChannelsNoiseGenerator):
         return result[tuple(slice(0, dl) for dl in noise.shape)]
 
 
-class CollatzNoiseGenerator(NoiseGenerator):
-    name = "collatz"
+class WaveletNoiseOctave(NamedTuple):
+    octave: int
+    height: int
+    width: int
+    amplitude: float
+    total_amplitude: float
+
+
+class WaveletNoiseGenerator(FramesToChannelsNoiseGenerator):
+    name = "wavelet"
+    MIN_DIMS = 4
+    MAX_DIMS = 5
 
     @classmethod
     def ng_params(cls):
         return super().ng_params() | {
-            "adjust_scale": True,
-            "use_initial": True,
+            "octave_scale_mode": "adaptive_avg_pool2d",
+            "octave_rescale_mode": "bilinear",
+            "post_octave_rescale_mode": "bilinear",
+            "initial_amplitude": 1.0,
+            "persistence": 0.5,
+            "octaves": 4,
+            "octave_height_factor": 0.5,
+            "octave_width_factor": 0.5,
+            "height_factor": 2.0,
+            "width_factor": 2.0,
+            "min_height": 4,
+            "min_width": 4,
+            "update_blend": 1.0,
+            "update_blend_function": torch.lerp,
+            "noise_sampler": None,
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.set_octave_data()
+
+    def set_internal_noise_sampler(self, noise_sampler: object) -> None:
+        self.noise_sampler = noise_sampler
+
+    def set_octave_data(self) -> tuple:
+        adjusted_shape = self.get_adjusted_shape()
+        height, width = adjusted_shape[-2:]
+        amplitude = self.initial_amplitude
+        total_amplitude = 0.0
+        curr_height, curr_width = height, width
+        octave_data = []
+        is_reverse = self.octaves < 0
+        octaves = (
+            range(self.octaves)
+            if not is_reverse
+            else reversed(range(abs(self.octaves)))
+        )
+        for octave in octaves:
+            curr_height /= self.height_factor**octave
+            curr_width /= self.width_factor**octave
+            if (
+                amplitude == 0
+                or curr_height < self.min_height
+                or curr_width < self.min_width
+                or curr_height * self.octave_height_factor < 1
+                or curr_width * self.octave_width_factor < 1
+            ):
+                if is_reverse and not octave_data:
+                    curr_height, curr_width = height, width
+                    continue
+                break
+            total_amplitude += abs(amplitude)
+            octave_data.append(
+                WaveletNoiseOctave(
+                    octave=octave,
+                    height=curr_height,
+                    width=curr_width,
+                    amplitude=amplitude,
+                    total_amplitude=total_amplitude,
+                ),
+            )
+            amplitude *= self.persistence
+        if not octave_data or not total_amplitude:
+            raise ValueError("Unworkable parameters for wavelet noise")
+        self.octave_data = tuple(octave_data)
+
+    def _generate_octave(self, *args: list, shape: Sequence) -> torch.Tensor:
+        height, width = shape[-2:]
+        noise = (
+            self.noise_sampler(*args)[..., :height, :width].reshape(shape)
+            if self.noise_sampler
+            else self.rand_like(shape=(*shape[:-2], height, width))
+        )
+        scaled_height = int(max(1, height * self.octave_height_factor))
+        scaled_width = int(max(1, width * self.octave_width_factor))
+        scaled_noise = utils.scale_samples(
+            utils.scale_samples(
+                noise,
+                scaled_width,
+                scaled_height,
+                mode=self.octave_scale_mode,
+            ),
+            width=width,
+            height=height,
+            mode=self.octave_rescale_mode,
+        )
+        return self.update_blend_function(
+            noise,
+            noise - scaled_noise,
+            self.update_blend,
+        )
+
+    def generate(self, *args: list) -> torch.Tensor:
+        adjusted_shape = self.get_adjusted_shape()
+        height, width = adjusted_shape[-2:]
+        curr_shape = list(adjusted_shape)
+        result = torch.zeros(
+            adjusted_shape,
+            device=self.device,
+            dtype=self.dtype,
+            layout=self.layout,
+        )
+        for od in self.octave_data:
+            curr_shape[-2:] = (int(od.height), int(od.width))
+            octave_output = self._generate_octave(*args, shape=curr_shape)
+            if octave_output.shape != result.shape:
+                octave_output = utils.scale_samples(
+                    octave_output,
+                    width,
+                    height,
+                    mode=self.post_octave_rescale_mode,
+                )
+            result += octave_output.mul_(od.amplitude)
+        if self.octave_data[-1].total_amplitude != 0:
+            result /= self.octave_data[-1].total_amplitude
+        return self.fix_output_frames(result)
+
+
+class CollatzNoiseGenerator(NoiseGenerator):
+    name = "collatz"
+
+    chain_cache: ClassVar[dict] = {}
+
+    @classmethod
+    def ng_params(cls):
+        return super().ng_params() | {
+            "adjust_scale": False,
             "iteration_sign_flipping": True,
             "chain_length": (1, 1, 2, 2, 3, 3),
-            "iterations": 500,
+            "iterations": 10,
             "rmin": -8000.0,
             "rmax": 8000.0,
             "flatten": False,
             "dims": (-1, -1, -2, -2),
-            "variant": 2,
+            # values, ratios, mults, adds
+            # seed_x_ratios, seed_x_mults, seed_x_adds
+            # noise_x_ratios, noise_x_mults, noise_x_adds
+            "output_mode": "values",
+            "quantile": 0.5,
+            "quantile_strategy": "clamp",
+            "noise_dtype": torch.float32,
+            "integer_math": True,
+            "even_multiplier": 0.5,
+            "even_addition": 0.0,
+            "odd_multiplier": 3.0,
+            "odd_addition": 1.0,
+            "add_preserves_sign": True,
+            "chain_offset": 5,
+            "break_loops": True,
+            "seed_mode": "default",
+            "seed_noise_sampler": None,
+            "mix_noise_sampler": None,
         }
 
     @staticmethod
-    def _get_iter_slices(n_dims, dim, offset, stride) -> tuple:
-        return tuple(
-            slice(None) if didx != dim else slice(offset, None, stride)
-            for didx in range(n_dims)
-        )
+    def _get_iter_slices(n_dims, dim, idx, stride) -> list:
+        result = [slice(None)] * n_dims
+        result[dim] = slice(idx, None, stride)
+        return result
 
-    def _generate_iteration(
+    def _generate_iteration(  # noqa: PLR0914
         self,
-        *,
+        *args,
         dim: int,
         chain_length: int,
         flatten: False,
         shape=None,
-        integer_division=True,
     ):
         dtype, device = self.dtype, self.device
         out_shape = shape = fallback(shape, self.shape)
         if dim >= len(shape):
             raise ValueError("Requested dimension out of range")
         rmin, rmax = self.rmin, self.rmax
+        emul, eadd = self.even_multiplier, self.even_addition
+        omul, oadd = self.odd_multiplier, self.odd_addition
+        keepsign = self.add_preserves_sign
+        intmode = self.integer_math
         rmaxsubmin = rmax - rmin
         if flatten:
             shape = torch.Size((*shape[:dim], math.prod(shape[dim:])))
         size = shape[dim]
         chain_length = min(size, chain_length)
         n_chunks = math.ceil(size / chain_length)
-        result_shape = tuple(
-            (chain_length * n_chunks) if idx == dim else sz
-            for idx, sz in enumerate(shape)
-        )
-        chunk_shape = tuple(
-            n_chunks if idx == dim else sz for idx, sz in enumerate(shape)
-        )
-        result = torch.zeros(result_shape, dtype=torch.float32, device=device)
-        noise = (
-            torch.rand(
-                chunk_shape,
-                generator=self.generator,
-                dtype=torch.float32,
-                device=self.gen_device,
-                layout=self.layout,
+        chain_length += self.chain_offset
+        result_shape = list(shape)
+        chunk_shape = result_shape.copy()
+        result_shape[dim] = chain_length * n_chunks
+        chunk_shape[dim] = n_chunks
+        result = torch.zeros(result_shape, dtype=self.noise_dtype, device=device)
+        adds, muls = result.clone(), result.clone()
+        if self.seed_noise_sampler is not None:
+            orig_noise = self.seed_noise_sampler(*args)[
+                tuple(slice(None, sz) for sz in chunk_shape)
+            ].to(result)
+            if flatten:
+                orig_noise = orig_noise.flatten(start_dim=dim)
+            orig_noise = normalize_to_scale(
+                orig_noise[tuple(slice(None, sz) for sz in chunk_shape)],
+                1e-06,
+                1.0,
+                dim=tuple(range(1, len(chunk_shape))),
             )
-            .mul_(rmaxsubmin + 1)
-            .add_(rmin)
-        )
-        # noise = torch.where((noise % 2.0) < 1, noise + 1, noise)
+        else:
+            orig_noise = self.rand_like(
+                fun=torch.rand,
+                shape=chunk_shape,
+                dtype=result.dtype,
+            )
+        noise = orig_noise * (rmaxsubmin + 1) + rmin
+        # Derp.
+        noise = torch.where(noise == 0, noise.max() / noise.numel(), noise)
+        if self.seed_mode != "default":
+            noise = torch.where(
+                (noise % 2.0) < 1
+                if self.seed_mode == "force_odd"
+                else (noise % 2.0) >= 1,
+                noise + 1,
+                noise,
+            )
         if noise.device != self.device:
             noise = tensor_to(noise, self.device)
+        slice_0 = self._get_iter_slices(result.ndim, dim, 0, chain_length)
         for chainidx in range(chain_length):
-            if chainidx == 0 and self.use_initial:
-                result[self._get_iter_slices(result.ndim, dim, 0, chain_length)] = noise
+            if chainidx == 0:
+                muls[slice_0] = 1.0
+                result[slice_0] = noise
                 continue
-            chunk = (
-                noise
-                if chainidx == 0
-                else result[
-                    self._get_iter_slices(result.ndim, dim, chainidx - 1, chain_length)
-                ]
+            slice_curr = self._get_iter_slices(result.ndim, dim, chainidx, chain_length)
+            slice_prev = self._get_iter_slices(
+                result.ndim,
+                dim,
+                chainidx - 1,
+                chain_length,
             )
-            result[self._get_iter_slices(result.ndim, dim, chainidx, chain_length)] = (
+            prev = result[slice_prev]
+            prev_trunc = utils.trunc_decimals(prev, 2)
+            need_reset = (
+                ((prev_trunc >= 1.0) & (prev_trunc < 1.001))
+                | (prev_trunc.abs() < 0.001)
+                if self.break_loops
+                else False
+            )
+            prev_evens = prev % 2 < 1.0
+            prev_adds, prev_muls = adds[slice_prev], muls[slice_prev]
+            muls_next = (
                 torch.where(
-                    chunk == 1,
-                    noise,
-                    torch.where(
-                        chunk % 2 < 1,
-                        chunk // 2 if integer_division else chunk / 2,
-                        chunk * 3 + chunk.sign(),
-                    ),
+                    prev_evens,
+                    prev_muls if emul == 1 else prev_muls * emul,
+                    prev_muls if omul == 1 else prev_muls * omul,
                 )
+                if emul != 1 or omul != 1
+                else prev_muls
             )
-        result = result.sub_(rmin).div_(rmaxsubmin).to(dtype=dtype)
-        return result[
-            tuple(slice(None, sz) for sz in (shape if flatten else out_shape))
-        ].reshape(out_shape)
+            muls[slice_curr] = (
+                torch.where(need_reset, 1.0, muls_next)
+                if need_reset is not False
+                else muls_next
+            )
+            curr_muls = muls[slice_curr]
+            prev_adds_scaled = prev_adds * curr_muls
+            prev_sign = prev.sign() if keepsign else 1.0
+            adds_next = (
+                torch.where(
+                    prev_evens,
+                    prev_adds_scaled
+                    if eadd == 0
+                    else prev_adds_scaled + eadd * prev_sign,
+                    prev_adds_scaled
+                    if oadd == 0
+                    else prev_adds_scaled + oadd * prev_sign,
+                )
+                if eadd != 0 or oadd != 0
+                else prev_adds_scaled
+            )
+            adds[slice_curr] = (
+                torch.where(need_reset, 0.0, adds_next)
+                if need_reset is not False
+                else adds_next
+            )
+            curr_adds = adds[slice_curr]
+            result_next = utils.maybe_apply(
+                (noise * curr_muls).add_(curr_adds),
+                intmode,
+                torch.trunc,
+            )
+            result[slice_curr] = (
+                torch.where(need_reset, noise, result_next)
+                if need_reset is not False
+                else result_next
+            )
+        output_slice = tuple(
+            slice(None, sz) for sz in (shape if flatten else out_shape)
+        )
+        return self._iteration_output(
+            *args,
+            result_chains=result,
+            orig_noise=orig_noise,
+            noise=noise,
+            raw_adds=adds,
+            muls=muls,
+            chain_length=chain_length,
+            dim=dim,
+            output_shape=out_shape,
+            output_slice=output_slice,
+            dtype=dtype,
+        )
 
-    def generate(self, *_args):
+    def _trim_chain_offset(
+        self,
+        t: torch.Tensor,
+        dim: int,
+        chain_length: int,
+    ) -> torch.Tensor:
+        co = self.chain_offset
+        if co < 1:
+            return t
+        chunks = t.split(chain_length, dim)
+        slices = [slice(None)] * t.ndim
+        slices[dim] = slice(co, None)
+        return torch.cat(
+            tuple(chunk[slices] for chunk in chunks),
+            dim=dim,
+        )
+
+    def _iteration_output(
+        self,
+        *args,
+        result_chains: torch.Tensor,
+        orig_noise: torch.Tensor,
+        noise: torch.Tensor,
+        raw_adds: torch.Tensor,
+        muls: torch.Tensor,
+        chain_length: int,
+        dim: int,
+        output_shape: Sequence,
+        output_slice: Sequence,
+        dtype: str | torch.dtype,
+    ) -> torch.Tensor:
+        omode = self.output_mode
+        quantile = self.quantile
+        noise_exp = noise.repeat_interleave(chain_length, dim)
+        nadds = raw_adds.div_(noise_exp)
+        ratios = result_chains / noise_exp
+        if omode in {"values", "ratios", "seed_x_ratios", "noise_x_ratios"}:
+            out1 = ratios
+        elif omode in {"mults", "seed_x_mults", "noise_x_mults"}:
+            out1 = muls
+        elif omode in {"adds", "seed_x_adds", "noise_x_adds"}:
+            out1 = nadds
+        else:
+            raise ValueError("Bad output mode")
+        out1 = self._trim_chain_offset(out1, dim=dim, chain_length=chain_length)
+        if quantile not in {0, 1}:
+            out1 = utils.quantile_normalize(
+                out1,
+                quantile=quantile,
+                dim=0,
+                strategy=self.quantile_strategy,
+            )
+        out1 = out1[output_slice].reshape(output_shape).to(dtype=dtype)
+        if omode in {"ratios", "mults", "adds"}:
+            return out1
+        if omode in {"values", "seed_x_ratios", "seed_x_mults", "seed_x_adds"}:
+            out2 = orig_noise.repeat_interleave(chain_length - self.chain_offset, dim)
+        elif omode in {"noise_x_ratios", "noise_x_mults", "noise_x_adds"}:
+            out2 = (
+                self.rand_like(dtype=out1.dtype)
+                if self.mix_noise_sampler is None
+                else self.mix_noise_sampler(*args)
+            )
+        out2 = out2[output_slice].reshape(output_shape).to(dtype=dtype)
+        return out2 * out1
+
+    def generate(self, *args):
         out_dims = len(self.shape)
         dims = tuple(dim if dim >= 0 else out_dims + dim for dim in self.dims)
         n_dims, n_chainlens = len(dims), len(self.chain_length)
@@ -1472,13 +1783,13 @@ class CollatzNoiseGenerator(NoiseGenerator):
             raise ValueError("Dimension out of range")
         dtype, device = self.dtype, self.device
         result = torch.zeros(self.shape, dtype=dtype, device=device)
-        gen_function = partial(
-            self._generate_iteration,
-            integer_division=self.variant == 2,
-        )
         it_scale = 1.0 / self.iterations
         for iteration in range(self.iterations):
-            temp = gen_function(
+            if iteration > 0 and (iteration % 25) == 0:
+                # It's soooo slow!
+                throw_exception_if_processing_interrupted()
+            temp = self._generate_iteration(
+                *args,
                 dim=dims[iteration % n_dims],
                 chain_length=self.chain_length[iteration % n_chainlens],
                 flatten=self.flatten,
@@ -1488,7 +1799,12 @@ class CollatzNoiseGenerator(NoiseGenerator):
             )
             result += temp
         if self.adjust_scale:
-            result = normalize_to_scale(result, -1.0, 1.0, dim=1)
+            result = normalize_to_scale(
+                result,
+                -1.0,
+                1.0,
+                dim=tuple(range(1 if result.ndim < 4 else 2, result.ndim)),
+            )
         return result
 
 
@@ -1512,5 +1828,6 @@ __all__ = (
     "PyramidOldNoiseGenerator",
     "StudentTNoiseGenerator",
     "UniformNoiseGenerator",
+    "WaveletFilterNoiseGenerator",
     "WaveletNoiseGenerator",
 )

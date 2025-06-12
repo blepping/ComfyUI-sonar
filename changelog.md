@@ -2,6 +2,12 @@
 
 Note, only relatively significant changes to user-visible functionality will be included here. Most recent changes at the top.
 
+## 20250612
+
+* Reimplemented Collatz noise with many new features. Unfortunately this breaks existing workflows. If anyone misses the old version, let me know and I can add it back in (might do that anyway).
+* Added actual wavelet noise based on https://en.wikipedia.org/wiki/Wavelet_noise .
+* Added `reverse_zero`, `scale_down`, `tanh`, `tanh_outliers`, `sigmoid` and `sigmoid_outliers` quantile normalization limit modes.
+
 ## 20250602
 
 * Fixed broken calculation for Collatz noise.
