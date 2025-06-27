@@ -32,8 +32,11 @@ class Integrations:
         return self.modules.get(key)
 
     @staticmethod
-    def get_custom_node(name: str) -> ModuleType | None:
-        module_key = f"custom_nodes.{name}"
+    def get_custom_node(module_name: str, key: str) -> ModuleType | None:
+        bi_module = sys.modules.get("_blepping_integrations", {}).get(key)
+        if bi_module is not None:
+            return bi_module
+        module_key = f"custom_nodes.{module_name}"
         with contextlib.suppress(StopIteration):
             spec = importlib.util.find_spec(module_key)
             if spec is None:
@@ -67,7 +70,7 @@ class Integrations:
             return
         self.initialized = True
         for ih in self.handlers:
-            module = self.get_custom_node(ih.module_name)
+            module = self.get_custom_node(ih.module_name, ih.key)
             if module is None:
                 continue
             if ih.handler is not None:

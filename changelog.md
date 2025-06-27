@@ -2,6 +2,15 @@
 
 Note, only relatively significant changes to user-visible functionality will be included here. Most recent changes at the top.
 
+## 20250627
+
+* Added `SonarRippleFilteredNoise` node.
+* Added `SonarApplyLatentOperationCFG` node, similar to the built-in `ApplyLatentOperationCFG` node with scheduling and a lot of different application modes.
+* Added a `SonarLatentOperationQuantileFilter` node that can be used to apply the quantile normalization functioen to the latent during sampling.
+* A bunch more quantile normalization modes.
+* Fixed broken quantile normalization dimension handling. Unfortunately this will likely change seeds.
+
+
 ## 20250612
 
 * Reimplemented Collatz noise with many new features. Unfortunately this breaks existing workflows. If anyone misses the old version, let me know and I can add it back in (might do that anyway).

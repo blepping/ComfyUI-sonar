@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import abc
+import math
 from functools import partial
 from typing import Callable
 
@@ -1102,6 +1103,99 @@ class ChannelNoise(CustomNoiseItemBase):
         def noise_sampler(s, sn):
             noise = torch.cat(tuple(ns(s, sn) for ns in noise_samplers), dim=1)
             return scale_noise(noise, factor, normalized=normalize)
+
+        return noise_sampler
+
+
+class RippleFilteredNoise(CustomNoiseItemBase):
+    def __init__(
+        self,
+        factor,
+        *,
+        noise,
+        mode: str,
+        dim: int,
+        flatten: bool,
+        offset: float,
+        amplitude_high: float,
+        amplitude_low: float,
+        period: float,
+        roll: float,
+        normalize_noise: float,
+        normalize,
+    ):
+        super().__init__(
+            factor,
+            noise=noise.clone(),
+            mode=mode,
+            dim=dim,
+            flatten=flatten,
+            offset=offset,
+            amplitude_high=amplitude_high,
+            amplitude_low=amplitude_low,
+            period=period,
+            roll=roll,
+            normalize_noise=normalize_noise,
+            normalize=normalize,
+        )
+
+    def clone_key(self, k):
+        if k == "noise":
+            return self.noise.clone()
+        return super().clone_key(k)
+
+    def make_noise_sampler(self, x, *args, normalized=True, **kwargs):
+        factor = self.factor
+        dim = self.dim
+        if dim < 0:
+            dim = x.ndim + dim
+        if dim < 0 or dim >= x.ndim:
+            raise ValueError("Dimension out of range")
+        dim_els = math.prod(x.shape[dim:]) if self.flatten else x.shape[dim]
+        mode_fun = torch.sin if self.mode.startswith("sin") else torch.cos
+        follow_sign = self.mode.endswith("_copysign")
+        scaler_shape = [1] * x.ndim
+        if self.flatten:
+            scaler_shape[dim:] = x.shape[dim:]
+        else:
+            scaler_shape[dim] = x.shape[dim]
+        scaler = mode_fun(
+            torch.linspace(
+                self.offset,
+                self.offset + math.pi * self.period,
+                steps=dim_els,
+                dtype=x.dtype,
+                device=x.device,
+            ),
+        )
+        scaler = (
+            1.0
+            + torch.where(
+                scaler < 0,
+                scaler * self.amplitude_low,
+                scaler * self.amplitude_high,
+            )
+        ).reshape(scaler_shape)
+        ns = self.noise.make_noise_sampler(
+            x,
+            *args,
+            normalized=self.normalize_noise,
+            **kwargs,
+        )
+        roll = self.roll
+        normalize = self.get_normalize("normalize", normalized)
+        counter = 0
+
+        def noise_sampler(s, sn):
+            nonlocal counter
+            noise = ns(s, sn)
+            to_roll = int(roll * counter)
+            counter += 1
+            scaler_curr = scaler.roll(to_roll, dims=dim)
+            result = scale_noise(noise, factor, normalized=normalize).mul_(
+                scaler_curr,
+            )
+            return result.copysign(1.0 - scaler_curr) if follow_sign else result
 
         return noise_sampler
 
