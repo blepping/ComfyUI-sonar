@@ -427,3 +427,9 @@ class FreeUExtremeNode(metaclass=IntegratedNode):
         if ocfg:
             m.set_model_output_block_patch(out_patch)
         return (m,)
+
+
+NODE_CLASS_MAPPINGS = {
+    "FreeUExtremeConfig": FreeUExtremeConfigNode,
+    "FreeUExtreme": FreeUExtremeNode,
+}

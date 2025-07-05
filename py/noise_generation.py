@@ -7,17 +7,9 @@ from typing import TYPE_CHECKING, Callable, ClassVar, NamedTuple
 
 import torch
 from comfy.k_diffusion import sampling
+from comfy.model_management import throw_exception_if_processing_interrupted
 from torch import FloatTensor, Generator, Tensor
 from torch.distributions import Laplace, StudentT
-
-try:
-    import pytorch_wavelets as ptwav
-
-    HAVE_WAVELETS = True
-except ImportError:
-    HAVE_WAVELETS = False
-
-from comfy.model_management import throw_exception_if_processing_interrupted
 
 from . import utils
 from .utils import (
@@ -27,6 +19,7 @@ from .utils import (
     scale_noise,
     tensor_to,
 )
+from .wavelet_functions import Wavelet, ptwav, wavelet_blend, wavelet_scaling
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -523,32 +516,28 @@ class HighresPyramidNoiseGenerator(FramesToChannelsNoiseGenerator):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.uniform_ng = UniformNoiseGenerator(
-            *args,
-            **(
-                kwargs
-                | {
-                    "normalized": self.uniform_normalized,
-                    "normalize_dims": self.options.get("uniform_normalize_dims"),
-                }
-            ),
-        )
+        if self.noise_generator is None:
+            self.noise_generator = UniformNoiseGenerator(
+                *args,
+                **(kwargs | {"normalized": self.normalize_noise}),
+            )
 
     @classmethod
     def ng_params(cls):
         return super().ng_params() | {
             "normalized": True,
-            "uniform_normalized": False,
             "discount": 0.7,
             "upscale_mode": "bilinear",
             "iterations": 4,
+            "noise_generator": None,
+            "normalize_noise": False,
         }
 
     def generate(self, s, sn):
         adjusted_shape = self.get_adjusted_shape()
         b, c, h, w = adjusted_shape
         orig_w, orig_h = w, h
-        noise = self.uniform_ng(s, sn).reshape(*adjusted_shape)
+        noise = self.noise_generator(s, sn).reshape(*adjusted_shape)
         rs = (
             torch.rand(
                 self.iterations,
@@ -1296,43 +1285,29 @@ class PowerOldNoiseGenerator(NoiseGenerator):
 
 
 # Idea from https://github.com/ClownsharkBatwing/RES4LYF/ (wave and mode defaults also from that source)
-class WaveletFilterNoiseGenerator(FramesToChannelsNoiseGenerator):
+class WaveletFilteredNoiseGenerator(FramesToChannelsNoiseGenerator):
     name = "waveletfilter"
     MIN_DIMS = 4
     MAX_DIMS = 5
 
     def __init__(self, *args, **kwargs):
-        if not HAVE_WAVELETS:
-            raise RuntimeError(
-                "Wavelet noise requires the pytorch_wavelets package installed in your environment",
-            )
         super().__init__(*args, **kwargs)
-        if self.use_dtcwt:
-            self.wavelet_forward = ptwav.DTCWTForward(
-                J=self.level,
-                mode=self.mode,
-                biort=self.biort,
-                qshift=self.qshift,
-            ).to(self.gen_device)
-            self.wavelet_inverse = ptwav.DTCWTInverse(
-                mode=self.options.get("inv_mode", self.mode),
-                biort=self.options.get("inv_biort", self.biort),
-                qshift=self.options.get("inv_qshift", self.qshift),
-            ).to(
-                self.gen_device,
-            )
-        else:
-            self.wavelet_forward = ptwav.DWTForward(
-                J=self.level,
-                wave=self.wave,
-                mode=self.mode,
-            ).to(self.gen_device)
-            self.wavelet_inverse = ptwav.DWTInverse(
-                wave=self.options.get("inv_wave", self.wave),
-                mode=self.options.get("inv_mode", self.mode),
-            ).to(
-                self.gen_device,
-            )
+        inv_kwargs = {
+            k: self.options[k]
+            for k in ("inv_mode", "inv_biort", "inv_qshift", "inv_wave")
+            if k in self.options
+        }
+        self.wavelet = Wavelet(
+            wave=self.wave,
+            level=self.level,
+            mode=self.mode,
+            use_1d_dwt=self.use_1d_dwt,
+            use_dtcwt=self.use_dtcwt,
+            biort=self.biort,
+            qshift=self.qshift,
+            device=self.gen_device,
+            **inv_kwargs,
+        )
 
     @classmethod
     def ng_params(cls):
@@ -1340,21 +1315,26 @@ class WaveletFilterNoiseGenerator(FramesToChannelsNoiseGenerator):
             "mode": "periodization",
             "level": 3,
             "wave": "haar",
+            "use_1d_dwt": False,
             "use_dtcwt": False,
             "qshift": "qshift_a",
             "biort": "near_sym_a",
             "yl_scale": 1.0,
-            "yh_scales": None,
+            "yh_scales": 1.0,
+            "two_step_inverse": False,
+            "preblend_yl_scale_low": None,
+            "preblend_yh_scales_low": None,
+            "preblend_yl_scale_high": None,
+            "preblend_yh_scales_high": None,
+            "yl_blend_function": torch.lerp,
+            "yh_blend_function": torch.lerp,
+            "yl_blend_high": 0.0,
+            "yh_blend_high": 1.0,
             "noise_sampler": None,
+            "noise_sampler_high": None,
         }
 
-    def generate(self, *args):
-        adjusted_shape = self.get_adjusted_shape()
-        noise = (
-            self.rand_like()
-            if self.noise_sampler is None
-            else self.noise_sampler(*args)
-        )
+    def _fix_shape(self, noise, adjusted_shape):
         if noise.shape != adjusted_shape:
             noise = noise.reshape(*adjusted_shape)
         if self.frames:
@@ -1364,26 +1344,213 @@ class WaveletFilterNoiseGenerator(FramesToChannelsNoiseGenerator):
                 self.height,
                 self.width,
             )
-        yl, yh = self.wavelet_forward(noise)
-        if self.yl_scale != 1:
-            yl *= self.yl_scale
-        if self.yh_scales is not None:
-            yh_scales = self.yh_scales
-            if isinstance(yh_scales, (int, float)):
-                yh_scales = (yh_scales,) * len(yh)
-            # print("SCALES", self.yl_scale, yh_scales)
-            for hscale, ht in zip(yh_scales, yh):
-                # print(">> SCALING", hscale)
-                if isinstance(hscale, (int, float)):
-                    ht *= hscale  # noqa: PLW2901
-                    continue
-                for lidx in range(min(ht.shape[2], len(hscale))):
-                    # print(">>    SCALE IDX", lidx)
-                    ht[:, :, lidx, :, :] *= hscale[lidx]
-        result = self.fix_output_frames(self.wavelet_inverse((yl, yh)))
+        return noise
+
+    def generate(self, *args):
+        adjusted_shape = self.get_adjusted_shape()
+        noise = (
+            self.rand_like()
+            if self.noise_sampler is None
+            else self.noise_sampler(*args)
+        )
+        if self.noise_sampler_high is not None:
+            noise_high = self._fix_shape(self.noise_sampler_high(*args), adjusted_shape)
+        else:
+            noise_high = None
+        noise = self._fix_shape(noise, adjusted_shape)
+        orig_noise_shape = noise.shape
+        need_flat = not self.use_dtcwt and self.use_1d_dwt and noise.ndim > 3
+        if need_flat:
+            noise = noise.flatten(start_dim=2)
+            if noise_high is not None:
+                noise_high = noise_high.flatten(start_dim=2)
+        yl, yh = self.wavelet.forward(noise)
+        if noise_high is not None:
+            yl_high, yh_high = self.wavelet.forward(noise_high)
+            if (
+                self.preblend_yl_scale_high is not None
+                or self.preblend_yh_scales_high is not None
+            ):
+                yl_high, yh_high = wavelet_scaling(
+                    yl_high,
+                    yh_high,
+                    fallback(self.preblend_yl_scale_high, 1.0),
+                    fallback(self.preblend_yh_scales_high, 1.0),
+                )
+            if (
+                self.preblend_yl_scale_low is not None
+                or self.preblend_yh_scales_low is not None
+            ):
+                yl, yh = wavelet_scaling(
+                    yl,
+                    yh,
+                    fallback(self.preblend_yl_scale_low, 1.0),
+                    fallback(self.preblend_yh_scales_low, 1.0),
+                )
+            yl, yh = wavelet_blend(
+                (yl, yh),
+                (yl_high, yh_high),
+                yl_factor=self.yl_blend_high,
+                yh_factor=self.yh_blend_high,
+                blend_function=self.yl_blend_function,
+                yh_blend_function=self.yh_blend_function,
+            )
+            del noise_high, yl_high, yh_high
+        yl, yh = wavelet_scaling(
+            yl,
+            yh,
+            self.yl_scale,
+            self.yh_scales,
+            in_place=True,
+        )
+        result = self.wavelet.inverse(yl, yh, two_step_inverse=self.two_step_inverse)
+        if need_flat:
+            result = result.reshape(orig_noise_shape)
+        result = self.fix_output_frames(result)
         if result.shape == noise.shape:
             return result
         return result[tuple(slice(0, dl) for dl in noise.shape)]
+
+
+class ScatternetFilteredNoiseGenerator(FramesToChannelsNoiseGenerator):
+    name = "scatternetfilter"
+    MIN_DIMS = 4
+    MAX_DIMS = 4
+
+    def __init__(self, *args, **kwargs):
+        if ptwav is None:
+            raise RuntimeError(
+                "Scatternet noise requires the pytorch_wavelets package to be installed in your Python environment",
+            )
+        super().__init__(*args, **kwargs)
+        if self.output_mode not in {
+            "channels_adjusted",
+            "channels",
+            "flat",
+            "flat_adjusted",
+        }:
+            raise ValueError("Bad output mode")
+
+        scatkwargs = {
+            "mode": self.mode,
+            "biort": "near_sym_b_bp" if self.use_symmetric_filter else self.biort,
+        }
+        if self.scatternet_order == 2:
+            scatkwargs["qshift"] = (
+                "qshift_b_bp" if self.use_symmetric_filter else self.qshift
+            )
+            self.scatternet = ptwav.ScatLayerj2(**scatkwargs)
+        elif self.scatternet_order == 1:
+            self.scatternet = ptwav.ScatLayer(**scatkwargs)
+        else:
+            self.scatternet = torch.nn.Sequential(
+                *(
+                    ptwav.ScatLayer(**scatkwargs)
+                    for _ in range(abs(self.scatternet_order))
+                ),
+            )
+
+    @classmethod
+    def ng_params(cls):
+        return super().ng_params() | {
+            "mode": "symmetric",
+            "magbias": 1e-02,
+            "use_symmetric_filter": False,
+            "biort": "near_sym_a",
+            "qshift": "qshift_a",
+            "output_offset": 0.0,
+            "scatternet_order": 1,
+            "per_channel_scatternet": False,
+            "output_mode": "channels_adjusted",
+            "noise_sampler": None,
+        }
+
+    def _fix_shape(self, noise, adjusted_shape):
+        if self.frames:
+            noise = noise.reshape(
+                self.batch,
+                self.channels * self.frames,
+                self.height,
+                self.width,
+            )
+        elif noise.shape != adjusted_shape:
+            noise = noise.reshape(*adjusted_shape)
+        return noise
+
+    def generate(self, *args):
+        adjusted_shape = self.get_adjusted_shape()
+        adjusted = self.output_mode.endswith("_adjusted")
+        order = abs(self.scatternet_order)
+        output_mode = (
+            self.output_mode.split("_", 1)[0] if adjusted else self.output_mode
+        )
+        spatial_compensation = 1 if adjusted else 2 ** abs(self.scatternet_order)
+        if self.noise_sampler is None:
+            temp_shape = (
+                (
+                    *adjusted_shape[:2],
+                    adjusted_shape[-2] * spatial_compensation,
+                    adjusted_shape[-1] * spatial_compensation,
+                )
+                if spatial_compensation != 1
+                else adjusted_shape
+            )
+            noise = self.rand_like(shape=temp_shape)
+        else:
+            noise = self.noise_sampler(*args)
+        if self.scatternet_order == 0:
+            return self.fix_output_frames(noise)
+        self.scatternet = self.scatternet.to(device=self.device, dtype=self.dtype)
+        if self.per_channel_scatternet:
+            # To C, B, 1, H, W
+            noise = torch.stack(
+                tuple(
+                    self.scatternet(noise[:, chan : chan + 1])
+                    for chan in range(self.channels)
+                ),
+                dim=0,
+            )
+        else:
+            # To 1, B, C, H, W
+            noise = self.scatternet(noise)[None]
+        base_channels = 1 if self.per_channel_scatternet else self.channels
+        if output_mode == "flat":
+            noise = noise.reshape(noise.shape[0], self.batch, -1)
+            initial_size = math.prod(
+                self.shape[(2 if self.per_channel_scatternet else 1) :],
+            )
+        elif adjusted:
+            initial_size = base_channels
+        else:
+            initial_size = base_channels * ((2**order) ** 2)
+        increment = 1 if output_mode == "flat" else base_channels
+        out_size = noise.shape[2]
+        offset_size = (out_size - initial_size) / increment
+        output_offset = self.output_offset
+        if output_offset == 0 or abs(output_offset) >= 1:
+            output_offset = int(output_offset)
+            if output_offset < 0:
+                output_offset = (offset_size + 1) + output_offset
+        else:
+            if output_offset < 0:
+                output_offset += 1.0
+            output_offset = round(offset_size * output_offset)
+        base_idx = int(output_offset * increment)
+        # print(
+        #     f"\nSCAT: shape={noise.shape}, adj_shape={adjusted_shape}, offset={output_offset}, initial_size={initial_size}, out_size={out_size}, offset_size={offset_size}, incr={increment}, base_idx={base_idx}",
+        # )
+        noise = noise[:, :, base_idx : base_idx + initial_size]
+        # print(f"\nSCAT2: {noise.shape}")
+        noise = (
+            noise.squeeze(2).movedim(0, 1) if self.per_channel_scatternet else noise[0]
+        )
+        # print(f"\nSCAT3: {noise.shape}")
+        if output_mode == "channels":
+            noise = noise[..., : self.height, : self.width]
+        # print(
+        #     f"\nSCAT4: {noise.shape} -> {adjusted_shape} -- numel: {noise.numel()}, adjnumel={math.prod(adjusted_shape)}",
+        # )
+        return noise.reshape(adjusted_shape).contiguous()
 
 
 class WaveletNoiseOctave(NamedTuple):
@@ -1826,8 +1993,9 @@ __all__ = (
     "PowerOldNoiseGenerator",
     "PyramidNoiseGenerator",
     "PyramidOldNoiseGenerator",
+    "ScatternetFilteredNoiseGenerator",
     "StudentTNoiseGenerator",
     "UniformNoiseGenerator",
-    "WaveletFilterNoiseGenerator",
+    "WaveletFilteredNoiseGenerator",
     "WaveletNoiseGenerator",
 )

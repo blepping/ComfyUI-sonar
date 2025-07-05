@@ -368,34 +368,46 @@ class SonarGuidanceMixin:
             )
         raise ValueError("Sonar: Guidance: Unknown guidance type")
 
-    @staticmethod
+    @classmethod
+    def guidance_shift(cls, t: Tensor, ref_latent: Tensor, *, dim=None):
+        if dim is None:
+            dim = tuple(range(-(t.ndim - 1), 0))
+        avg_t = t.mean(dim=dim, keepdim=True)
+        std_t = t.std(dim=dim, keepdim=True)
+        return (ref_latent * std_t).add_(avg_t)
+
+    @classmethod
     def guidance_euler(
+        cls,
         sigma: Tensor,
         sigma_next: Tensor,
         x: Tensor,
         denoised: Tensor,
         ref_latent: Tensor,
         factor: float = 0.2,
+        *,
+        do_shift: bool = True,
     ) -> Tensor:
-        avg_t = denoised.mean(dim=(-3, -2, -1), keepdim=True)
-        std_t = denoised.std(dim=(-3, -2, -1), keepdim=True)
-        ref_img_shift = ref_latent * std_t + avg_t
-
+        if torch.equal(sigma, sigma_next):
+            return cls.guidance_linear(x, ref_latent, factor=factor, do_shift=do_shift)
+        ref_img_shift = (
+            cls.guidance_shift(denoised, ref_latent) if do_shift else ref_latent
+        )
         d = to_d(x, sigma, ref_img_shift)
         dt = (sigma_next - sigma) * factor
         return (d * dt).add_(x)
 
-    @staticmethod
+    @classmethod
     def guidance_linear(
+        cls,
         x: Tensor,
         ref_latent: Tensor,
         factor: float = 0.2,
         *,
         blend=torch.lerp,
+        do_shift: bool = True,
     ) -> Tensor:
-        avg_t = x.mean(dim=(-3, -2, -1), keepdim=True)
-        std_t = x.std(dim=(-3, -2, -1), keepdim=True)
-        ref_img_shift = (ref_latent * std_t).add_(avg_t)
+        ref_img_shift = cls.guidance_shift(x, ref_latent) if do_shift else ref_latent
         return blend(x, ref_img_shift, factor)
 
 

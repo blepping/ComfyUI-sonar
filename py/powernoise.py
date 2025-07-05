@@ -16,7 +16,7 @@ from comfy.k_diffusion.sampling import BrownianTreeNoiseSampler
 from PIL import Image
 from torch import Tensor
 
-from .nodes import (
+from .nodes.base import (
     NOISE_INPUT_TYPES_HINT,
     WILDCARD_NOISE,
     SonarCustomNoiseNodeBase,
@@ -959,3 +959,11 @@ class SonarPreviewFilterNode:
             ),
             (filt,),
         )
+
+
+NODE_CLASS_MAPPINGS = {
+    "SonarPowerNoise": SonarPowerNoiseNode,
+    "SonarPowerFilterNoise": SonarPowerFilterNoiseNode,
+    "SonarPowerFilter": SonarPowerFilterNode,
+    "SonarPreviewFilter": SonarPreviewFilterNode,
+}

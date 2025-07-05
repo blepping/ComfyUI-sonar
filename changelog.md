@@ -2,6 +2,23 @@
 
 Note, only relatively significant changes to user-visible functionality will be included here. Most recent changes at the top.
 
+## 20250705
+
+This is a large set of changes. Please let me know anything doesn't seem to be working properly.
+
+* Reorganized the node structure. This is an internal change and shouldn't affect users but please let me know if you notice anything weird.
+* Added a `SonarLatentOperationAdvanced` node which allows more control over when individual latent operations are active and their effects get blended.
+* Added a `SonarSplitNoiseChain` node. Can be useful if you want to have an item in the chain be a blended.
+* Added a `SonarLatentOperationNoise` node that can be used to inject noise. You can also use the guided noise node to turn a reference into "noise".
+* Expanded the functionality of the `SonarWaveletFilteredNoise` node. You can now attach two custom noise inputs to use for the high/low frequency parts of the wavelet as well as blend the wavelets.
+* Added a `SonarNormalizeNoiseToScale` node that lets you normalize noise to specific value ranges.
+* Added a `SonarPerDimNoise` node that lets you do stuff like call a noise sampler once per batch item (can be useful for 3D Perlin noise).
+* Fixed an issue where the normalization parameter wasn't respected. This may change seeds.
+* Added a `SonarLatentOperationFilteredNoise` node that allows you to run noise through a `LATENT_OPERATION`.
+* Added a `SonarLatentOperationSetSeed` node that can be used to set the seed (mainly useful for running latent operations that add noise outside of sampling).
+* Added a `SonarScatternetFilteredNoise` node that uses a scatternet to filter noise. Similar to wavelet filtering. Note: Very experimental, way not work properly.
+* Fixed an issue with pattern break noise, this may change seeds for workflows using that noise type.
+
 ## 20250627
 
 * Added `SonarRippleFilteredNoise` node.
@@ -9,7 +26,6 @@ Note, only relatively significant changes to user-visible functionality will be 
 * Added a `SonarLatentOperationQuantileFilter` node that can be used to apply the quantile normalization functioen to the latent during sampling.
 * A bunch more quantile normalization modes.
 * Fixed broken quantile normalization dimension handling. Unfortunately this will likely change seeds.
-
 
 ## 20250612
 

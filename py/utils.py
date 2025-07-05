@@ -9,7 +9,11 @@ from comfy.utils import common_upscale
 
 from .external import MODULES as EXT
 
-BLENDING_MODES = {"lerp": torch.lerp}
+BLENDING_MODES = {
+    "lerp": torch.lerp,
+    "inject": lambda a, b, t: (b * t).add_(a),
+    "subtract_b": lambda a, b, t: a - b * t,
+}
 UPSCALE_METHODS = (
     "bilinear",
     "nearest-exact",
@@ -324,17 +328,65 @@ def quantile_normalize(
     return noise if noise.shape == orig_shape else noise.reshape(orig_shape)
 
 
-def normalize_to_scale(latent, target_min, target_max, *, dim=(-3, -2, -1)):
+def normalize_to_scale(
+    latent: torch.Tensor,
+    target_min: float,
+    target_max: float,
+    *,
+    dim=(-3, -2, -1),
+    eps: float = 1e-07,
+) -> torch.Tensor:
     min_val, max_val = (
         latent.amin(dim=dim, keepdim=True),
         latent.amax(dim=dim, keepdim=True),
     )
-    normalized = (latent - min_val).div_(max_val - min_val)
+    normalized = latent - min_val
+    normalized /= (max_val - min_val).add_(eps)
     return (
         normalized.mul_(target_max - target_min)
         .add_(target_min)
         .clamp_(target_min, target_max)
     )
+
+
+def normalize_to_scale_adv(
+    t: torch.Tensor,
+    *,
+    min_pos: float,
+    max_pos: float,
+    min_neg: float,
+    max_neg: float,
+    dim=(-3, -2, -1),
+) -> torch.Tensor:
+    skip_pos = max_pos <= 0 or min_pos >= max_pos
+    skip_neg = min_neg >= 0 or min_neg >= max_neg
+    neg_idxs, pos_idxs = t < 0.0, t > 0.0
+    result = torch.zeros_like(t)
+    if skip_neg:
+        result[neg_idxs] = t[neg_idxs]
+    elif torch.any(neg_idxs):
+        neg_values = t[neg_idxs]
+        if max_neg >= 0:
+            max_neg = neg_values.max().detach().cpu().item()
+        result[neg_idxs] = normalize_to_scale(
+            neg_values,
+            target_min=min_neg,
+            target_max=max_neg,
+            dim=dim,
+        )
+    if skip_pos:
+        result[pos_idxs] = t[pos_idxs]
+    elif torch.any(pos_idxs):
+        pos_values = t[pos_idxs]
+        if min_pos < 0:
+            min_pos = pos_values.min().detach().cpu().item()
+        result[pos_idxs] = normalize_to_scale(
+            pos_values,
+            target_min=min_pos,
+            target_max=max_pos,
+            dim=dim,
+        )
+    return result
 
 
 def adjust_slice(s: slice, size: int, offset: int) -> slice:
@@ -411,15 +463,15 @@ def pattern_break(
     orig_dtype = noise.dtype
     if restore_scale:
         orig_min, orig_max = noise.min().item(), noise.max().item()
-    noise = normalize_to_scale(noise.to(dtype=torch.float32), -1.0, 1.0, dim=())
-    result = torch.remainder(torch.abs(noise) * 1000000, 11) / 11
+    noise_normed = normalize_to_scale(noise.to(dtype=torch.float32), -1.0, 1.0, dim=())
+    result = torch.remainder(torch.abs(noise_normed) * 1000000, 11) / 11
     result = (
         ((1 + detail_level / 10) * torch.erfinv(2 * result - 1) * (2**0.5))
         .mul_(0.2)
         .clamp_(-1, 1)
     )
     if restore_scale:
-        noise = normalize_to_scale(noise, orig_min, orig_max, dim=())
+        result = normalize_to_scale(result, orig_min, orig_max, dim=())
     return blend_function(noise, result, percentage).to(dtype=orig_dtype)
 
 
