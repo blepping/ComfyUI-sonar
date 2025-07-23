@@ -40,7 +40,15 @@ class CustomNoiseItemBase(abc.ABC):
         self.factor = factor
         self.keys = set(kwargs.keys())
         for k, v in kwargs.items():
-            setattr(self, k, v)
+            do_clone = k in {
+                "custom_noise",
+                "custom_noise_opt",
+                "noise",
+                "noise_opt",
+                "sonar_custom_noise",
+                "sonar_custom_noise_opt",
+            } and hasattr(v, "clone")
+            setattr(self, k, v.clone() if do_clone else v)
 
     def clone_key(self, k):
         return getattr(self, k)
@@ -1179,9 +1187,7 @@ class NormalizeToScaleNoise(CustomNoiseItemBase):
         min_positive_value: float,
         max_positive_value: float,
         mode: str,
-        dims: tuple,
-        normalize_noise: float,
-        normalize,
+        **kwargs,
     ):
         if mode == "simple":
             if min_negative_value >= max_positive_value:
@@ -1207,9 +1213,7 @@ class NormalizeToScaleNoise(CustomNoiseItemBase):
             min_positive_value=min_positive_value,
             max_positive_value=max_positive_value,
             mode=mode,
-            dims=dims,
-            normalize_noise=normalize_noise,
-            normalize=normalize,
+            **kwargs,
         )
 
     def clone_key(self, k):
@@ -1218,6 +1222,8 @@ class NormalizeToScaleNoise(CustomNoiseItemBase):
         return super().clone_key(k)
 
     def make_noise_sampler(self, x, *args, normalized=True, **kwargs):
+        std_dims, std_multiplier = self.std_dims, self.std_multiplier
+        mean_dims, mean_multiplier = self.mean_dims, self.mean_multiplier
         factor = self.factor
         mode = self.mode
         if mode == "simple":
@@ -1252,6 +1258,16 @@ class NormalizeToScaleNoise(CustomNoiseItemBase):
             else:
                 for bidx in range(noise.shape[0]):
                     noise[bidx] = noise_filter(noise[bidx])
+            if mean_multiplier != 0:
+                noise -= noise.mean(dim=mean_dims, keepdim=True).mul_(mean_multiplier)
+            if std_multiplier != 0:
+                noise_std = (
+                    noise.std(dim=std_dims, keepdim=True)
+                    .sub_(1.0)
+                    .mul_(std_multiplier)
+                    .add_(1.0)
+                )
+                noise /= torch.where(noise_std == 0, 1e-07, noise_std)
             return scale_noise(noise, factor, normalized=normalize)
 
         return noise_sampler
@@ -1353,9 +1369,23 @@ class ResizedNoise(CustomNoiseItemBase):
             raise ValueError("ResizedNoise can only handle 3+ dimensional latents")
         factor = self.factor
         normalize = self.get_normalize("normalize", normalized)
+        spatial_compression = self.spatial_compression
+        spatial_mode = self.spatial_mode
+        width, height = self.width, self.height
         xh, xw = x.shape[-2:]
-        nh, nw = self.height // 8, self.width // 8
-        offsh, offsw = self.crop_offset_vertical // 8, self.crop_offset_horizontal // 8
+        if spatial_mode != "percentage":
+            height //= spatial_compression
+            width //= spatial_compression
+        if spatial_mode == "absolute":
+            nh, nw = int(height), int(width)
+        elif spatial_mode == "relative":
+            nh, nw = int(xh + height), int(xw + width)
+        elif spatial_mode == "percentage":
+            nh, nw = max(1, int(xh * height)), max(1, int(xw * width))
+        else:
+            raise ValueError("Bad spatial_mode")
+        offsh = self.crop_offset_vertical // spatial_compression
+        offsw = self.crop_offset_horizontal // spatial_compression
         if xh == nh and xw == nw:
             ns = self.custom_noise.make_noise_sampler(
                 x,

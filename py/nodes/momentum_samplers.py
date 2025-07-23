@@ -1,5 +1,3 @@
-# ruff: noqa: TID252
-
 from __future__ import annotations
 
 from comfy import samplers
@@ -15,55 +13,37 @@ from ..sonar import (
     SonarEuler,
     SonarEulerAncestral,
 )
-from .base import NOISE_INPUT_TYPES_HINT, WILDCARD_NOISE
+from .base import SonarInputTypes, SonarLazyInputTypes
 
 
-class GuidanceConfigNode:
+class GuidanceConfigNode(metaclass=IntegratedNode):
     DESCRIPTION = "Allows specifying extended guidance parameters for Sonar samplers."
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "factor": (
-                    "FLOAT",
-                    {
-                        "default": 0.01,
-                        "min": -2.0,
-                        "max": 2.0,
-                        "step": 0.001,
-                        "round": False,
-                        "tooltip": "Controls the strength of the guidance. You'll generally want to use fairly low values here.",
-                    },
-                ),
-                "guidance_type": (
-                    tuple(t.name.lower() for t in GuidanceType),
-                    {
-                        "tooltip": "Method to use when calculating guidance. When set to linear, will simply LERP the guidance at the specified strength. When set to Euler, will do a Euler step toward the guidance instead.",
-                    },
-                ),
-                "start_step": (
-                    "INT",
-                    {
-                        "default": 0,
-                        "min": 0,
-                        "tooltip": "First zero-based step the guidance is active.",
-                    },
-                ),
-                "end_step": (
-                    "INT",
-                    {
-                        "default": 9999,
-                        "min": 0,
-                        "tooltip": "Last zero-based step the guidance is active.",
-                    },
-                ),
-                "latent": (
-                    "LATENT",
-                    {"tooltip": "Latent to use as a reference for guidance."},
-                ),
-            },
-        }
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: SonarInputTypes()
+        .req_float_factor(
+            default=0.01,
+            min=-2.0,
+            max=2.0,
+            tooltip="Controls the strength of the guidance. You'll generally want to use fairly low values here.",
+        )
+        .req_field_guidance_type(
+            tuple(t.name.lower() for t in GuidanceType),
+            default="linear",
+            tooltip="Method to use when calculating guidance. When set to linear, will simply LERP the guidance at the specified strength. When set to Euler, will do a Euler step toward the guidance instead.",
+        )
+        .req_int_start_step(
+            default=0,
+            min=0,
+            tooltip="First zero-based step the guidance is active.",
+        )
+        .req_int_end_step(
+            default=9999,
+            min=0,
+            tooltip="Last zero-based step the guidance is active.",
+        )
+        .req_latent(tooltip="Latent to use as a reference for guidance."),
+    )
 
     RETURN_TYPES = ("SONAR_GUIDANCE_CFG",)
     CATEGORY = "sampling/custom_sampling/samplers"
@@ -90,68 +70,44 @@ class GuidanceConfigNode:
         )
 
 
-class SamplerNodeSonarBase(metaclass=IntegratedNode):
+class SamplerNodeSonarBase:
     DESCRIPTION = "Sonar - momentum based sampler node."
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "momentum": (
-                    "FLOAT",
-                    {
-                        "default": 0.95,
-                        "min": -0.5,
-                        "max": 2.5,
-                        "step": 0.01,
-                        "round": False,
-                        "tooltip": "How much of the normal result to keep during sampling. 0.95 means 95% normal, 5% from history. When set to 1.0 effectively disables momentum.",
-                    },
-                ),
-                "momentum_hist": (
-                    "FLOAT",
-                    {
-                        "default": 0.75,
-                        "min": -1.5,
-                        "max": 1.5,
-                        "step": 0.01,
-                        "round": False,
-                        "tooltip": "How much of the existing history to leave at each update. 0.75 means keep 75%, mix in 25% of the new result.",
-                    },
-                ),
-                "momentum_init": (
-                    tuple(t.name for t in HistoryType),
-                    {
-                        "tooltip": "Initial value used for momentum history. ZERO - history starts zeroed out. RAND - History is initialized with a random value. SAMPLE - History is initialized from the latent at the start of sampling.",
-                    },
-                ),
-                "direction": (
-                    "FLOAT",
-                    {
-                        "default": 1.0,
-                        "min": -30.0,
-                        "max": 15.0,
-                        "step": 0.01,
-                        "round": False,
-                        "tooltip": "Multiplier applied to the result of normal sampling.",
-                    },
-                ),
-                "rand_init_noise_type": (
-                    tuple(NoiseType.get_names(skip=(NoiseType.BROWNIAN,))),
-                    {
-                        "tooltip": "Noise type to use when momentum_init is set to RANDOM.",
-                    },
-                ),
-            },
-            "optional": {
-                "guidance_cfg_opt": (
-                    "SONAR_GUIDANCE_CFG",
-                    {
-                        "tooltip": "Optional input for extended guidance parameters.",
-                    },
-                ),
-            },
-        }
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: SonarInputTypes()
+        .req_float_momentum(
+            default=0.95,
+            min=-0.5,
+            max=2.5,
+            tooltip="How much of the normal result to keep during sampling. 0.95 means 95% normal, 5% from history. When set to 1.0 effectively disables momentum.",
+        )
+        .req_float_momentum_hist(
+            default=0.75,
+            min=-1.5,
+            max=1.5,
+            tooltip="How much of the existing history to leave at each update. 0.75 means keep 75%, mix in 25% of the new result.",
+        )
+        .req_field_momentum_init(
+            tuple(t.name for t in HistoryType),
+            default="ZERO",
+            tooltip="Initial value used for momentum history. ZERO - history starts zeroed out. RAND - History is initialized with a random value. SAMPLE - History is initialized from the latent at the start of sampling.",
+        )
+        .req_float_direction(
+            default=1.0,
+            min=-30.0,
+            max=15.0,
+            tooltip="Multiplier applied to the result of normal sampling.",
+        )
+        .req_field_init_noise_type(
+            tuple(NoiseType.get_names(skip=(NoiseType.BROWNIAN,))),
+            default="gaussian",
+            tooltip="Noise type to use when momentum_init is set to RANDOM.",
+        )
+        .opt_field_guidance_cfg_opt(
+            "SONAR_GUIDANCE_CFG",
+            tooltip="Optional input for extended guidance parameters.",
+        ),
+    )
 
     RETURN_TYPES = ("SAMPLER",)
     CATEGORY = "sampling/custom_sampling/samplers"
@@ -186,52 +142,23 @@ class SamplerNodeSonarEuler(SamplerNodeSonarBase):
 
 
 class SamplerNodeSonarEulerAncestral(SamplerNodeSonarEuler):
-    @classmethod
-    def INPUT_TYPES(cls):
-        result = super().INPUT_TYPES()
-        result["required"].update(
-            {
-                "s_noise": (
-                    "FLOAT",
-                    {
-                        "default": 1.0,
-                        "min": -1000.0,
-                        "max": 1000.0,
-                        "step": 0.01,
-                        "round": False,
-                        "tooltip": "Multiplier for noise added during ancestral or SDE sampling.",
-                    },
-                ),
-                "eta": (
-                    "FLOAT",
-                    {
-                        "default": 1.0,
-                        "min": -1000.0,
-                        "max": 1000.0,
-                        "step": 0.01,
-                        "round": False,
-                        "tooltip": "Basically controls the ancestralness of the sampler. When set to 0, you will get a non-ancestral (or SDE) sampler.",
-                    },
-                ),
-                "noise_type": (
-                    tuple(NoiseType.get_names()),
-                    {
-                        "tooltip": "Noise type used during ancestral or SDE sampling. Only used when the custom noise input is not connected.",
-                    },
-                ),
-            },
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: SonarInputTypes(parent=SamplerNodeSonarEuler)
+        .req_float_s_noise(
+            default=1.0,
+            tooltip="Multiplier for noise added during ancestral or SDE sampling.",
         )
-        result["optional"].update(
-            {
-                "custom_noise_opt": (
-                    WILDCARD_NOISE,
-                    {
-                        "tooltip": f"Optional input for custom noise used during ancestral or SDE sampling. When connected, the built-in noise_type selector is ignored.\n{NOISE_INPUT_TYPES_HINT}",
-                    },
-                ),
-            },
+        .req_float_eta(
+            default=1.0,
+            tooltip="Basically controls the ancestralness of the sampler. When set to 0, you will get a non-ancestral (or SDE) sampler.",
         )
-        return result
+        .req_selectnoise_noise_type(
+            tooltip="Noise type used during ancestral or SDE sampling. Only used when the custom noise input is not connected.",
+        )
+        .opt_customnoise_custom_noise_opt(
+            tooltip="Optional input for custom noise used during ancestral or SDE sampling. When connected, the built-in noise_type selector is ignored.",
+        ),
+    )
 
     @classmethod
     def get_sampler(
@@ -270,53 +197,12 @@ class SamplerNodeSonarEulerAncestral(SamplerNodeSonarEuler):
         )
 
 
-class SamplerNodeSonarDPMPPSDE(SamplerNodeSonarEuler):
-    @classmethod
-    def INPUT_TYPES(cls):
-        result = super().INPUT_TYPES()
-        result["required"].update(
-            {
-                "s_noise": (
-                    "FLOAT",
-                    {
-                        "default": 1.0,
-                        "min": -1000.0,
-                        "max": 1000.0,
-                        "step": 0.01,
-                        "round": False,
-                        "tooltip": "Multiplier for noise added during ancestral or SDE sampling.",
-                    },
-                ),
-                "eta": (
-                    "FLOAT",
-                    {
-                        "default": 1.0,
-                        "min": -1000.0,
-                        "max": 1000.0,
-                        "step": 0.01,
-                        "round": False,
-                        "tooltip": "Basically controls the ancestralness of the sampler. When set to 0, you will get a non-ancestral (or SDE) sampler.",
-                    },
-                ),
-                "noise_type": (
-                    tuple(NoiseType.get_names(default=NoiseType.BROWNIAN)),
-                    {
-                        "tooltip": "Noise type used during ancestral or SDE sampling. Only used when the custom noise input is not connected.",
-                    },
-                ),
-            },
-        )
-        result["optional"].update(
-            {
-                "custom_noise_opt": (
-                    WILDCARD_NOISE,
-                    {
-                        "tooltip": f"Optional input for custom noise used during ancestral or SDE sampling. When connected, the built-in noise_type selector is ignored.\n{NOISE_INPUT_TYPES_HINT}",
-                    },
-                ),
-            },
-        )
-        return result
+class SamplerNodeSonarDPMPPSDE(SamplerNodeSonarEulerAncestral):
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: SonarInputTypes(
+            parent=SamplerNodeSonarEulerAncestral,
+        ).req_selectnoise_noise_type(default="brownian"),
+    )
 
     @classmethod
     def get_sampler(

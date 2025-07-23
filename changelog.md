@@ -2,6 +2,13 @@
 
 Note, only relatively significant changes to user-visible functionality will be included here. Most recent changes at the top.
 
+## 20250723
+
+Once again, large set of changes/internal reorganization which may break stuff. If you run into problems or experience anything weird, please create an issue.
+
+* Added a `SonarResizedNoiseAdv` node that allows more control (and is more useful for models like ACE-Steps where you might want to deal with absolute sizes).
+* Added a `SonarWaveletCFG` node which allows you use different CFG values for different frequencies.
+
 ## 20250705
 
 This is a large set of changes. Please let me know anything doesn't seem to be working properly.

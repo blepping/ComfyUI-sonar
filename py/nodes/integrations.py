@@ -1,5 +1,3 @@
-# ruff: noqa: TID252
-
 from __future__ import annotations
 
 from comfy import samplers

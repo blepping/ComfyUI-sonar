@@ -16,14 +16,14 @@ from comfy.k_diffusion.sampling import BrownianTreeNoiseSampler
 from PIL import Image
 from torch import Tensor
 
-from .nodes.base import (
+from ..noise import CustomNoiseItemBase
+from ..utils import scale_noise
+from .base import (
     NOISE_INPUT_TYPES_HINT,
     WILDCARD_NOISE,
     SonarCustomNoiseNodeBase,
     SonarNormalizeNoiseNodeMixin,
 )
-from .noise import CustomNoiseItemBase
-from .utils import scale_noise
 
 PREVIEW_FORMAT = comfy.latent_formats.SD15()
 
