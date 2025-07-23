@@ -1424,10 +1424,12 @@ class ScatternetFilteredNoiseGenerator(FramesToChannelsNoiseGenerator):
             )
         super().__init__(*args, **kwargs)
         if self.output_mode not in {
-            "channels_adjusted",
             "channels",
+            "channels_adjusted",
+            "channels_scaled",
             "flat",
             "flat_adjusted",
+            "flat_scaled",
         }:
             raise ValueError("Bad output mode")
 
@@ -1462,6 +1464,8 @@ class ScatternetFilteredNoiseGenerator(FramesToChannelsNoiseGenerator):
             "scatternet_order": 1,
             "per_channel_scatternet": False,
             "output_mode": "channels_adjusted",
+            # If None, uses probselect when available, otherwise bilinear.
+            "upscale_mode": None,
             "noise_sampler": None,
         }
 
@@ -1479,12 +1483,14 @@ class ScatternetFilteredNoiseGenerator(FramesToChannelsNoiseGenerator):
 
     def generate(self, *args):
         adjusted_shape = self.get_adjusted_shape()
-        adjusted = self.output_mode.endswith("_adjusted")
+        scaled = self.output_mode.endswith("_scaled")
+        adjusted = scaled or self.output_mode.endswith("_adjusted")
         order = abs(self.scatternet_order)
+        order_spatial_compensation = 2**order
         output_mode = (
             self.output_mode.split("_", 1)[0] if adjusted else self.output_mode
         )
-        spatial_compensation = 1 if adjusted else 2 ** abs(self.scatternet_order)
+        spatial_compensation = 1 if adjusted else order_spatial_compensation
         if self.noise_sampler is None:
             temp_shape = (
                 (
@@ -1498,6 +1504,20 @@ class ScatternetFilteredNoiseGenerator(FramesToChannelsNoiseGenerator):
             noise = self.rand_like(shape=temp_shape)
         else:
             noise = self.noise_sampler(*args)
+        if scaled:
+            upscale_mode = self.upscale_mode
+            if upscale_mode is None:
+                upscale_mode = (
+                    "probselect"
+                    if "probselect" in utils.UPSCALE_METHODS
+                    else "bilinear"
+                )
+            noise = utils.scale_samples(
+                noise,
+                adjusted_shape[-1] * order_spatial_compensation,
+                adjusted_shape[-2] * order_spatial_compensation,
+                mode=upscale_mode,
+            )
         if self.scatternet_order == 0:
             return self.fix_output_frames(noise)
         self.scatternet = self.scatternet.to(device=self.device, dtype=self.dtype)
@@ -1729,7 +1749,7 @@ class CollatzNoiseGenerator(NoiseGenerator):
         result[dim] = slice(idx, None, stride)
         return result
 
-    def _generate_iteration(  # noqa: PLR0914
+    def _generate_iteration(
         self,
         *args,
         dim: int,

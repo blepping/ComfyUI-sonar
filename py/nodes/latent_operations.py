@@ -1,5 +1,3 @@
-# ruff: noqa: TID252
-
 from __future__ import annotations
 
 import functools
@@ -14,7 +12,7 @@ from ..latent_ops import (
     SonarLatentOperationNoise,
     SonarLatentOperationSetSeed,
 )
-from .base import NOISE_INPUT_TYPES_HINT, WILDCARD_NOISE
+from .base import SonarInputTypes, SonarLazyInputTypes
 from .noise_filters import SonarQuantileFilteredNoiseNode
 
 if TYPE_CHECKING:
@@ -28,157 +26,96 @@ class SonarApplyLatentOperationCFG(metaclass=IntegratedNode):
 
     FUNCTION = "go"
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "model": ("MODEL",),
-                "mode": (
-                    (
-                        "cond_sub_uncond",
-                        "denoised_sub_uncond",
-                        "uncond_sub_cond",
-                        "denoised",
-                        "cond",
-                        "uncond",
-                        "model_input",
-                    ),
-                    {
-                        "default": "cond_sub_uncond",
-                        "tooltip": "cond_sub_uncond is what ComfyUI's latent operations use. The non-sub_uncond modes likely won't work with pred_flip mode enabled. If you have anything but the denoised options selected, this will use pre-CFG, otherwise it will use post-CFG (unless you are using model_input).",
-                    },
-                ),
-                "pred_flip_mode": (
-                    "BOOLEAN",
-                    {
-                        "default": False,
-                        "tooltip": "Lets you try to apply the latent operation to the noise prediction rather than the image prediction. Doesn't work properly with the non-sub_uncond modes. No real reason it should be better, just something you can try. Note: The noise prediction gets scaled by the sigma first, in case that's useful information.",
-                    },
-                ),
-                "require_uncond": (
-                    "BOOLEAN",
-                    {
-                        "default": False,
-                        "tooltip": "When enabled, the operation will be skipped if uncond is unavailable. This will also happen if you choose a mode that requires uncond.",
-                    },
-                ),
-                "start_sigma": (
-                    "FLOAT",
-                    {
-                        "default": -1.0,
-                        "min": -1.0,
-                        "max": 9999.0,
-                        "tooltip": "Sigma when the effect becomes active. You can set a negative value here to use whatever the model's maximum sigma is.",
-                    },
-                ),
-                "end_sigma": (
-                    "FLOAT",
-                    {
-                        "default": 0.0,
-                        "min": 0.0,
-                        "max": 9999.0,
-                    },
-                ),
-                "blend_mode": (
-                    tuple(utils.BLENDING_MODES.keys()),
-                    {
-                        "default": "lerp",
-                        "tooltip": "Controls how the output of the latent operation is blended with the original result.",
-                    },
-                ),
-                "blend_strength": (
-                    "FLOAT",
-                    {
-                        "default": 0.5,
-                        "step": 0.001,
-                        "min": -1000.0,
-                        "max": 1000.0,
-                        "round": False,
-                        "tooltip": "Strength of the blend. For a normal blend mode like LERP, 1.0 means use 100% of the output from the latent operation, 0.0 means use none of it and only the original value. Note: Blending is applied to the final result of the operations, in other words operation_2 sees a full unblended result from operation_1.",
-                    },
-                ),
-                "blend_scale_mode": (
-                    (
-                        "none",
-                        "reverse_sampling",
-                        "sampling",
-                        "reverse_enabled_range",
-                        "enabled_range",
-                        "sampling_sin",
-                        "enabled_range_sin",
-                    ),
-                    {
-                        "default": "reverse_sampling",
-                        "tooltip": "Can be used to scale the blend strength over time. Basically works like blend_strength * scale_factor (see below)\nnone: Just uses the blend_strength you have set.\nreverse_sampling: The opposite of the model sampling percent, so if you're making a new generation, the beginning of sampling will be 1.0 and the end will be 0.0. The recommended option as applying these operations usually works better toward the beginning of sampling.\nsampling: Same as reverse_sampling, except the beginning will be 0.0 and the end will be 1.0.\nreverse_enabled_range: Flipped percentage of the range between start_sigma and end_sigma.\nenabled_range: Percentage of the range between start_sigma and end_sigma.\nsampling_sin: Uses the sampling percentage with the sine function such that blend_strength will hit the peak value in the middle of the range.\nenabled_range_sin: Similar to sampling_sin except it applies to the percentage of the enabled range.",
-                    },
-                ),
-                "blend_scale_offset": (
-                    "FLOAT",
-                    {
-                        "default": 0.0,
-                        "min": -1.0,
-                        "max": 1.0,
-                        "tooltip": "Only applies when blend_scale_mode is not none. Adds the offset to the calculated percentage and then clamps it to be between blend_scale_min and blend_scale_max.",
-                    },
-                ),
-                "blend_scale_min": (
-                    "FLOAT",
-                    {
-                        "default": 0.0,
-                        "min": 0.0,
-                        "max": 1.0,
-                        "tooltip": "Only applies when blend_scale_mode is not none. Minimum value for the blend scale percentage.",
-                    },
-                ),
-                "blend_scale_max": (
-                    "FLOAT",
-                    {
-                        "default": 1.0,
-                        "min": 0.0,
-                        "max": 1.0,
-                        "tooltip": "Only applies when blend_scale_mode is not none. Maximum value for the blend scale percentage.",
-                    },
-                ),
-                "immediate_blend": (
-                    "BOOLEAN",
-                    {
-                        "default": False,
-                    },
-                ),
-            },
-            "optional": {
-                "operation_1": (
-                    "LATENT_OPERATION",
-                    {
-                        "tooltip": "Optional LATENT_OPERATION. The operations will be applied in sequence.",
-                    },
-                ),
-                "operation_2": (
-                    "LATENT_OPERATION",
-                    {
-                        "tooltip": "Optional LATENT_OPERATION. The operations will be applied in sequence.",
-                    },
-                ),
-                "operation_3": (
-                    "LATENT_OPERATION",
-                    {
-                        "tooltip": "Optional LATENT_OPERATION. The operations will be applied in sequence.",
-                    },
-                ),
-                "operation_4": (
-                    "LATENT_OPERATION",
-                    {
-                        "tooltip": "Optional LATENT_OPERATION. The operations will be applied in sequence.",
-                    },
-                ),
-                "operation_5": (
-                    "LATENT_OPERATION",
-                    {
-                        "tooltip": "Optional LATENT_OPERATION. The operations will be applied in sequence.",
-                    },
-                ),
-            },
-        }
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: SonarInputTypes()
+        .req_model()
+        .req_field_mode(
+            (
+                "cond_sub_uncond",
+                "denoised_sub_uncond",
+                "uncond_sub_cond",
+                "denoised",
+                "cond",
+                "uncond",
+                "model_input",
+            ),
+            default="cond_sub_uncond",
+            tooltip="cond_sub_uncond is what ComfyUI's latent operations use. The non-sub_uncond modes likely won't work with pred_flip mode enabled. If you have anything but the denoised options selected, this will use pre-CFG, otherwise it will use post-CFG (unless you are using model_input).",
+        )
+        .req_bool_pred_flip_mode(
+            tooltip="Lets you try to apply the latent operation to the noise prediction rather than the image prediction. Doesn't work properly with the non-sub_uncond modes. No real reason it should be better, just something you can try. Note: The noise prediction gets scaled by the sigma first, in case that's useful information.",
+        )
+        .req_bool_require_uncond(
+            tooltip="When enabled, the operation will be skipped if uncond is unavailable. This will also happen if you choose a mode that requires uncond.",
+        )
+        .req_float_start_sigma(
+            default=-1.0,
+            min=-1.0,
+            tooltip="First sigma the effect becomes active. You can set a negative value here to use whatever the model's maximum sigma is.",
+        )
+        .req_float_end_sigma(
+            default=0.0,
+            min=0.0,
+            tooltip="Last sigma the effect is active.",
+        )
+        .req_selectblend_blend_mode(
+            tooltip="Controls how the output of the latent operation is blended with the original result.",
+        )
+        .req_float_blend_strength(
+            default=0.5,
+            tooltip="Strength of the blend. For a normal blend mode like LERP, 1.0 means use 100% of the output from the latent operation, 0.0 means use none of it and only the original value. Note: Blending is applied to the final result of the operations unless you enable immediate_blend, in other words operation_2 sees a full unblended result from operation_1.",
+        )
+        .req_field_blend_scale_mode(
+            (
+                "none",
+                "reverse_sampling",
+                "sampling",
+                "reverse_enabled_range",
+                "enabled_range",
+                "sampling_sin",
+                "enabled_range_sin",
+            ),
+            default="reverse_sampling",
+            tooltip="Can be used to scale the blend strength over time. Basically works like blend_strength * scale_factor (see below)\nnone: Just uses the blend_strength you have set.\nreverse_sampling: The opposite of the model sampling percent, so if you're making a new generation, the beginning of sampling will be 1.0 and the end will be 0.0. The recommended option as applying these operations usually works better toward the beginning of sampling.\nsampling: Same as reverse_sampling, except the beginning will be 0.0 and the end will be 1.0.\nreverse_enabled_range: Flipped percentage of the range between start_sigma and end_sigma.\nenabled_range: Percentage of the range between start_sigma and end_sigma.\nsampling_sin: Uses the sampling percentage with the sine function such that blend_strength will hit the peak value in the middle of the range.\nenabled_range_sin: Similar to sampling_sin except it applies to the percentage of the enabled range.",
+        )
+        .req_float_blend_scale_offset(
+            default=0.0,
+            min=-1.0,
+            max=1.0,
+            tooltip="Only applies when blend_scale_mode is not none. Adds the offset to the calculated percentage and then clamps it to be between blend_scale_min and blend_scale_max.",
+        )
+        .req_float_blend_scale_min(
+            default=0.0,
+            tooltip="Only applies when blend_scale_mode is not none. Minimum value for the blend scale percentage. Many blend modes don't tolerate negative values here.",
+        )
+        .req_float_blend_scale_max(
+            default=1.0,
+            tooltip="Only applies when blend_scale_mode is not none. Maximum value for the blend scale percentage. Many blend modes don't tolerate values over 1.0 here.",
+        )
+        .req_bool_immediate_blend(
+            tooltip="You can enable this to do blending immediately after each latent operation is called. Mainly affects the case where you have multiple latent operations connected.",
+        )
+        .opt_field_operation_1(
+            "LATENT_OPERATION",
+            tooltip="Optional LATENT_OPERATION. The operations will be applied in sequence.",
+        )
+        .opt_field_operation_2(
+            "LATENT_OPERATION",
+            tooltip="Optional LATENT_OPERATION. The operations will be applied in sequence.",
+        )
+        .opt_field_operation_3(
+            "LATENT_OPERATION",
+            tooltip="Optional LATENT_OPERATION. The operations will be applied in sequence.",
+        )
+        .opt_field_operation_4(
+            "LATENT_OPERATION",
+            tooltip="Optional LATENT_OPERATION. The operations will be applied in sequence.",
+        )
+        .opt_field_operation_5(
+            "LATENT_OPERATION",
+            tooltip="Optional LATENT_OPERATION. The operations will be applied in sequence.",
+        ),
+    )
 
     @staticmethod
     def get_blend_scaling(
@@ -274,7 +211,7 @@ class SonarApplyLatentOperationCFG(metaclass=IntegratedNode):
             blend_scale_mode = "none"
         orig_mode = mode
 
-        def patch(args: dict) -> torch.Tensor:  # noqa: PLR0914
+        def patch(args: dict) -> torch.Tensor:
             nonlocal mode
 
             x = args["input"]
@@ -418,100 +355,69 @@ class SonarLatentOperationQuantileFilter(SonarQuantileFilteredNoiseNode):
 
 
 class SonarLatentOperationAdvancedNode(metaclass=IntegratedNode):
-    DESCRIPTION = "Allows scheduling and other advanced features for latent operations."
+    DESCRIPTION = "Allows scheduling and other advanced features for latent operations. If you attach the optional extra LATENT_OPERATIONS, they will be called in sequence _before_ blending or output scaling."
     RETURN_TYPES = ("LATENT_OPERATION",)
     CATEGORY = "latent/advanced/operations"
 
     FUNCTION = "go"
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "operation": (
-                    "LATENT_OPERATION",
-                    {
-                        "tooltip": "Latent operation to apply.",
-                    },
-                ),
-                "start_sigma": (
-                    "FLOAT",
-                    {
-                        "default": -1.0,
-                        "min": -1.0,
-                        "max": 9999.0,
-                        "tooltip": "Sigma when the effect becomes active. You can use -1.0 here for no limit.",
-                    },
-                ),
-                "end_sigma": (
-                    "FLOAT",
-                    {
-                        "default": 0.0,
-                        "min": 0.0,
-                        "max": 9999.0,
-                    },
-                ),
-                "input_multiplier": (
-                    "FLOAT",
-                    {
-                        "default": 1.0,
-                        "step": 0.001,
-                        "min": -1000.0,
-                        "max": 1000.0,
-                        "round": False,
-                        "tooltip": "Flat multiplier on the input to the latent operation. The multiplied input is *not* used when calculating the difference, it is only passed to the operation.",
-                    },
-                ),
-                "output_multiplier": (
-                    "FLOAT",
-                    {
-                        "default": 1.0,
-                        "step": 0.001,
-                        "min": -1000.0,
-                        "max": 1000.0,
-                        "round": False,
-                        "tooltip": "Flat multiplier on the output from the latent operation. Occurs before blending or calculating the difference.",
-                    },
-                ),
-                "difference_multiplier": (
-                    "FLOAT",
-                    {
-                        "default": 1.0,
-                        "step": 0.001,
-                        "min": -1000.0,
-                        "max": 1000.0,
-                        "round": False,
-                        "tooltip": "Flat multiplier on the difference or change from the original that the operation performed. Occurs after output_multiplier and before blending applies.",
-                    },
-                ),
-                "blend_mode": (
-                    tuple(utils.BLENDING_MODES.keys()),
-                    {
-                        "default": "inject",
-                        "tooltip": "Controls how the change from the operation is combined with the input. The default of inject just adds it scaled by the blend strength. With 1.0 blend strength, this is just using the output from the operation with no change.",
-                    },
-                ),
-                "blend_strength": (
-                    "FLOAT",
-                    {
-                        "default": 1.0,
-                        "step": 0.001,
-                        "min": -1000.0,
-                        "max": 1000.0,
-                        "round": False,
-                        "tooltip": "Strength of the blend.",
-                    },
-                ),
-            },
-            "optional": {
-                "operation_alt": (
-                    "LATENT_OPERATION",
-                    {
-                        "tooltip": "Optional alternative operation that will be used when the primary one isn't enabled. May be useful in a case when you want one operation between sigma 1.0 and 0.5 and then a difference operation for lower sigmas which is kind of annoying to specify manually (you'd need to do something like configure another operation to start at 0.499999 or something).",
-                    },
-                ),
-            },
-        }
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: SonarInputTypes()
+        .req_field_operation(
+            "LATENT_OPERATION",
+            tooltip="Latent operation to apply.",
+        )
+        .req_float_start_sigma(
+            default=-1.0,
+            min=-1.0,
+            tooltip="First sigma the effect becomes active. You can set a negative value here to use whatever the model's maximum sigma is.",
+        )
+        .req_float_end_sigma(
+            default=0.0,
+            min=0.0,
+            tooltip="Last sigma the effect is active.",
+        )
+        .req_float_input_multiplier(
+            default=1.0,
+            tooltip="Flat multiplier on the input to the latent operation. The multiplied input is *not* used when calculating the difference, it is only passed to the operation.",
+        )
+        .req_float_output_multiplier(
+            default=1.0,
+            tooltip="Flat multiplier on the output from the latent operation. Occurs before blending or calculating the difference.",
+        )
+        .req_float_difference_multiplier(
+            default=1.0,
+            tooltip="Flat multiplier on the difference or change from the original that the operation performed. Occurs after output_multiplier and before blending applies.",
+        )
+        .req_selectblend_blend_mode(
+            default="inject",
+            tooltip="Controls how the change from the operation is combined with the input. The default of inject just adds it scaled by the blend strength. With 1.0 blend strength, this is just using the output from the operation with no change.",
+        )
+        .req_float_blend_strength(
+            default=0.5,
+            tooltip="Strength of the blend.",
+        )
+        .opt_field_operation_alt(
+            "LATENT_OPERATION",
+            tooltip="Optional alternative operation that will be used when the primary one isn't enabled. May be useful in a case when you want one operation between sigma 1.0 and 0.5 and then a difference operation for lower sigmas which is kind of annoying to specify manually (you'd need to do something like configure another operation to start at 0.499999 or something).",
+        )
+        .opt_field_operation_2(
+            "LATENT_OPERATION",
+            tooltip="Optional LATENT_OPERATION. The operations will be applied in sequence.",
+        )
+        .opt_field_operation_3(
+            "LATENT_OPERATION",
+            tooltip="Optional LATENT_OPERATION. The operations will be applied in sequence.",
+        )
+        .opt_field_operation_4(
+            "LATENT_OPERATION",
+            tooltip="Optional LATENT_OPERATION. The operations will be applied in sequence.",
+        )
+        .opt_field_operation_5(
+            "LATENT_OPERATION",
+            tooltip="Optional LATENT_OPERATION. The operations will be applied in sequence.",
+        ),
+    )
 
     @classmethod
     def go(
@@ -526,9 +432,16 @@ class SonarLatentOperationAdvancedNode(metaclass=IntegratedNode):
         blend_mode: str,
         blend_strength: float,
         operation_alt=None,
+        operation_2=None,
+        operation_3=None,
+        operation_4=None,
+        operation_5=None,
     ) -> tuple[SonarLatentOperationAdvanced]:
-        if not isinstance(operation, SonarLatentOperation):
-            operation = SonarLatentOperation(op=operation)
+        operations = tuple(
+            o if isinstance(o, SonarLatentOperation) else SonarLatentOperation(op=o)
+            for o in (operation, operation_2, operation_3, operation_4, operation_5)
+            if o is not None
+        )
         if operation_alt is not None and not isinstance(
             operation_alt,
             SonarLatentOperation,
@@ -536,7 +449,7 @@ class SonarLatentOperationAdvancedNode(metaclass=IntegratedNode):
             operation_alt = SonarLatentOperation(op=operation_alt)
         return (
             SonarLatentOperationAdvanced(
-                op=operation,
+                ops=operations,
                 op_alt=operation_alt,
                 start_sigma=start_sigma,
                 end_sigma=end_sigma,
@@ -556,44 +469,22 @@ class SonarLatentOperationNoiseNode(metaclass=IntegratedNode):
 
     FUNCTION = "go"
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "custom_noise": (
-                    WILDCARD_NOISE,
-                    {"tooltip": f"Custom noise. \n{NOISE_INPUT_TYPES_HINT}"},
-                ),
-                "scale_to_sigma": (
-                    "BOOLEAN",
-                    {
-                        "default": False,
-                        "tooltip": "Scales the noise to the current sigma.",
-                    },
-                ),
-                "cpu_noise": (
-                    "BOOLEAN",
-                    {
-                        "default": False,
-                        "tooltip": "Controls whether noise is generated on the CPU or GPU. GPU is usually faster but may change seeds for different models of GPU.",
-                    },
-                ),
-                "normalize": (
-                    "BOOLEAN",
-                    {
-                        "default": True,
-                        "tooltip": "Controls whether the generated noise is normalized.",
-                    },
-                ),
-                "lazy_noise_sampler": (
-                    "BOOLEAN",
-                    {
-                        "default": True,
-                        "tooltip": "When enabled, the latent operation will attempt to cache the noise sampler between calls and only recreate it when necessary. However, there isn't a 100% reliable way for a latent operation to know when sampling starts/ends so if we get it wrong this will lead to non-deterministic generations. I believe the heuristic I'm using to detect this should be reliable but you can disable it if you notice weird results.",
-                    },
-                ),
-            },
-        }
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: SonarInputTypes()
+        .req_customnoise_custom_noise()
+        .req_bool_scale_to_sigma(tooltip="Scales the noise to the current sigma.")
+        .req_bool_cpu_noise(
+            tooltip="Controls whether noise is generated on the CPU or GPU. GPU is usually faster but may change seeds for different models of GPU.",
+        )
+        .req_bool_normalize(
+            default=True,
+            tooltip="Controls whether the generated noise is normalized.",
+        )
+        .req_bool_lazy_noise_sampler(
+            default=True,
+            tooltip="When enabled, the latent operation will attempt to cache the noise sampler between calls and only recreate it when necessary. However, there isn't a 100% reliable way for a latent operation to know when sampling starts/ends so if we get it wrong this will lead to non-deterministic generations. I believe the heuristic I'm using to detect this should be reliable but you can disable it if you notice weird results.",
+        ),
+    )
 
     @classmethod
     def go(
@@ -623,22 +514,17 @@ class SonarLatentOperationSetSeedNode(metaclass=IntegratedNode):
 
     FUNCTION = "go"
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "operation": ("LATENT_OPERATION",),
-                "seed": (
-                    "INT",
-                    {
-                        "default": 0,
-                        "min": 0,
-                        "max": 0xFFFFFFFFFFFFFFFF,
-                        "tooltip": "Seed to set. Note that this is called _every time_ before the operation.",
-                    },
-                ),
-            },
-        }
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: SonarInputTypes()
+        .req_field_operation("LATENT_OPERATION")
+        .req_seed(
+            tooltip="Seed to set. Note that this is called _every time_ before the operation.",
+        )
+        .req_bool_restore_rng_state(
+            default=False,
+            tooltip="When enabled, the current RNG state is saved just before calling the operation and restored afterwards. In other words, only the latent operation will see the seed you set. Note: This only handles the PyTorch and Python random module states.",
+        ),
+    )
 
     @classmethod
     def go(
@@ -646,8 +532,15 @@ class SonarLatentOperationSetSeedNode(metaclass=IntegratedNode):
         *,
         operation,
         seed: int,
+        restore_rng_state: bool,
     ) -> tuple[SonarLatentOperationSetSeed]:
-        return (SonarLatentOperationSetSeed(op=operation, seed=seed),)
+        return (
+            SonarLatentOperationSetSeed(
+                op=operation,
+                seed=seed,
+                restore_rng_state=restore_rng_state,
+            ),
+        )
 
 
 NODE_CLASS_MAPPINGS = {

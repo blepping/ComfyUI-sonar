@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import torch
 
-from . import utils
-from .external import IntegratedNode
+from .. import utils
+from ..external import IntegratedNode
 from .powernoise import PowerFilter
 
 
