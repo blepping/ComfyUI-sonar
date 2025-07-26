@@ -96,7 +96,7 @@ class SonarLatentOperationAdvanced(SonarLatentOperation):
             )
         output = t * self.input_multiplier if self.input_multiplier != 1.0 else t
         for op in self.ops:
-            t = self.call_op(output, sigma=sigma, op=op, **kwargs)
+            output = self.call_op(output, sigma=sigma, op=op, **kwargs)
         diff = (
             output * self.output_multiplier if self.output_multiplier == 1.0 else output
         ) - t

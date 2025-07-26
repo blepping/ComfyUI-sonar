@@ -103,8 +103,12 @@ def _quantile_norm_scaledown(
     **_kwargs: dict,
 ) -> torch.Tensor:
     noiseabs = noise.abs()
-    mv = noiseabs.max(dim=dim, keepdim=True).clamp(min=1e-06)
-    return noise if mv == 0 else torch.where(noiseabs > nq, noise * (nq / mv), noise)
+    mv = noiseabs.max(dim=dim, keepdim=True).values.clamp(min=1e-06)
+    return (
+        noise
+        if mv.sum().item() == 0
+        else torch.where(noiseabs > nq, noise * (nq / mv), noise)
+    )
 
 
 def _quantile_norm_wave(
@@ -537,6 +541,8 @@ def step_from_sigmas(
         return None
     sigma_low, sigma_high = tensor_item(sigmas[idx_low]), tensor_item(sigmas[idx_high])
     step_diff = sigma_high - sigma_low
+    if step_diff == 0:
+        return float(idx)
     pct = 1.0 - ((sigma - sigma_low) / step_diff)
     return round(idx_high + pct, output_decimals)
 
