@@ -339,19 +339,17 @@ class SonarLatentOperationQuantileFilter(SonarQuantileFilteredNoiseNode):
         norm_factor: float,
         strategy: str,
     ):
-        return (
-            SonarLatentOperation(
-                op=functools.partial(
-                    utils.quantile_normalize,
-                    quantile=quantile,
-                    dim=None if dim == "global" else int(dim),
-                    flatten=flatten,
-                    nq_fac=norm_factor,
-                    pow_fac=norm_power,
-                    strategy=strategy,
-                ),
-            ),
+        qnorm_filter = functools.partial(
+            utils.quantile_normalize,
+            quantile=quantile,
+            dim=None if dim == "global" else int(dim),
+            flatten=flatten,
+            nq_fac=norm_factor,
+            pow_fac=norm_power,
+            strategy=strategy,
         )
+
+        return (SonarLatentOperation(op=lambda latent: qnorm_filter(latent)),)  # noqa: PLW0108
 
 
 class SonarLatentOperationAdvancedNode(metaclass=IntegratedNode):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import abc
 import math
+import random
 from functools import partial
 from typing import Callable
 
@@ -15,6 +16,7 @@ from . import external, utils
 from .noise_generation import *
 from .sonar import SonarGuidanceMixin
 from .utils import (
+    RNGStates,
     crop_samples,
     fallback,
     pattern_break,
@@ -1292,10 +1294,9 @@ class BlendedNoise(CustomNoiseItemBase):
             raise ValueError(
                 "When custom_noise_2 is not attached noise_2_percent must be set to 0",
             )
-        if noise_2_percent == 1:
+        if noise_2_percent == 1 and custom_noise_1 is None:
             custom_noise_1, custom_noise_2 = custom_noise_2, None
             noise_2_percent = 0.0
-
         super().__init__(
             factor,
             noise_2_percent=noise_2_percent,
@@ -1337,10 +1338,11 @@ class BlendedNoise(CustomNoiseItemBase):
 
         def noise_sampler(s, sn):
             noise_1 = ns_1(s, sn)
+            noise_2 = None if ns_2 is None else ns_2(s, sn)
             noise = (
                 noise_1
-                if n2_blend == 0 or ns_2 is None
-                else blend_function(noise_1, ns_2(s, sn), n2_blend_tensor)
+                if noise_2 is None
+                else blend_function(noise_1, noise_2, n2_blend_tensor)
             )
             return scale_noise(noise, factor, normalized=normalize)
 
@@ -1965,6 +1967,116 @@ class PatternBreakNoise(CustomNoiseItemBase):
                 factor,
                 normalized=normalized,
             )
+
+        return noise_sampler
+
+
+class CustomNoiseParametersNoise(CustomNoiseItemBase):
+    def clone_key(self, k):
+        if k == "noise":
+            return self.noise.clone()
+        return super().clone_key(k)
+
+    def make_noise_sampler(
+        self,
+        x,
+        sigma_min,
+        sigma_max,
+        *args,
+        normalized=True,
+        **kwargs,
+    ):
+        factor = self.factor
+        normalize = self.get_normalize("normalize", normalized)
+        orig_shape = x.shape
+        orig_dtype = x.dtype
+        orig_device = x.device
+        if self.override_device is not None:
+            kwargs["cpu"] = self.override_device == "cpu"
+            x = x.to(device=self.override_device)
+        if x.ndim == 5 and self.frames_to_channels:
+            x = x.reshape(x.shape[0], x.shape[1] * x.shape[2], *x.shape[3:])
+        fix_invalid = self.fix_invalid
+        if self.override_dtype and x.dtype != self.override_dtype:
+            x = x.to(dtype=self.override_dtype)
+        fixed_aspect = False
+        if self.ensure_square_aspect_ratio:
+            if x.ndim == 3:
+                height, width = 1, x.shape[-1]
+                spatdims = 1
+            else:
+                spatdims = 2
+                height, width = x.shape[-2:]
+            hw = (height * width) ** 0.5
+            if not hw.is_integer():
+                fixed_aspect = True
+                hw = math.ceil(hw)
+                temp_x = x.new_zeros(*x.shape[:-spatdims], hw**2)
+                temp_x[..., : height * width] = x.flatten(start_dim=-spatdims)[
+                    ...,
+                    : height * width,
+                ]
+                x = temp_x.reshape(*temp_x.shape[:-1], hw, hw)
+        if self.rng_offset_mode in {"override", "add"}:
+            seed = (
+                self.rng_state_offset
+                if self.rng_offset_mode == "override"
+                else kwargs.pop("seed", 0) + self.rng_state_offset
+            )
+            kwargs["seed"] = seed
+        else:
+            seed = kwargs.get("seed", 0)
+        rng_mode = self.rng_mode
+        if rng_mode == "separate":
+            rng_state = RNGStates(x.device.type)
+            if self.rng_offset_mode != "disabled":
+                temp_rng_state = rng_state
+                try:
+                    random.seed(seed)
+                    torch.manual_seed(seed)
+                    rng_state = RNGStates(x.device.type)
+                finally:
+                    temp_rng_state.set_states()
+                del temp_rng_state
+        else:
+            rng_state = None
+        ns = self.noise.make_noise_sampler(
+            x,
+            *args,
+            sigma_min=sigma_min,
+            sigma_max=sigma_max,
+            normalized=False,
+            **kwargs,
+        )
+        device_type = x.device.type
+
+        def noise_sampler(sigma, sigma_next) -> torch.Tensor:
+            if rng_mode != "default":
+                temp_rng_state = RNGStates(device_type)
+                try:
+                    if rng_mode == "separate":
+                        rng_state.set_states()
+                    noise = ns(sigma, sigma_next)
+                    if rng_mode == "separate":
+                        rng_state.update()
+                finally:
+                    temp_rng_state.set_states()
+            else:
+                noise = ns(sigma, sigma_next)
+            if fix_invalid:
+                noise_temp = noise.nan_to_num(0, posinf=0, neginf=0)
+                noise = noise.nan_to_num_(
+                    0,
+                    posinf=noise_temp.max(),
+                    neginf=noise_temp.min(),
+                )
+            if fixed_aspect:
+                noise = noise.flatten(start_dim=-spatdims)[..., : height * width]
+            if noise.shape != orig_shape:
+                noise = noise.reshape(orig_shape)
+            if noise.dtype != orig_dtype or noise.device != orig_device:
+                noise = noise.to(device=orig_device, dtype=orig_dtype)
+            return scale_noise(noise, factor, normalized=normalize)
 
         return noise_sampler
 

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import math
+import random
 from functools import partial
 from typing import TYPE_CHECKING
 
 import torch
-from comfy.model_management import device_supports_non_blocking
+from comfy.model_management import device_supports_non_blocking, get_torch_device
 from comfy.utils import common_upscale
 
 from .external import MODULES as EXT
@@ -149,6 +150,24 @@ def _quantile_norm_mode(
     )
 
 
+def _quantile_norm_replace(
+    noise: torch.Tensor,
+    nq: torch.Tensor,
+    *,
+    keep_sign: bool = False,
+    avoid_sign: bool = False,
+    **_kwargs: dict,
+) -> torch.Tensor:
+    mask = noise.abs() <= nq
+    candidates = noise[mask].flatten()
+    candidates = candidates[torch.arange(noise.numel()) % candidates.numel()].reshape(
+        noise.shape,
+    )
+    if keep_sign or avoid_sign:
+        candidates = candidates.copysign_(noise.neg() if avoid_sign else noise)
+    return torch.where(mask, noise, candidates)
+
+
 quantile_handlers = {
     "clamp": lambda noise, nq, **_kwargs: noise.clamp(-nq, nq),
     "scale_down": _quantile_norm_scaledown,
@@ -243,6 +262,9 @@ quantile_handlers = {
     ),
     "mode_1dec": partial(_quantile_norm_mode, decimals=1),
     "mode_2dec": partial(_quantile_norm_mode, decimals=2),
+    "replace": _quantile_norm_replace,
+    "replace_keepsign": partial(_quantile_norm_replace, keep_sign=True),
+    "replace_avoidsign": partial(_quantile_norm_replace, avoid_sign=True),
 }
 
 
@@ -557,3 +579,61 @@ def filter_dict(d: dict, keep: set | Sequence, *, recursive: bool = False) -> di
         for k, v in d.items()
         if k in keep
     }
+
+
+class RNGStates:
+    DEFAULT_GPU_TYPE = get_torch_device().type
+
+    def __init__(
+        self,
+        device_types: set | str | Sequence | None = None,
+        *,
+        add_defaults: bool = True,
+    ):
+        if device_types is None:
+            device_types = set()
+        elif isinstance(device_types, str):
+            device_types = {device_types}
+        elif not isinstance(device_types, set):
+            device_types = set(device_types)
+        if add_defaults:
+            device_types = device_types | {"python", "cpu", self.DEFAULT_GPU_TYPE}  # noqa: PLR6104
+        self.rng_states = self.get_states(device_types)
+
+    def update(self):
+        self.rng_states = self.get_states(set(self.rng_states))
+
+    @staticmethod
+    def get_states(device_types: set) -> dict:
+        return {
+            k: torch.get_rng_state()
+            if k == "cpu"
+            else (
+                random.getstate()
+                if k == "python"
+                else getattr(torch, k).get_rng_state()
+            )
+            for k in device_types
+            if k in {"python", "cpu"} or hasattr(torch, k)
+        }
+
+    def set_states(self, *, update: bool = True, override_states: dict | None = None):
+        states = self.rng_states if override_states is None else override_states
+        new_states = {}
+        for k, v in states.items():
+            if isinstance(v, torch.Tensor):
+                v = v.clone()  # noqa: PLW2901
+            if k == "cpu":
+                new_states[k] = v
+                torch.set_rng_state(v)
+                continue
+            if k == "python":
+                new_states[k] = v
+                random.setstate(v)
+                continue
+            tm = getattr(torch, k, None)
+            if tm is not None:
+                new_states[k] = v
+                tm.set_rng_state(v)
+        if update:
+            self.rng_states = new_states

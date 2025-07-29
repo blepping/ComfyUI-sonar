@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import torch
+from comfy import model_management
+
 from .. import noise, utils
 from ..latent_ops import SonarLatentOperation
 from ..sonar import SonarGuidanceMixin
@@ -1401,24 +1404,147 @@ class SonarLatentOperationFilteredNoiseNode(
         )
 
 
+class SonarCustomNoiseParametersNode(
+    SonarCustomNoiseNodeBase,
+    SonarNormalizeNoiseNodeMixin,
+):
+    DESCRIPTION = "Custom noise type that allows overriding some parameters."
+
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: NoiseNoChainInputTypes()
+        .req_customnoise_custom_noise()
+        .req_int_rng_state_offset(
+            default=0,
+            min=0,
+            tooltip="In other words, seed. Avoiding using the word seed here to suppress ComfyUI's annoying default behavior. If you want stuff like auto-increment you can connect an INT primitive node.",
+        )
+        .req_field_rng_offset_mode(
+            ("disabled", "override", "add"),
+            default="disabled",
+            tooltip="Controls the seed passed to the noise sampler and also seeding when rng_mode is set to separate. Most noise samplers don't care about the seed so this generally will only have an effect in when rng_mode is set to separate.",
+        )
+        .req_field_rng_mode(
+            ("default", "separate", "fork"),
+            default="default",
+            tooltip="default mode doesn't do anything special. separate mode creates a generator and saves/restores the state when generating noise (also includes the Python random module). fork uses the existing RNG state (for both Torch and Python random module) but restores it to whatever it was before the custom noise was called.",
+        )
+        .req_bool_frames_to_channels(
+            tooltip="Only applicable for 5D latents (video models). Will move the frame dimension into channels, may be necessary if a noise type can't deal with 5D latents directly. It's safe to enable this for all models.",
+        )
+        .req_bool_ensure_square_aspect_ratio(
+            tooltip="Will rearrange the height/width sizes to be square, padding with zeros if necessary. May help some noise types work better with extreme aspect ratios, can also deal with 3D (1 spatial dimension) latents.",
+        )
+        .req_bool_fix_invalid(
+            tooltip="Replaces any NaNs or infinite values with 0.",
+        )
+        .req_field_override_dtype(
+            (
+                "default",
+                "float64",
+                "float32",
+                "float16",
+                "bfloat16",
+                "float8_e4m3fn",
+                "float8_e4m3fnuz",
+                "float8_e5m2",
+                "float8_e5m2fnuz",
+                "float8_e8m0fnu",
+                "int64",
+                "int32",
+                "int16",
+                "int8",
+            ),
+            default="default",
+            tooltip="Can be used to override the dtype the noise is generated with. Not all noise generators support all types. I don't recommend using the int or float8 types. Probably the most useful override is float64.",
+        )
+        .req_field_override_device(
+            ("default", "cpu", "gpu"),
+            default="default",
+            tooltip="default just uses whatever device normally would be used. gpu will use ComfyUI's default GPU device and also toggle the cpu_noise flag off. cpu will use the CPU device and toggle the cpu_noise flag on.",
+        )
+        .req_normalizetristate_normalize(),
+    )
+
+    @classmethod
+    def get_item_class(cls):
+        return noise.CustomNoiseParametersNoise
+
+    def go(
+        self,
+        *,
+        factor,
+        rng_state_offset: int,
+        rng_offset_mode: str,
+        rng_mode: str,
+        frames_to_channels: bool,
+        ensure_square_aspect_ratio: bool,
+        fix_invalid: bool,
+        override_dtype: str,
+        override_device: str,
+        normalize: str,
+        custom_noise: object,
+    ):
+        valid_dtypes = {
+            "default",
+            "float64",
+            "float32",
+            "float16",
+            "bfloat16",
+            "float8_e4m3fn",
+            "float8_e4m3fnuz",
+            "float8_e5m2",
+            "float8_e5m2fnuz",
+            "float8_e8m0fnu",
+            "int64",
+            "int32",
+            "int16",
+            "int8",
+        }
+        dt = getattr(torch, override_dtype, None)
+        if override_dtype not in valid_dtypes or (
+            override_dtype != "default" and dt is None
+        ):
+            raise ValueError("Bad dtype, may not be supported by your PyTorch version")
+        if override_device == "default":
+            device = None
+        elif override_device == "cpu":
+            device = "cpu"
+        elif override_device == "gpu":
+            device = model_management.get_torch_device()
+        return super().go(
+            factor,
+            rng_state_offset=rng_state_offset,
+            rng_offset_mode=rng_offset_mode,
+            rng_mode=rng_mode,
+            frames_to_channels=frames_to_channels,
+            ensure_square_aspect_ratio=ensure_square_aspect_ratio,
+            fix_invalid=fix_invalid,
+            override_dtype=dt,
+            override_device=device,
+            normalize=normalize,
+            noise=custom_noise,
+        )
+
+
 NODE_CLASS_MAPPINGS = {
-    "SonarCompositeNoise": SonarCompositeNoiseNode,
-    "SonarModulatedNoise": SonarModulatedNoiseNode,
-    "SonarRepeatedNoise": SonarRepeatedNoiseNode,
-    "SonarScheduledNoise": SonarScheduledNoiseNode,
-    "SonarGuidedNoise": SonarGuidedNoiseNode,
-    "SonarRandomNoise": SonarRandomNoiseNode,
-    "SonarShuffledNoise": SonarShuffledNoiseNode,
-    "SonarPatternBreakNoise": SonarPatternBreakNoiseNode,
-    "SonarChannelNoise": SonarChannelNoiseNode,
     "SonarBlendedNoise": SonarBlendedNoiseNode,
+    "SonarChannelNoise": SonarChannelNoiseNode,
+    "SonarCompositeNoise": SonarCompositeNoiseNode,
+    "SonarCustomNoiseParameters": SonarCustomNoiseParametersNode,
+    "SonarGuidedNoise": SonarGuidedNoiseNode,
+    "SonarLatentOperationFilteredNoise": SonarLatentOperationFilteredNoiseNode,
+    "SonarModulatedNoise": SonarModulatedNoiseNode,
+    "SonarNormalizeNoiseToScale": SonarNormalizeNoiseToScaleNode,
+    "SonarPatternBreakNoise": SonarPatternBreakNoiseNode,
+    "SonarPerDimNoise": SonarPerDimNoiseNode,
+    "SonarQuantileFilteredNoise": SonarQuantileFilteredNoiseNode,
+    "SonarRandomNoise": SonarRandomNoiseNode,
+    "SonarRepeatedNoise": SonarRepeatedNoiseNode,
     "SonarResizedNoise": SonarResizedNoiseNode,
     "SonarResizedNoiseAdv": SonarResizedNoiseAdvNode,
-    "SonarWaveletFilteredNoise": SonarWaveletFilteredNoiseNode,
     "SonarRippleFilteredNoise": SonarRippleFilteredNoiseNode,
-    "SonarQuantileFilteredNoise": SonarQuantileFilteredNoiseNode,
-    "SonarNormalizeNoiseToScale": SonarNormalizeNoiseToScaleNode,
-    "SonarPerDimNoise": SonarPerDimNoiseNode,
     "SonarScatternetFilteredNoise": SonarScatternetFilteredNoiseNode,
-    "SonarLatentOperationFilteredNoise": SonarLatentOperationFilteredNoiseNode,
+    "SonarScheduledNoise": SonarScheduledNoiseNode,
+    "SonarShuffledNoise": SonarShuffledNoiseNode,
+    "SonarWaveletFilteredNoise": SonarWaveletFilteredNoiseNode,
 }

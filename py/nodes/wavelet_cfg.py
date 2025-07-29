@@ -214,7 +214,7 @@ class WCFGScales(NamedTuple):
         **_kwargs: dict,
     ) -> WCFGScales:
         if verbose:
-            tqdm.write(f"WCFG:     low={self.yl_scale:.4f}, high: {self.yh_scales}")
+            tqdm.write(f"WCFG:     {self.pretty_scales()}")
         return self
 
     def apply_scales(
@@ -233,6 +233,22 @@ class WCFGScales(NamedTuple):
         verbose: bool = False,
     ) -> tuple[torch.Tensor, Sequence]:
         return self.get_scales(pcts, yh, verbose=verbose).apply_scales(yl, yh)
+
+    def pretty_yh_scales(self, *, target=None) -> str:
+        if target is None:
+            target = self.yh_scales
+        if isinstance(target, float):
+            return f"{target:.4f}"
+        result = ", ".join(
+            self.pretty_yh_scales(target=val)
+            if isinstance(val, (list, tuple))
+            else (val if isinstance(val, str) else f"{val:.4f}")
+            for val in target
+        )
+        return f"({result})"
+
+    def pretty_scales(self):
+        return f"low={self.yl_scale:.4f}, high={self.pretty_yh_scales()}"
 
 
 class WCFGScheduledScale(NamedTuple):
@@ -287,12 +303,22 @@ class WCFGScheduledScale(NamedTuple):
             pct = utils.clamp_float(1.0 - pct)
         return pct
 
+    def pretty_non_default(self) -> str:
+        result = ", ".join(
+            f"{fn}={fv.pretty_non_default()}"
+            if hasattr(fv, "pretty_non_default")
+            else f"{fn}={fv!r}"
+            for fn, fv in ((_fn, getattr(self, _fn)) for _fn in self._fields)
+            if fv != getattr(DEFAULT_SCHEDULEDSCALE, fn)
+        )
+        return f"WCFGScheduledScale({result})"
+
 
 DEFAULT_SCHEDULEDSCALE = WCFGScheduledScale()
 
 
 class WCFGScalesRange(NamedTuple):
-    scales_start: WCFGScales
+    scales_start: WCFGScales = WCFGScales()
     scales_end: WCFGScales | None = None
     scheduler: WCFGScheduledScale | None = None
 
@@ -342,7 +368,7 @@ class WCFGScalesRange(NamedTuple):
         if simple_result is not None:
             if verbose:
                 tqdm.write(
-                    f"WCFG:     low={simple_result.yl_scale:.4f}, high: {simple_result.yh_scales}",
+                    f"WCFG:     {simple_result.pretty_scales()}",
                 )
             return simple_result
         start_scale, end_scale = 1.0 - pct, pct
@@ -353,11 +379,12 @@ class WCFGScalesRange(NamedTuple):
             tuple(os * start_scale + oe * end_scale for os, oe in zip(bs, be))
             for bs, be in zip(start_yh_scales, end_yh_scales)
         )
+        result = WCFGScales(yl_scale=yl_scale, yh_scales=yh_scales)
         if verbose:
             tqdm.write(
-                f"WCFG:     low={yl_scale:.4f}, high: {yh_scales}",
+                f"WCFG:     {result.pretty_scales()}",
             )
-        return WCFGScales(yl_scale=yl_scale, yh_scales=yh_scales)
+        return result
 
     def apply_scales(
         self,
@@ -375,6 +402,19 @@ class WCFGScalesRange(NamedTuple):
         verbose: bool = False,
     ) -> tuple[torch.Tensor, Sequence]:
         return self.get_scales(pcts, yh, verbose=verbose).apply_scales(yl, yh)
+
+    def pretty_non_default(self) -> str:
+        result = ", ".join(
+            f"{fn}={fv.pretty_non_default()}"
+            if hasattr(fv, "pretty_non_default")
+            else f"{fn}={fv!r}"
+            for fn, fv in ((_fn, getattr(self, _fn)) for _fn in self._fields)
+            if fv != getattr(DEFAULT_SCALESRANGE, fn)
+        )
+        return f"WCFGScalesRange({result})"
+
+
+DEFAULT_SCALESRANGE = WCFGScalesRange()
 
 
 class WCFGScheduledFloat(NamedTuple):
@@ -508,11 +548,21 @@ class WCFGRule(NamedTuple):
         verbose: bool = False,
     ) -> tuple[torch.Tensor, Sequence]:
         scales = getattr(self, name).get_scales(pcts, yh)
-        if verbose:
+        if verbose and (scales.yl_scale != 1.0 or scales.yh_scales != 1.0):
             tqdm.write(
-                f"WCFG:     scales({name:>6}): low={scales.yl_scale:.4f}, high: {scales.yh_scales}",
+                f"WCFG:     scales({name:>6}): {scales.pretty_scales()}",
             )
         return scales.apply_scales(yl, yh)
+
+    def pretty_non_default(self) -> str:
+        result = ", ".join(
+            f"{fn}={fv.pretty_non_default()}"
+            if hasattr(fv, "pretty_non_default")
+            else f"{fn}={fv!r}"
+            for fn, fv in ((_fn, getattr(self, _fn)) for _fn in self._fields)
+            if fv != getattr(DEFAULT_RULE, fn)
+        )
+        return f"WCFGRule({result})"
 
 
 DEFAULT_RULE = WCFGRule()
@@ -556,6 +606,7 @@ class WCFGContext(NamedTuple):
     sigma: torch.Tensor
     wavelet: Wavelet
     dtype: torch.dtype
+    op_kwargs: dict
 
 
 class WaveletCFG:
@@ -590,11 +641,22 @@ class WaveletCFG:
         return x - (cond - uncond).mul_(scale).add_(uncond)
 
     @staticmethod
-    def maybe_op(t: torch.Tensor, mop: Callable | None) -> torch.Tensor:
-        return t if mop is None else mop(latent=t)
+    def maybe_op(
+        t: torch.Tensor,
+        mop: Callable | None,
+        **kwargs: dict,
+    ) -> torch.Tensor:
+        return (
+            t
+            if mop is None
+            else mop(
+                latent=t,
+                **(kwargs if getattr(mop, "EXTENDED_LATENT_OPERATION", None) else {}),
+            )
+        )
 
     def get_context(self, *, rule: WCFGRule, args: dict) -> WCFGContext:
-        sigma = args["sigma"]
+        sigma_orig = sigma = args["sigma"]
         rule_id = id(rule)
         x = args["input"]
         if x.ndim == 3 and not rule.use_1d_dwt:
@@ -614,8 +676,15 @@ class WaveletCFG:
             cond, uncond = args["cond_denoised"], args["uncond_denoised"]
         else:
             raise ValueError("Bad target mode")
-        cond = self.maybe_op(cond, self.operation_cond)
-        uncond = self.maybe_op(uncond, self.operation_uncond)
+        op_kwargs = {
+            "sigma": sigma_orig,
+            "cond": cond,
+            "uncond": uncond,
+            "cond_scale": args["cond_scale"],
+            "raw_args": args,
+        }
+        cond = self.maybe_op(cond, self.operation_cond, **op_kwargs)
+        uncond = self.maybe_op(uncond, self.operation_uncond, **op_kwargs)
         eff_dtype = torch.float64 if rule.high_precision_mode else x.dtype
         wavelet = self.wavelet_cache.get(rule_id)
         if wavelet is None:
@@ -635,6 +704,7 @@ class WaveletCFG:
             sigma=sigma,
             wavelet=wavelet,
             dtype=eff_dtype,
+            op_kwargs=op_kwargs,
         )
 
     def process_output(
@@ -655,7 +725,7 @@ class WaveletCFG:
             result = ctx.x - result
         elif rule.target_mode == WCFGTarget.NOISE_NORM:
             result *= ctx.sigma
-        return self.maybe_op(result, self.operation_wavelet_cfg)
+        return self.maybe_op(result, self.operation_wavelet_cfg, **ctx.op_kwargs)
 
     @classmethod
     def wavelet_cfg(
@@ -708,7 +778,9 @@ class WaveletCFG:
         if rule is None:
             return self.fallback_cfg_function(args)
         if rule.verbose:
-            tqdm.write(f"\nWCFG: Rule matched, sigma={sigma_f:.4f}, rule={rule}")
+            tqdm.write(
+                f"\nWCFG: Rule matched, sigma={sigma_f:.4f}, rule={rule.pretty_non_default()}",
+            )
         blend_function = utils.BLENDING_MODES[rule.blend_mode]
         model = args["model"]
         pcts = WCFGPercentages.build(
@@ -725,6 +797,10 @@ class WaveletCFG:
             return self.maybe_op(
                 self.fallback_cfg_function(args),
                 self.operation_fallback_cfg,
+                sigma=sigma,
+                cond=args["cond_denoised"],
+                uncond=args["uncond_denoised"],
+                raw_args=args,
             )
         ctx = self.get_context(rule=rule, args=args)
         result = self.wavelet_cfg(rule=rule, ctx=ctx, pcts=pcts)
@@ -732,6 +808,7 @@ class WaveletCFG:
             normal_result = self.maybe_op(
                 self.fallback_cfg_function(args),
                 self.operation_fallback_cfg,
+                **ctx.op_kwargs,
             )
             if rule.target_mode == WCFGTarget.DENOISED:
                 normal_result = ctx.x - normal_result
@@ -739,7 +816,11 @@ class WaveletCFG:
                 normal_result /= ctx.sigma
             result = blend_function(normal_result, result, wcfg_blend)
         result = self.process_output(result=result, ctx=ctx, rule=rule)
-        return self.maybe_op(result, self.operation_result).contiguous()
+        return self.maybe_op(
+            result,
+            self.operation_result,
+            **ctx.op_kwargs,
+        ).contiguous()
 
 
 class SonarWaveletCFGNode(metaclass=IntegratedNode):
@@ -971,85 +1052,6 @@ verbose: false
             ),
         )
         return (model,)
-
-
-# class SonarWaveletCFGSimpleNode(SonarWaveletCFGNode):
-#     DESCRIPTION = "Wavelet CFG function that allows you to apply different CFG strength to different frequencies (simple version)."
-
-#     INPUT_TYPES = SonarLazyInputTypes(
-#         lambda: SonarInputTypes()
-#         .req_model()
-#         .req_float_start_sigma(
-#             default=-1.0,
-#             min=-1.0,
-#             tooltip="First sigma wavelet CFG will be used.",
-#         )
-#         .req_float_end_sigma(
-#             default=0.0,
-#             min=0.0,
-#             tooltip="Last sigma wavelet CFG will be used.",
-#         )
-#         .req_field_fallback_mode(
-#             ("existing", "own"),
-#             default="existing",
-#             tooltip="Existing mode uses whatever CFG function existed set when this model patch was applied. Own mode does the CFG calculation on its own. The scale will be whatever you set in your guider or sampler.",
-#         )
-#         .req_selectblend_blend_mode(
-#             tooltip="Controls how the result from wavelet CFG is blended with normal CFG. The default of LERP with strength 1.0 uses 100% wavelet CFG.",
-#         )
-#         .req_float_blend_strength(
-#             default=1.0,
-#             tooltip="Controls how the result from wavelet CFG is blended with normal CFG. The default of LERP with strength 1.0 uses 100% wavelet CFG.",
-#         ),
-#     )
-
-#     @classmethod
-#     def go(
-#         cls,
-#         *,
-#         model: object,
-#         start_sigma: float,
-#         end_sigma: float,
-#         fallback_mode: str,
-#         blend_mode: str,
-#         blend_strength: float,
-#         yaml_parameters: str,
-#         operation_cond: Callable | None = None,
-#         operation_uncond: Callable | None = None,
-#         operation_fallback_cfg: Callable | None = None,
-#         operation_wavelet_cfg: Callable | None = None,
-#         operation_result: Callable | None = None,
-#     ) -> tuple[object]:
-#         if start_sigma < 0:
-#             start_sigma = math.inf
-#         wavelet_params = yaml.safe_load(yaml_parameters)
-#         rules = WCFGRules.build(
-#             **(
-#                 {
-#                     "start_sigma": start_sigma,
-#                     "end_sigma": end_sigma,
-#                     "fallback_existing": fallback_mode == "existing",
-#                     "blend_mode": blend_mode,
-#                     "blend_strength": blend_strength,
-#                 }
-#                 | wavelet_params
-#             ),
-#         )
-#         if len(rules) and rules[0].verbose:
-#             tqdm.write(f"\nWCFG: Using rules: {rules}\n")
-#         model = model.clone()
-#         model.set_model_sampler_cfg_function(
-#             WaveletCFG(
-#                 existing_cfg=model.model_options.get("sampler_cfg_function"),
-#                 rules=rules,
-#                 operation_cond=operation_cond,
-#                 operation_uncond=operation_uncond,
-#                 operation_fallback_cfg=operation_fallback_cfg,
-#                 operation_wavelet_cfg=operation_wavelet_cfg,
-#                 operation_result=operation_result,
-#             ),
-#         )
-#         return (model,)
 
 
 NODE_CLASS_MAPPINGS = {

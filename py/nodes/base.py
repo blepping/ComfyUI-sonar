@@ -52,6 +52,7 @@ class SonarInputCollection(InputCollection):
         super().__init__(*args, **kwargs)
         self._DELEGATE_KEYS = self._DELEGATE_KEYS | frozenset((  # noqa: PLR6104
             "customnoise",
+            "floatpct",
             "normalizetristate",
             "selectblend",
             "selectnoise",
@@ -165,6 +166,9 @@ class SonarInputCollection(InputCollection):
             **kwargs,
         )
 
+    def floatpct(self, name: str, *, min=0.0, max=1.0, **kwargs: dict):  # noqa: A002
+        return self.float(name=name, min=min, max=max, **kwargs)
+
 
 class SonarInputTypes(InputTypes):
     _NO_REPLACE = True
@@ -180,10 +184,10 @@ class SonarInputTypes(InputTypes):
 class SonarLazyInputTypes(LazyInputTypes):
     _NO_REPLACE = True
 
-    def __init__(self, *args: list, initializers=(), **kwargs: dict):
+    def __init__(self, *args: list, initializers=(MODULES.initialize,), **kwargs: dict):
         super().__init__(
             *args,
-            initializers=(MODULES.initialize, *initializers),
+            initializers=initializers,
             **kwargs,
         )
 
@@ -215,6 +219,7 @@ class SonarCustomNoiseNodeBase(metaclass=IntegratedNode):
             _skip=not include_chain,
             tooltip="Optional input for more custom noise items.",
         ),
+        initializers=(),
     )
 
     def go(

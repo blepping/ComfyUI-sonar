@@ -14,7 +14,6 @@ if TYPE_CHECKING:
 
 class SonarLatentOperation:
     EXTENDED_LATENT_OPERATION = True
-    SKIP_ARGS = frozenset(("sigma", "t2", "cond", "uncond", "cond_scale", "raw_args"))
 
     def __init__(
         self,
@@ -28,6 +27,8 @@ class SonarLatentOperation:
         self.op = op
 
     def enabled(self, sigma: torch.Tensor | float | None = None) -> bool:
+        if isinstance(sigma, torch.Tensor):
+            sigma = sigma.detach().max().cpu().item()
         return sigma is None or self.end_sigma <= sigma <= self.start_sigma
 
     def call_op(
@@ -42,8 +43,8 @@ class SonarLatentOperation:
         if op is None:
             return t
         if not getattr(op, "EXTENDED_LATENT_OPERATION", False):
-            kwargs = {k: v for k, v in kwargs.items() if k not in self.SKIP_ARGS}
-        return op(t, *args, **kwargs)
+            return op(latent=t)
+        return op(*args, latent=t, **kwargs)
 
     def __call__(
         self,
