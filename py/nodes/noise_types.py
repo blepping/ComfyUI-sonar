@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 
 from .. import noise, utils
-from ..noise_generation import DistroNoiseGenerator
+from ..noise_generation import DistroNoiseGenerator, VoronoiNoiseGenerator
 from .base import (
     NoiseChainInputTypes,
     SonarCustomNoiseNodeBase,
@@ -603,11 +603,137 @@ class SonarWaveletNoiseNode(
         )
 
 
+class SonarAdvancedVoronoiNoiseNode(SonarCustomNoiseNodeBase):
+    DESCRIPTION = "Voronoi noise is a very weird noise type. The default settings are just borderline usable with SDXL at a 20% ratio with normal Gaussian noise. I recommend reading the section on this noise type in the project documentation (under advanced noise types) as there are too many features to describe in the node itself."
+
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda _pretty_distance_modes=", ".join(  # noqa: B008
+            sorted(VoronoiNoiseGenerator.voronoi_distance_modes),  # noqa: B008
+        ),
+        _pretty_result_modes=", ".join(  # noqa: B008
+            sorted(VoronoiNoiseGenerator.voronoi_result_modes),  # noqa: B008
+        ): NoiseChainInputTypes()
+        .req_string_n_points(
+            default="256",
+            tooltip="Controls the number of features points in the generated noise. Higher generally results in more detail/better results but is slower. May be a comma separated list for each octave (only applicable when octave mode is set to new_features). 2 is the minimum value.",
+        )
+        .req_string_distance_mode(
+            default="euclidean",
+            placeholder=f"One of: {_pretty_distance_modes}",
+            tooltip="Distance modes. You can specify a comma-separated list of items which will be used for each octave.\n"
+            "You can specify an average of multiple distance modes by separating the names with +.\n"
+            "Some modes can take arguments. Example syntax: modename:argname=value:argname=value\n"
+            "All modes support scaling their output with dscale (which defaults to 1).\n"
+            f"Possible distance modes: {_pretty_distance_modes}",
+        )
+        .req_float_z_initial(
+            default=0.0,
+            tooltip="Initial value for z (depth).",
+        )
+        .req_float_z_increment(
+            default=1.0,
+            tooltip="Amount z (depth) is incremented when applicable.",
+        )
+        .req_float_z_max(
+            default=9999.0,
+            tooltip="Maximum difference from the intial value. At that point, z_max_mode will apply. When set to 0, z_increment has no effect and you will get different noise each time you call the noise sampler.",
+        )
+        .req_field_z_max_mode(
+            (
+                "reset",
+                "wrap",
+                "bounce",
+            ),
+            default="reset",
+            tooltip="Controls what happens when the z_max limit is hit (see tooltip for z_max). Reset will reset the feature points and z to the initial values. Wrap will reset z to the initial value. Bounce will flip the sign on the increment and do an increment.",
+        )
+        .req_string_result_mode(
+            default="diff2",
+            placeholder=f"One of: {_pretty_result_modes}",
+            tooltip="Result modes. You can specify a comma-separated list of items which will be used for each octave.\n"
+            "You can specify an average of multiple result modes by separating the names with +.\n"
+            "Some modes can take arguments. Example syntax: modename:argname=value:argname=value\n"
+            "All modes support scaling their output with rscale (which defaults to 1).\n"
+            f"Possible result modes: {_pretty_result_modes}",
+        )
+        .req_field_octave_mode(
+            ("same_features", "new_features"),
+            default="new_features",
+            tooltip="Only relevant when generating multiple octaves. Controls whether octaves share a set of feature points or if they are different for each octave (note that this is slower).",
+        )
+        .req_int_octaves(
+            default=3,
+            min=1,
+            tooltip="Number of octaves of noise to generate.",
+        )
+        .req_float_gain(default=0.75)
+        .req_float_lacunarity(default=2.0)
+        .req_float_initial_amplitude(default=1.0)
+        .req_float_initial_scale(default=1.0)
+        .req_normalizetristate_normalize()
+        .opt_customnoise(
+            "custom_noise",
+            tooltip="Optional input if you want to use some other noise type for the initial feature points. Won't work well with noise types that care about the content of the latent (I think only spectral modulation) or manage their own seed (I believe this only applies to Brownian or if you're using the custom noise parameters node to override seeds/fork the RNG).",
+        ),
+    )
+
+    @classmethod
+    def get_item_class(cls):
+        return noise.AdvancedVoronoiNoise
+
+    def go(
+        self,
+        *,
+        factor: float,
+        rescale: float,
+        n_points: str,
+        distance_mode: str,
+        z_initial: float,
+        z_increment: float,
+        z_max: float,
+        z_max_mode: str,
+        result_mode: str,
+        octave_mode: str,
+        octaves: int,
+        gain: float,
+        lacunarity: float,
+        initial_amplitude: float,
+        initial_scale: float,
+        normalize: str,
+        custom_noise=None,
+        sonar_custom_noise_opt=None,
+    ):
+        n_points = tuple(int(v) for v in n_points.split(","))
+        distance_mode = tuple(v.strip() for v in distance_mode.split(","))
+        result_mode = tuple(v.strip() for v in result_mode.split(","))
+        return super().go(
+            factor,
+            rescale=rescale,
+            sonar_custom_noise_opt=sonar_custom_noise_opt,
+            n_points=n_points,
+            distance_mode=distance_mode,
+            z_initial=z_initial,
+            z_increment=z_increment,
+            z_max=z_max,
+            z_max_mode=z_max_mode,
+            result_mode=result_mode,
+            octave_mode=octave_mode,
+            octaves=octaves,
+            gain=gain,
+            lacunarity=lacunarity,
+            initial_amplitude=initial_amplitude,
+            initial_scale=initial_scale,
+            custom_noise=custom_noise,
+            normalize=normalize,
+        )
+
+
 NODE_CLASS_MAPPINGS = {
     "SonarAdvancedPyramidNoise": SonarAdvancedPyramidNoiseNode,
     "SonarAdvanced1fNoise": SonarAdvanced1fNoiseNode,
     "SonarAdvancedPowerLawNoise": SonarAdvancedPowerLawNoiseNode,
     "SonarAdvancedCollatzNoise": SonarAdvancedCollatzNoiseNode,
     "SonarAdvancedDistroNoise": SonarAdvancedDistroNoiseNode,
+    "SonarAdvancedVoronoiNoise": SonarAdvancedVoronoiNoiseNode,
     "SonarWaveletNoise": SonarWaveletNoiseNode,
 }

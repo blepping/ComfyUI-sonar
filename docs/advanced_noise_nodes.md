@@ -448,3 +448,53 @@ Only provided if [ComfyUI-bleh](https://github.com/blepping/ComfyUI-bleh) is ava
 ```
 
 to flip the sign on the noise and then roll dimension -2 (height) by 50%.
+
+### `SonarAdvancedVoronoiNoise`
+
+This node can create multi-octave 3D Voronoi noise (also known as Worley noise). See: https://en.wikipedia.org/wiki/Worley_noise
+
+Similar to Pyramid and other weird noise types, this noise generally will require mixing with something more normal. The default settings actually just about work with SDXL.
+
+The node has many options for calculating the distance between the feature points and for processing the output. The modes are entered as a string, you can hover over the widget to get a brief list of possible modes. Both distance and result modes support some common features:
+
+* You can enter a comma-separated list of modes. This allows using a different mode per octave. If there are more octaves than you have modes defined, the mode will wrap. In other words, if you're generating three octaves and you define two modes then the third octave will use the first mode you defined.
+* You can enter a `+` (plus symbol) separated list of modes. The modes will be calculated and the result will be the average. Distance modes all have the common parameter `dscale` which defaults to 1 and can be overridden. Result modes use `rscale`. See below for a description on passing parameters.
+* It's possible to pass parameters to distance and result modes. Example with a result mode: `diff:idx1=0:idx2=1:rscale=0.5`
+
+**Note**: Some modes act as wrappers for other modes. Unfortunately, there isn't currently a good way to escape parameters. Modes ignore parameters they don't understand and the wrapper modes will pass through any parameters they don't use themselves so you _can_ pass parameters to the submodes as long as they don't conflict (and only up to one level).
+
+#### Distance Modes
+
+Modes listed with the defaults for parameters they support. These modes also support `dscale` which defaults to 1 and can be used to manually adjust the scale of the mode result.
+
+* `euclidean`
+* `manhatten`
+* `chebyshev`
+* `minkowsi:p=3.0`
+* `quadratic`
+* `angle:idx=2` - idxs here range from 0 to 2.
+* `angle_tanh:idx=2` - Same as `angle` but scales the result with tanh.
+* `angle_sigmoid:idx=2` - Same as `angle` but scales the result with the sigmoid function.
+* `fuzz:name=euclidean:fuzz=0.25` - Acts as a wrapper for another result mode (specified with `name`). Will perturb the result by `fuzz` percent of the absolute maximum value. Or more simply, randomizes values by +/- `fuzz` percentage so if you set `fuzz=1` you will essentially get pure noise.
+
+#### Result Modes
+
+Modes listed with the defaults for parameters they support. These modes also support `rscale` which defaults to 1 and can be used to manually adjust the scale of the mode result.
+
+* `f1` - distance to the closest cell.
+* `f2`, `f3`, `f4` - Same as `f1` but for the second closest, third closest, etc. Goes up to `f4`.
+* `f:idx=0` - Allows specifying `f` modes over `f4`. Note that `idx` is zero-based so 0 corresponds to `f1`.
+* `inv_f1` (through `inv_f4`). For `inv_f1`, the result is `1 / f1` (with a tiny value added to avoid divide by zero).
+* `inv_f:idx=0` - Like the `f` mode using the formula described above.
+* `diff:idx1=0:idx2=1` - Zero based indexes where 0 corresponds to `f1`, etc. For the default (`f1` and `f2`) the result is `f2 - f1`.
+* `diff2:idx1=0:idx2=1` - Similar to `diff` described above, however the result is divided by the two `f` results (plus a tiny addition to avoid divide by zero). For example with the defaults this works out to `(f2 - f1) / (f2 + f1)`.
+* `cellid` - Returns a discrete value for the area of each cell (diffusion models hate this). You will need to dilute the Voronoi noise a lot to actually use this. It could also possibly be used for masking.
+* `median_distance`
+* `fuzz:name=f1:fuzz=0.25` - Works the same as `fuzz` in distance modes. See the description there.
+
+#### Depth
+
+
+The node has several `z`-related parameters. `z` here refers to the depth dimension and will (currently) only apply if you're using the same noise sampler more than once. So generally not for initial noise, unless you're doing something unusual.
+
+When `z_max` is set to 0 the feature points will be reset each time the noise sampler is called. Otherwise it will track the current `z` (depth) and increment it by whatever you specify each time the noise sampler is called. `SonarPerDimNoise` can be useful here if you want depth over dimensions like batch or channels.

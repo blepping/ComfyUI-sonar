@@ -5,21 +5,29 @@ from enum import Enum, auto
 from typing import TYPE_CHECKING, Callable, NamedTuple
 
 import torch
-import yaml
 from tqdm import tqdm
 
-from .. import utils
-from ..external import IntegratedNode
-from ..wavelet_functions import (
+from . import utils
+from .wavelet_functions import (
     Wavelet,
     expand_yh_scales,
     wavelet_blend,
     wavelet_scaling,
 )
-from .base import SonarInputTypes, SonarLazyInputTypes
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+
+def pretty_non_default(obj: NamedTuple, *, defaults: object | None = None) -> str:
+    result = ", ".join(
+        f"{fn}={fv.pretty_non_default()}"
+        if hasattr(fv, "pretty_non_default")
+        else f"{fn}={fv!r}"
+        for fn, fv in ((_fn, getattr(obj, _fn)) for _fn in obj._fields)
+        if defaults is None or fv != getattr(defaults, fn)
+    )
+    return f"{obj.__class__.__name__}({result})"
 
 
 class WCFGSchedule(Enum):
@@ -304,14 +312,7 @@ class WCFGScheduledScale(NamedTuple):
         return pct
 
     def pretty_non_default(self) -> str:
-        result = ", ".join(
-            f"{fn}={fv.pretty_non_default()}"
-            if hasattr(fv, "pretty_non_default")
-            else f"{fn}={fv!r}"
-            for fn, fv in ((_fn, getattr(self, _fn)) for _fn in self._fields)
-            if fv != getattr(DEFAULT_SCHEDULEDSCALE, fn)
-        )
-        return f"WCFGScheduledScale({result})"
+        return pretty_non_default(self, defaults=DEFAULT_SCHEDULEDSCALE)
 
 
 DEFAULT_SCHEDULEDSCALE = WCFGScheduledScale()
@@ -321,6 +322,7 @@ class WCFGScalesRange(NamedTuple):
     scales_start: WCFGScales = WCFGScales()
     scales_end: WCFGScales | None = None
     scheduler: WCFGScheduledScale | None = None
+    blend_mode: str = "lerp"
 
     @classmethod
     def build(cls, **kwargs: dict) -> WCFGScales | WCFGScalesRange:
@@ -336,6 +338,7 @@ class WCFGScalesRange(NamedTuple):
                 yl_scale=scales_start.get("yl_scale", 1.0),
                 yh_scales=scales_start.get("yh_scales", 1.0),
             )
+        blend_mode = kwargs.pop("blend_mode", "lerp")
         return WCFGScalesRange(
             scales_start=WCFGScales(**scales_start),
             scales_end=WCFGScales(**scales_end),
@@ -344,6 +347,7 @@ class WCFGScalesRange(NamedTuple):
                 bool(scales_end),
                 WCFGScheduledScale.build,
             ),
+            blend_mode=blend_mode,
         )
 
     def get_scales(
@@ -359,9 +363,10 @@ class WCFGScalesRange(NamedTuple):
         if verbose:
             tqdm.write(f"WCFG:   pct={pct:.4f}, percentages: {pcts}")
         start, end = self.scales_start, self.scales_end
-        if pct <= 0:
+        simple_blend = self.blend_mode == "lerp"
+        if pct <= 0 and simple_blend:
             simple_result = start
-        elif pct >= 1:
+        elif pct >= 1 and simple_blend:
             simple_result = end
         else:
             simple_result = None
@@ -371,12 +376,22 @@ class WCFGScalesRange(NamedTuple):
                     f"WCFG:     {simple_result.pretty_scales()}",
                 )
             return simple_result
-        start_scale, end_scale = 1.0 - pct, pct
         start_yh_scales = expand_yh_scales(yh, yh_scales=start.yh_scales)
         end_yh_scales = expand_yh_scales(yh, yh_scales=end.yh_scales)
-        yl_scale = start.yl_scale * start_scale + end.yl_scale * end_scale
+        blend_function = (
+            None if self.blend_mode == "lerp" else utils.BLENDING_MODES[self.blend_mode]
+        )
+        yl_scale = utils.blend_scalar(
+            start.yl_scale,
+            end.yl_scale,
+            pct,
+            blend_function=blend_function,
+        )
         yh_scales = tuple(
-            tuple(os * start_scale + oe * end_scale for os, oe in zip(bs, be))
+            tuple(
+                utils.blend_scalar(os, oe, pct, blend_function=blend_function)
+                for os, oe in zip(bs, be)
+            )
             for bs, be in zip(start_yh_scales, end_yh_scales)
         )
         result = WCFGScales(yl_scale=yl_scale, yh_scales=yh_scales)
@@ -404,14 +419,7 @@ class WCFGScalesRange(NamedTuple):
         return self.get_scales(pcts, yh, verbose=verbose).apply_scales(yl, yh)
 
     def pretty_non_default(self) -> str:
-        result = ", ".join(
-            f"{fn}={fv.pretty_non_default()}"
-            if hasattr(fv, "pretty_non_default")
-            else f"{fn}={fv!r}"
-            for fn, fv in ((_fn, getattr(self, _fn)) for _fn in self._fields)
-            if fv != getattr(DEFAULT_SCALESRANGE, fn)
-        )
-        return f"WCFGScalesRange({result})"
+        return pretty_non_default(self, defaults=DEFAULT_SCALESRANGE)
 
 
 DEFAULT_SCALESRANGE = WCFGScalesRange()
@@ -457,6 +465,46 @@ class WCFGScheduledFloat(NamedTuple):
         return (1.0 - pct) * self.value_start + pct * self.value_end
 
 
+class WCFGWaveletSettings(NamedTuple):
+    wave: str = "db4"
+    level: int = 5
+    padding_mode: str = "symmetric"
+    use_1d_dwt: bool = False
+    use_dtcwt: bool = False
+    biort: str = "near_sym_a"
+    qshift: str = "qshift_a"
+    inv_wave: str | None = None
+    inv_padding_mode: str | None = None
+    inv_biort: str | None = None
+    inv_qshift: str | None = None
+
+    @classmethod
+    def build(cls, **kwargs: dict) -> WCFGWaveletSettings:
+        return WCFGWaveletSettings(**utils.filter_dict(kwargs, cls._fields))
+
+    def make_wavelet(self, **kwargs: dict) -> Wavelet:
+        return Wavelet(
+            wave=self.wave,
+            level=self.level,
+            mode=self.padding_mode,
+            use_1d_dwt=self.use_1d_dwt,
+            use_dtcwt=self.use_dtcwt,
+            biort=self.biort,
+            qshift=self.qshift,
+            inv_wave=self.inv_wave,
+            inv_mode=self.inv_padding_mode,
+            inv_biort=self.inv_biort,
+            inv_qshift=self.inv_qshift,
+            **kwargs,
+        )
+
+    def pretty_non_default(self) -> str:
+        return pretty_non_default(self, defaults=DEFAULT_WAVELETSETTINGS)
+
+
+DEFAULT_WAVELETSETTINGS = WCFGWaveletSettings()
+
+
 class WCFGRule(NamedTuple):
     start_sigma: float = math.inf
     end_sigma: float = 0.0
@@ -469,18 +517,8 @@ class WCFGRule(NamedTuple):
     cond: WCFGScalesRange | WCFGScales | None = None
     uncond: WCFGScalesRange | WCFGScales | None = None
     final: WCFGScalesRange | WCFGScales | None = None
-    wave: str = "db4"
-    level: int = 5
-    padding_mode: str = "symmetric"
-    use_1d_dwt: bool = False
-    use_dtcwt: bool = False
-    biort: str = "near_sym_a"
-    qshift: str = "qshift_a"
+    wavelet: WCFGWaveletSettings = DEFAULT_WAVELETSETTINGS
     high_precision_mode: bool = True
-    inv_wave: str | None = None
-    inv_padding_mode: str | None = None
-    inv_biort: str | None = None
-    inv_qshift: str | None = None
     difference_blend_mode: str = "inject"
     difference_blend_strength: WCFGScheduledFloat = WCFGScheduledFloat(1.0)
 
@@ -519,24 +557,12 @@ class WCFGRule(NamedTuple):
             final=final,
             blend_strength=WCFGScheduledFloat(blend_strength),
             difference_blend_strength=WCFGScheduledFloat(difference_blend_strength),
+            wavelet=WCFGWaveletSettings.build(**kwargs),
             **utils.filter_dict(kwargs, cls._fields),
         )
 
     def make_wavelet(self, **kwargs: dict) -> Wavelet:
-        return Wavelet(
-            wave=self.wave,
-            level=self.level,
-            mode=self.padding_mode,
-            use_1d_dwt=self.use_1d_dwt,
-            use_dtcwt=self.use_dtcwt,
-            biort=self.biort,
-            qshift=self.qshift,
-            inv_wave=self.inv_wave,
-            inv_mode=self.inv_padding_mode,
-            inv_biort=self.inv_biort,
-            inv_qshift=self.inv_qshift,
-            **kwargs,
-        )
+        return self.wavelet.make_wavelet(**kwargs)
 
     def get_and_apply_scales(
         self,
@@ -555,14 +581,7 @@ class WCFGRule(NamedTuple):
         return scales.apply_scales(yl, yh)
 
     def pretty_non_default(self) -> str:
-        result = ", ".join(
-            f"{fn}={fv.pretty_non_default()}"
-            if hasattr(fv, "pretty_non_default")
-            else f"{fn}={fv!r}"
-            for fn, fv in ((_fn, getattr(self, _fn)) for _fn in self._fields)
-            if fv != getattr(DEFAULT_RULE, fn)
-        )
-        return f"WCFGRule({result})"
+        return pretty_non_default(self, defaults=DEFAULT_RULE)
 
 
 DEFAULT_RULE = WCFGRule()
@@ -659,7 +678,7 @@ class WaveletCFG:
         sigma_orig = sigma = args["sigma"]
         rule_id = id(rule)
         x = args["input"]
-        if x.ndim == 3 and not rule.use_1d_dwt:
+        if x.ndim == 3 and not rule.wavelet.use_1d_dwt:
             raise RuntimeError("Enable use_1d_dwt mode for 3D latents.")
         if x.ndim < 3:
             raise RuntimeError(
@@ -691,7 +710,7 @@ class WaveletCFG:
             wavelet = rule.make_wavelet()
             self.wavelet_cache[rule_id] = wavelet
         wavelet = wavelet.to(device=x.device, dtype=eff_dtype)
-        if rule.use_1d_dwt:
+        if rule.wavelet.use_1d_dwt:
             cond = cond.flatten(start_dim=2)
             uncond = uncond.flatten(start_dim=2)
         elif x.ndim > 4:
@@ -715,7 +734,7 @@ class WaveletCFG:
         ctx: WCFGContext,
     ) -> torch.Tensor:
         x_shape = ctx.x.shape
-        if rule.use_1d_dwt:
+        if rule.wavelet.use_1d_dwt:
             result = result[..., : ctx.cond.shape[2]].reshape(x_shape)
         elif ctx.x.ndim > 4:
             result = result[..., : x_shape[-2], : x_shape[-1]].reshape(x_shape)
@@ -821,239 +840,3 @@ class WaveletCFG:
             self.operation_result,
             **ctx.op_kwargs,
         ).contiguous()
-
-
-class SonarWaveletCFGNode(metaclass=IntegratedNode):
-    DESCRIPTION = "Wavelet CFG function that allows you to apply different CFG strength to different frequencies."
-    CATEGORY = "model_patches"
-    RETURN_TYPES = ("MODEL",)
-    FUNCTION = "go"
-
-    _yaml_placeholder = """# YAML or JSON here.
-# Note: Do not remove keys and there isn't really any error checking.
-# For wavelet information, see: https://pytorch-wavelets.readthedocs.io/en/latest/index.html
-
-# You may override the fields from the node like start_sigma here.
-
-# This section is basically the CFG scale. (All scales sections use the same format.)
-difference:
-    # Scale for the low frequency components.
-    yl_scale: 5.0
-
-    # Scale (or scales) for high frequency components.
-    # This can be scalar or a list or list of lists.
-    # List example:
-    #  yh_scales:
-    #      - [1, 2, 3]
-    #      - fill
-    #      - 5
-    # You can separately apply a scale to items equal to the wavelet level. Levels go from fine to coarse.
-    # If the item is a list, the three items correspond to horizontal, vertical, diagonal for DWT. (DTCWT has 6.)
-    # You can have one "fill" item, this will replicate the item before it however many times is necessary to
-    # match the wavelet level.
-    yh_scales: 3.0
-
-    # You can optionally include a scales_end block with yl_scale/yh_scales.
-    # to interpolate from the toplevel scales (can also be in a scales_start blockx if you prefer).
-
-    # scales_end:
-    #     yl_scale: 1.0
-    #     yh_scales: 1.0
-
-    # The following scheduling parameters only apply if scales_end exists.
-
-    # One of linear, logarithmic, exponential, half_cosine, sine
-    # Sine mode will hit the peak scales_after values in the middle of the range.
-    schedule: linear
-
-    # One of: sampling, enabled_sampling, sigmas, enabled_sigmas, step, enabled_steps
-    schedule_mode: enabled_sampling
-
-    # When enabled, flips the schedule percentage. This happens before the schedule is applied
-    # or any offset/multiplier stuff. If you want to flip the final result you can do something like
-    # schedule_offset_after: -1.0 and schedule_multiplier_after: -1.0
-    reverse_schedule: false
-
-    # Added to the percentage before the schedule function is applied.
-    schedule_offset: 0.0
-
-    # Applied to the percentage before the schedule function (but after the offset).
-    schedule_multiplier: 1.0
-
-    # Added to the percentage after the schedule function is applied.
-    schedule_offset_after: 0.0
-
-    # Applied to the percentage after the schedule function (but after the offset).
-    schedule_multiplier_after: 1.0
-
-    # Min/max for the final calculated percent. Must be between 0 and 1.
-    schedule_min: 0.0
-    schedule_max: 1.0
-
-
-# Wavelet type
-wave: db4
-
-# Wavelet level
-level: 5
-
-### Start of advanced options
-
-# Mode used for padding
-padding_mode: symmetric
-
-# Mutually exclusive with DTCWT mode.
-use_1d_dwt: false
-
-# Enables DTCWT mode.
-use_dtcwt: false
-
-# Configuration for DTCWT, only relevant when enabled.
-biort: near_sym_a
-qshift: qshift_a
-
-# It's also possible to set these wavelet options with an "inv_"
-# prefix: mode, biort, qshift, wave, padding_mode
-
-# One of: noise_norm, noise, denoised
-# Normal CFG uses denoised mode. noise_norm divides by the current sigma, noise just uses the raw noise prediction.
-target_mode: denoised
-
-# Can be used to scale cond before the difference is calculated.
-cond:
-    yl_scale: 1.0
-    yh_scales: 1.0
-
-# Can be used to scale uncond before the difference is calculated.
-uncond:
-    yl_scale: 1.0
-    yh_scales: 1.0
-
-# Can be used to scale the final result after blending.
-final:
-    yl_scale: 1.0
-    yh_scales: 1.0
-
-# Uses float64 for the wavelets/scaling/blending operations.
-# It doesn't not seem to hurt performance much, but you can disable it if you want.
-high_precision_mode: true
-
-# Inject is just addition which is usually what you want. The normal CFG function is:
-# uncond + (cond - uncond) * cfg_scale
-difference_blend_mode: inject
-difference_blend_strength: 1.0
-
-# Per-rule value, can be enabled to spam your console with information when
-# rules activate, dump exactly what high/low scales are used, etc.
-verbose: false
-
-# You may include a rules block which is a list of these configuration definitions.
-# Include start_sigma/end_sigma parameters. The first matching definition will be used.
-# rules:
-#     - start_sigma: -1.0
-"""
-
-    INPUT_TYPES = SonarLazyInputTypes(
-        lambda _yaml_placeholder=_yaml_placeholder: SonarInputTypes()
-        .req_model()
-        .req_float_start_sigma(
-            default=-1.0,
-            min=-1.0,
-            tooltip="First sigma wavelet CFG will be used.",
-        )
-        .req_float_end_sigma(
-            default=0.0,
-            min=0.0,
-            tooltip="Last sigma wavelet CFG will be used.",
-        )
-        .req_field_fallback_mode(
-            ("existing", "own"),
-            default="existing",
-            tooltip="Existing mode uses whatever CFG function existed set when this model patch was applied. Own mode does the CFG calculation on its own. The scale will be whatever you set in your guider or sampler.",
-        )
-        .req_selectblend_blend_mode(
-            tooltip="Controls how the result from wavelet CFG is blended with normal CFG. The default of LERP with strength 1.0 uses 100% wavelet CFG.",
-        )
-        .req_float_blend_strength(
-            default=1.0,
-            tooltip="Controls how the result from wavelet CFG is blended with normal CFG. The default of LERP with strength 1.0 uses 100% wavelet CFG.",
-        )
-        .req_yaml(default=_yaml_placeholder)
-        .opt_field_operation_cond(
-            "LATENT_OPERATION",
-            tooltip="Optional latent operation that will be applied to cond. Note: Latent operations only apply if a rule matches.",
-        )
-        .opt_field_operation_uncond(
-            "LATENT_OPERATION",
-            tooltip="Optional latent operation that will be applied to uncond. Note: Latent operations only apply if a rule matches.",
-        )
-        .opt_field_operation_fallback_cfg(
-            "LATENT_OPERATION",
-            tooltip="Optional latent operation that will be applied to the fallback (non-wavelet) CFG result. Note: Latent operations only apply if a rule matches.",
-        )
-        .opt_field_operation_wavelet_cfg(
-            "LATENT_OPERATION",
-            tooltip="Optional latent operation that will be applied to wavelet CFG result. Note: Latent operations only apply if a rule matches.",
-        )
-        .opt_field_operation_result(
-            "LATENT_OPERATION",
-            tooltip="Optional latent operation that will be applied to the final result, after wavelet and normal CFG are potentially blended. Note: Latent operations only apply if a rule matches.",
-        ),
-    )
-
-    @classmethod
-    def go(
-        cls,
-        *,
-        model: object,
-        start_sigma: float,
-        end_sigma: float,
-        fallback_mode: str,
-        blend_mode: str,
-        blend_strength: float,
-        yaml_parameters: str,
-        operation_cond: Callable | None = None,
-        operation_uncond: Callable | None = None,
-        operation_fallback_cfg: Callable | None = None,
-        operation_wavelet_cfg: Callable | None = None,
-        operation_result: Callable | None = None,
-        _override_rules_dict: dict | None = None,
-    ) -> tuple[object]:
-        if start_sigma < 0:
-            start_sigma = math.inf
-        if _override_rules_dict is not None:
-            wavelet_params = _override_rules_dict.copy()
-        else:
-            wavelet_params = yaml.safe_load(yaml_parameters)
-        rules = WCFGRules.build(
-            **(
-                {
-                    "start_sigma": start_sigma,
-                    "end_sigma": end_sigma,
-                    "fallback_existing": fallback_mode == "existing",
-                    "blend_mode": blend_mode,
-                    "blend_strength": blend_strength,
-                }
-                | wavelet_params
-            ),
-        )
-        if len(rules) and rules[0].verbose:
-            tqdm.write(f"\nWCFG: Using rules: {rules}\n")
-        model = model.clone()
-        model.set_model_sampler_cfg_function(
-            WaveletCFG(
-                existing_cfg=model.model_options.get("sampler_cfg_function"),
-                rules=rules,
-                operation_cond=operation_cond,
-                operation_uncond=operation_uncond,
-                operation_fallback_cfg=operation_fallback_cfg,
-                operation_wavelet_cfg=operation_wavelet_cfg,
-                operation_result=operation_result,
-            ),
-        )
-        return (model,)
-
-
-NODE_CLASS_MAPPINGS = {
-    "SonarWaveletCFG": SonarWaveletCFGNode,
-}

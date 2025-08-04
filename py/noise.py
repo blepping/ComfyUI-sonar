@@ -443,6 +443,30 @@ class AdvancedWaveletNoise(AdvancedNoiseBase):
         return result
 
 
+class AdvancedVoronoiNoise(AdvancedNoiseBase):
+    ns_factory_arg_keys = tuple(VoronoiNoiseGenerator.ng_params(no_super=True))
+
+    @property
+    def ns_factory(self):
+        return VoronoiNoiseGenerator
+
+    def clone_key(self, k):
+        if k == "custom_noise" and self.custom_noise is not None:
+            return self.custom_noise.clone()
+        return super().clone_key(k)
+
+    def make_noise_sampler(self, x, *args, normalized=True, **kwargs):
+        if x.ndim != 4:
+            raise ValueError("Can only handle 4+ dimensional latents")
+        return super().make_noise_sampler(
+            x,
+            *args,
+            normalized=normalized,
+            noise_sampler_factory=self.custom_noise,
+            **kwargs,
+        )
+
+
 class CompositeNoise(CustomNoiseItemBase):
     def __init__(
         self,
@@ -1284,17 +1308,26 @@ class BlendedNoise(CustomNoiseItemBase):
         blend_function,
         custom_noise_1=None,
         custom_noise_2=None,
+        custom_noise_mask=None,
         noise_2_percent=0.5,
     ):
-        if custom_noise_1 is None and noise_2_percent != 1:
+        if custom_noise_1 is None and (
+            custom_noise_mask is not None or noise_2_percent != 1
+        ):
             raise ValueError(
                 "When custom_noise_1 is not attached noise_2_percent must be set to 1",
             )
-        if custom_noise_2 is None and noise_2_percent != 0:
+        if custom_noise_2 is None and (
+            custom_noise_mask is not None or noise_2_percent != 0
+        ):
             raise ValueError(
                 "When custom_noise_2 is not attached noise_2_percent must be set to 0",
             )
-        if noise_2_percent == 1 and custom_noise_1 is None:
+        if (
+            custom_noise_mask is None
+            and noise_2_percent == 1
+            and custom_noise_1 is None
+        ):
             custom_noise_1, custom_noise_2 = custom_noise_2, None
             noise_2_percent = 0.0
         super().__init__(
@@ -1303,6 +1336,9 @@ class BlendedNoise(CustomNoiseItemBase):
             blend_function=blend_function,
             custom_noise_1=custom_noise_1.clone(),
             custom_noise_2=None if custom_noise_2 is None else custom_noise_2.clone(),
+            custom_noise_mask=None
+            if custom_noise_mask is None
+            else custom_noise_mask.clone(),
             normalize=normalize,
         )
 
@@ -1311,6 +1347,12 @@ class BlendedNoise(CustomNoiseItemBase):
             return self.custom_noise_1.clone()
         if k == "custom_noise_2":
             return None if self.custom_noise_2 is None else self.custom_noise_2.clone()
+        if k == "custom_noise_mask":
+            return (
+                None
+                if self.custom_noise_mask is None
+                else self.custom_noise_mask.clone()
+            )
         return super().clone_key(k)
 
     def make_noise_sampler(self, x, *args, normalized=True, **kwargs):
@@ -1318,7 +1360,7 @@ class BlendedNoise(CustomNoiseItemBase):
         normalize = self.get_normalize("normalize", normalized)
         blend_function = self.blend_function
         n2_blend = self.noise_2_percent
-        n2_blend_tensor = x.new_full((1,), n2_blend)
+
         ns_1 = self.custom_noise_1.make_noise_sampler(
             x,
             *args,
@@ -1335,10 +1377,26 @@ class BlendedNoise(CustomNoiseItemBase):
                 **kwargs,
             )
         )
+        ns_mask = (
+            None
+            if self.custom_noise_mask is None
+            else self.custom_noise_mask.make_noise_sampler(
+                x,
+                *args,
+                normalized=False,
+                **kwargs,
+            )
+        )
+        n2_blend_tensor = x.new_full((1,), n2_blend) if ns_mask is None else None
 
         def noise_sampler(s, sn):
+            nonlocal n2_blend_tensor
             noise_1 = ns_1(s, sn)
             noise_2 = None if ns_2 is None else ns_2(s, sn)
+            if ns_mask is not None:
+                n2_blend_tensor = (
+                    utils.normalize_to_scale(ns_mask(s, sn), 0.0, 1.0) + n2_blend
+                ).clamp_(0.0, 1.0)
             noise = (
                 noise_1
                 if noise_2 is None
@@ -2311,6 +2369,43 @@ NOISE_SAMPLERS: dict[NoiseType, Callable] = {
         ),
     ),
     NoiseType.COLLATZ: NoiseSampler.wrap(CollatzNoiseGenerator),
+    NoiseType.VORONOI_FUZZ: NoiseSampler.wrap(
+        partial(
+            VoronoiNoiseGenerator,
+            n_points=(256,),
+            octaves=1,
+            distance_mode=("fuzz:name=angle_tanh:fuzz=0.1",),
+            result_mode=("diff2",),
+            z_max=0.0,
+        ),
+    ),
+    NoiseType.VORONOI_MIX: NoiseSampler.wrap(
+        partial(
+            MixedNoiseGenerator,
+            name="voronoi_mix",
+            noise_mix=(
+                (
+                    VoronoiNoiseGenerator,
+                    {
+                        "n_points": (256,),
+                        "octaves": 3,
+                        "distance_mode": ("euclidean",),
+                        "result_mode": ("diff2",),
+                        "octave_mode": "new_features",
+                        "lacunarity": 2.0,
+                        "gain": 0.75,
+                        "z_max": 0.0,
+                    },
+                    lambda t: t.mul_(0.6),
+                ),
+                (
+                    GaussianNoiseGenerator,
+                    {},
+                    lambda t: t.mul_(0.4),
+                ),
+            ),
+        ),
+    ),
 }
 
 

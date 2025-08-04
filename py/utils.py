@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import random
 from functools import partial
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 import torch
 from comfy.model_management import device_supports_non_blocking, get_torch_device
@@ -28,6 +28,31 @@ UPSCALE_METHODS = (
     "bislerp",
     "adaptive_avg_pool2d",
 )
+
+
+def blend_scalar(
+    a: float,
+    b: float,
+    t: float,
+    *,
+    blend_function: Callable | None = None,
+    clamp_function: Callable | None = None,
+) -> float:
+    if blend_function is None:
+        return maybe_apply(
+            a * (1.0 - t) + b * t,
+            clamp_function is not None,
+            clamp_function,
+        )
+    return maybe_apply(
+        blend_function(
+            *(torch.tensor((v,), device="cpu", dtype=torch.float64) for v in (a, b, t)),
+        )
+        .cpu()
+        .item(),
+        clamp_function is not None,
+        clamp_function,
+    )
 
 
 def scale_samples(

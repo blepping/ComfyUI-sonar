@@ -8,7 +8,6 @@ from . import (
     noise_filters,
     noise_types,
     powernoise,
-    wavelet_cfg,
 )
 
 NODE_CLASS_MAPPINGS = {
@@ -26,7 +25,6 @@ for nm in (
     noise_filters,
     noise_types,
     powernoise,
-    wavelet_cfg,
 ):
     NODE_CLASS_MAPPINGS |= getattr(nm, "NODE_CLASS_MAPPINGS", {})
     NODE_DISPLAY_NAME_MAPPINGS |= getattr(nm, "NODE_DISPLAY_NAME_MAPPINGS", {})

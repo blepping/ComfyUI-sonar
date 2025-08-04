@@ -25,6 +25,7 @@ composite and otherwise manipulate noise see:
 * [Advanced Power Noise](docs/advanced_power_noise.md) - examples and descriptions of the advanced power noise node.
 * [Advanced Noise Nodes](docs/advanced_noise_nodes.md) - examples and descriptions of advanced noise nodes (schedule, composite, etc).
 * [FreeU Extreme](docs/frux.md) - a build your own FreeU kit that allows advanced filtering, blending, scheduling of effects as well as targetting input and middle blocks.
+* [Wavelet CFG](docs/waveletcfg.md) - replacement CFG function that lets you set different CFG scales for high/low frequency parts of the latent. You can even do stuff like use a different CFG scale for horizontal versus vertical.
 
 ## Sonar Description
 
