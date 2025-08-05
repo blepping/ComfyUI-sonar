@@ -120,7 +120,11 @@ class IntegratedNode(type):
 
     def __new__(cls: type, name: str, bases: tuple, attrs: dict) -> object:
         obj = type.__new__(cls, name, bases, attrs)
-        if hasattr(obj, "INPUT_TYPES"):
+        if hasattr(obj, "INPUT_TYPES") and not getattr(
+            obj.INPUT_TYPES,
+            "_NO_REPLACE",
+            False,
+        ):
             obj.INPUT_TYPES = partial(cls.wrap_INPUT_TYPES, obj.INPUT_TYPES)
         return obj
 

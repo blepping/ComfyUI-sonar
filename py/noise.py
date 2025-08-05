@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import abc
 import math
+import random
 from functools import partial
 from typing import Callable
 
@@ -15,6 +16,7 @@ from . import external, utils
 from .noise_generation import *
 from .sonar import SonarGuidanceMixin
 from .utils import (
+    RNGStates,
     crop_samples,
     fallback,
     pattern_break,
@@ -40,7 +42,15 @@ class CustomNoiseItemBase(abc.ABC):
         self.factor = factor
         self.keys = set(kwargs.keys())
         for k, v in kwargs.items():
-            setattr(self, k, v)
+            do_clone = k in {
+                "custom_noise",
+                "custom_noise_opt",
+                "noise",
+                "noise_opt",
+                "sonar_custom_noise",
+                "sonar_custom_noise_opt",
+            } and hasattr(v, "clone")
+            setattr(self, k, v.clone() if do_clone else v)
 
     def clone_key(self, k):
         return getattr(self, k)
@@ -431,6 +441,30 @@ class AdvancedWaveletNoise(AdvancedNoiseBase):
         )
         wavelet_ng.set_internal_noise_sampler(internal_ns)
         return result
+
+
+class AdvancedVoronoiNoise(AdvancedNoiseBase):
+    ns_factory_arg_keys = tuple(VoronoiNoiseGenerator.ng_params(no_super=True))
+
+    @property
+    def ns_factory(self):
+        return VoronoiNoiseGenerator
+
+    def clone_key(self, k):
+        if k == "custom_noise" and self.custom_noise is not None:
+            return self.custom_noise.clone()
+        return super().clone_key(k)
+
+    def make_noise_sampler(self, x, *args, normalized=True, **kwargs):
+        if x.ndim != 4:
+            raise ValueError("Can only handle 4+ dimensional latents")
+        return super().make_noise_sampler(
+            x,
+            *args,
+            normalized=normalized,
+            noise_sampler_factory=self.custom_noise,
+            **kwargs,
+        )
 
 
 class CompositeNoise(CustomNoiseItemBase):
@@ -1179,9 +1213,7 @@ class NormalizeToScaleNoise(CustomNoiseItemBase):
         min_positive_value: float,
         max_positive_value: float,
         mode: str,
-        dims: tuple,
-        normalize_noise: float,
-        normalize,
+        **kwargs,
     ):
         if mode == "simple":
             if min_negative_value >= max_positive_value:
@@ -1207,9 +1239,7 @@ class NormalizeToScaleNoise(CustomNoiseItemBase):
             min_positive_value=min_positive_value,
             max_positive_value=max_positive_value,
             mode=mode,
-            dims=dims,
-            normalize_noise=normalize_noise,
-            normalize=normalize,
+            **kwargs,
         )
 
     def clone_key(self, k):
@@ -1218,6 +1248,8 @@ class NormalizeToScaleNoise(CustomNoiseItemBase):
         return super().clone_key(k)
 
     def make_noise_sampler(self, x, *args, normalized=True, **kwargs):
+        std_dims, std_multiplier = self.std_dims, self.std_multiplier
+        mean_dims, mean_multiplier = self.mean_dims, self.mean_multiplier
         factor = self.factor
         mode = self.mode
         if mode == "simple":
@@ -1252,6 +1284,16 @@ class NormalizeToScaleNoise(CustomNoiseItemBase):
             else:
                 for bidx in range(noise.shape[0]):
                     noise[bidx] = noise_filter(noise[bidx])
+            if mean_multiplier != 0:
+                noise -= noise.mean(dim=mean_dims, keepdim=True).mul_(mean_multiplier)
+            if std_multiplier != 0:
+                noise_std = (
+                    noise.std(dim=std_dims, keepdim=True)
+                    .sub_(1.0)
+                    .mul_(std_multiplier)
+                    .add_(1.0)
+                )
+                noise /= torch.where(noise_std == 0, 1e-07, noise_std)
             return scale_noise(noise, factor, normalized=normalize)
 
         return noise_sampler
@@ -1266,26 +1308,37 @@ class BlendedNoise(CustomNoiseItemBase):
         blend_function,
         custom_noise_1=None,
         custom_noise_2=None,
+        custom_noise_mask=None,
         noise_2_percent=0.5,
     ):
-        if custom_noise_1 is None and noise_2_percent != 1:
+        if custom_noise_1 is None and (
+            custom_noise_mask is not None or noise_2_percent != 1
+        ):
             raise ValueError(
                 "When custom_noise_1 is not attached noise_2_percent must be set to 1",
             )
-        if custom_noise_2 is None and noise_2_percent != 0:
+        if custom_noise_2 is None and (
+            custom_noise_mask is not None or noise_2_percent != 0
+        ):
             raise ValueError(
                 "When custom_noise_2 is not attached noise_2_percent must be set to 0",
             )
-        if noise_2_percent == 1:
+        if (
+            custom_noise_mask is None
+            and noise_2_percent == 1
+            and custom_noise_1 is None
+        ):
             custom_noise_1, custom_noise_2 = custom_noise_2, None
             noise_2_percent = 0.0
-
         super().__init__(
             factor,
             noise_2_percent=noise_2_percent,
             blend_function=blend_function,
             custom_noise_1=custom_noise_1.clone(),
             custom_noise_2=None if custom_noise_2 is None else custom_noise_2.clone(),
+            custom_noise_mask=None
+            if custom_noise_mask is None
+            else custom_noise_mask.clone(),
             normalize=normalize,
         )
 
@@ -1294,6 +1347,12 @@ class BlendedNoise(CustomNoiseItemBase):
             return self.custom_noise_1.clone()
         if k == "custom_noise_2":
             return None if self.custom_noise_2 is None else self.custom_noise_2.clone()
+        if k == "custom_noise_mask":
+            return (
+                None
+                if self.custom_noise_mask is None
+                else self.custom_noise_mask.clone()
+            )
         return super().clone_key(k)
 
     def make_noise_sampler(self, x, *args, normalized=True, **kwargs):
@@ -1301,7 +1360,7 @@ class BlendedNoise(CustomNoiseItemBase):
         normalize = self.get_normalize("normalize", normalized)
         blend_function = self.blend_function
         n2_blend = self.noise_2_percent
-        n2_blend_tensor = x.new_full((1,), n2_blend)
+
         ns_1 = self.custom_noise_1.make_noise_sampler(
             x,
             *args,
@@ -1318,13 +1377,30 @@ class BlendedNoise(CustomNoiseItemBase):
                 **kwargs,
             )
         )
+        ns_mask = (
+            None
+            if self.custom_noise_mask is None
+            else self.custom_noise_mask.make_noise_sampler(
+                x,
+                *args,
+                normalized=False,
+                **kwargs,
+            )
+        )
+        n2_blend_tensor = x.new_full((1,), n2_blend) if ns_mask is None else None
 
         def noise_sampler(s, sn):
+            nonlocal n2_blend_tensor
             noise_1 = ns_1(s, sn)
+            noise_2 = None if ns_2 is None else ns_2(s, sn)
+            if ns_mask is not None:
+                n2_blend_tensor = (
+                    utils.normalize_to_scale(ns_mask(s, sn), 0.0, 1.0) + n2_blend
+                ).clamp_(0.0, 1.0)
             noise = (
                 noise_1
-                if n2_blend == 0 or ns_2 is None
-                else blend_function(noise_1, ns_2(s, sn), n2_blend_tensor)
+                if noise_2 is None
+                else blend_function(noise_1, noise_2, n2_blend_tensor)
             )
             return scale_noise(noise, factor, normalized=normalize)
 
@@ -1353,9 +1429,23 @@ class ResizedNoise(CustomNoiseItemBase):
             raise ValueError("ResizedNoise can only handle 3+ dimensional latents")
         factor = self.factor
         normalize = self.get_normalize("normalize", normalized)
+        spatial_compression = self.spatial_compression
+        spatial_mode = self.spatial_mode
+        width, height = self.width, self.height
         xh, xw = x.shape[-2:]
-        nh, nw = self.height // 8, self.width // 8
-        offsh, offsw = self.crop_offset_vertical // 8, self.crop_offset_horizontal // 8
+        if spatial_mode != "percentage":
+            height //= spatial_compression
+            width //= spatial_compression
+        if spatial_mode == "absolute":
+            nh, nw = int(height), int(width)
+        elif spatial_mode == "relative":
+            nh, nw = int(xh + height), int(xw + width)
+        elif spatial_mode == "percentage":
+            nh, nw = max(1, int(xh * height)), max(1, int(xw * width))
+        else:
+            raise ValueError("Bad spatial_mode")
+        offsh = self.crop_offset_vertical // spatial_compression
+        offsw = self.crop_offset_horizontal // spatial_compression
         if xh == nh and xw == nw:
             ns = self.custom_noise.make_noise_sampler(
                 x,
@@ -1939,6 +2029,116 @@ class PatternBreakNoise(CustomNoiseItemBase):
         return noise_sampler
 
 
+class CustomNoiseParametersNoise(CustomNoiseItemBase):
+    def clone_key(self, k):
+        if k == "noise":
+            return self.noise.clone()
+        return super().clone_key(k)
+
+    def make_noise_sampler(
+        self,
+        x,
+        sigma_min,
+        sigma_max,
+        *args,
+        normalized=True,
+        **kwargs,
+    ):
+        factor = self.factor
+        normalize = self.get_normalize("normalize", normalized)
+        orig_shape = x.shape
+        orig_dtype = x.dtype
+        orig_device = x.device
+        if self.override_device is not None:
+            kwargs["cpu"] = self.override_device == "cpu"
+            x = x.to(device=self.override_device)
+        if x.ndim == 5 and self.frames_to_channels:
+            x = x.reshape(x.shape[0], x.shape[1] * x.shape[2], *x.shape[3:])
+        fix_invalid = self.fix_invalid
+        if self.override_dtype and x.dtype != self.override_dtype:
+            x = x.to(dtype=self.override_dtype)
+        fixed_aspect = False
+        if self.ensure_square_aspect_ratio:
+            if x.ndim == 3:
+                height, width = 1, x.shape[-1]
+                spatdims = 1
+            else:
+                spatdims = 2
+                height, width = x.shape[-2:]
+            hw = (height * width) ** 0.5
+            if not hw.is_integer():
+                fixed_aspect = True
+                hw = math.ceil(hw)
+                temp_x = x.new_zeros(*x.shape[:-spatdims], hw**2)
+                temp_x[..., : height * width] = x.flatten(start_dim=-spatdims)[
+                    ...,
+                    : height * width,
+                ]
+                x = temp_x.reshape(*temp_x.shape[:-1], hw, hw)
+        if self.rng_offset_mode in {"override", "add"}:
+            seed = (
+                self.rng_state_offset
+                if self.rng_offset_mode == "override"
+                else kwargs.pop("seed", 0) + self.rng_state_offset
+            )
+            kwargs["seed"] = seed
+        else:
+            seed = kwargs.get("seed", 0)
+        rng_mode = self.rng_mode
+        if rng_mode == "separate":
+            rng_state = RNGStates(x.device.type)
+            if self.rng_offset_mode != "disabled":
+                temp_rng_state = rng_state
+                try:
+                    random.seed(seed)
+                    torch.manual_seed(seed)
+                    rng_state = RNGStates(x.device.type)
+                finally:
+                    temp_rng_state.set_states()
+                del temp_rng_state
+        else:
+            rng_state = None
+        ns = self.noise.make_noise_sampler(
+            x,
+            *args,
+            sigma_min=sigma_min,
+            sigma_max=sigma_max,
+            normalized=False,
+            **kwargs,
+        )
+        device_type = x.device.type
+
+        def noise_sampler(sigma, sigma_next) -> torch.Tensor:
+            if rng_mode != "default":
+                temp_rng_state = RNGStates(device_type)
+                try:
+                    if rng_mode == "separate":
+                        rng_state.set_states()
+                    noise = ns(sigma, sigma_next)
+                    if rng_mode == "separate":
+                        rng_state.update()
+                finally:
+                    temp_rng_state.set_states()
+            else:
+                noise = ns(sigma, sigma_next)
+            if fix_invalid:
+                noise_temp = noise.nan_to_num(0, posinf=0, neginf=0)
+                noise = noise.nan_to_num_(
+                    0,
+                    posinf=noise_temp.max(),
+                    neginf=noise_temp.min(),
+                )
+            if fixed_aspect:
+                noise = noise.flatten(start_dim=-spatdims)[..., : height * width]
+            if noise.shape != orig_shape:
+                noise = noise.reshape(orig_shape)
+            if noise.dtype != orig_dtype or noise.device != orig_device:
+                noise = noise.to(device=orig_device, dtype=orig_dtype)
+            return scale_noise(noise, factor, normalized=normalize)
+
+        return noise_sampler
+
+
 class BlehOpsNoise(CustomNoiseItemBase):
     def __init__(
         self,
@@ -2169,6 +2369,43 @@ NOISE_SAMPLERS: dict[NoiseType, Callable] = {
         ),
     ),
     NoiseType.COLLATZ: NoiseSampler.wrap(CollatzNoiseGenerator),
+    NoiseType.VORONOI_FUZZ: NoiseSampler.wrap(
+        partial(
+            VoronoiNoiseGenerator,
+            n_points=(256,),
+            octaves=1,
+            distance_mode=("fuzz:name=angle_tanh:fuzz=0.1",),
+            result_mode=("diff2",),
+            z_max=0.0,
+        ),
+    ),
+    NoiseType.VORONOI_MIX: NoiseSampler.wrap(
+        partial(
+            MixedNoiseGenerator,
+            name="voronoi_mix",
+            noise_mix=(
+                (
+                    VoronoiNoiseGenerator,
+                    {
+                        "n_points": (256,),
+                        "octaves": 3,
+                        "distance_mode": ("euclidean",),
+                        "result_mode": ("diff2",),
+                        "octave_mode": "new_features",
+                        "lacunarity": 2.0,
+                        "gain": 0.75,
+                        "z_max": 0.0,
+                    },
+                    lambda t: t.mul_(0.6),
+                ),
+                (
+                    GaussianNoiseGenerator,
+                    {},
+                    lambda t: t.mul_(0.4),
+                ),
+            ),
+        ),
+    ),
 }
 
 

@@ -2,6 +2,17 @@
 
 Note, only relatively significant changes to user-visible functionality will be included here. Most recent changes at the top.
 
+## 20250805
+
+Once again, large set of changes/internal reorganization which may break stuff. If you run into problems or experience anything weird, please create an issue.
+
+* Added a `SonarResizedNoiseAdv` node that allows more control (and is more useful for models like ACE-Steps where you might want to deal with absolute sizes).
+* Added a `SonarWaveletCFG` node which allows you use different CFG values for different frequencies.
+* Added a `SonarCustomNoiseParameters` node that lets you set some parameters as well as override seed/device/dtype.
+* Added `replace`, `replace_keepsign` and `replace_avoidsign` quantile norm modes.
+* `SonarBlendedNoise` now has a `custom_noise_mask` input. When connected, it will generate noise with that, put it on a 0-1 scale and use that to control the blend.
+* Added a `SonarAdvancedVoronoiNoise` node.
+
 ## 20250705
 
 This is a large set of changes. Please let me know anything doesn't seem to be working properly.

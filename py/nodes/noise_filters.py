@@ -1,14 +1,16 @@
-# ruff: noqa: TID252
-
 from __future__ import annotations
+
+import torch
+from comfy import model_management
 
 from .. import noise, utils
 from ..latent_ops import SonarLatentOperation
 from ..sonar import SonarGuidanceMixin
 from .base import (
-    NOISE_INPUT_TYPES_HINT,
-    WILDCARD_NOISE,
+    NoiseChainInputTypes,
+    NoiseNoChainInputTypes,
     SonarCustomNoiseNodeBase,
+    SonarLazyInputTypes,
     SonarNormalizeNoiseNodeMixin,
 )
 
@@ -16,69 +18,42 @@ from .base import (
 class SonarModulatedNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMixin):
     DESCRIPTION = "Custom noise type that allows modulating the output of another custom noise generator."
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        result = super().INPUT_TYPES(include_rescale=False, include_chain=False)
-        result["required"] |= {
-            "sonar_custom_noise": (
-                WILDCARD_NOISE,
-                {
-                    "tooltip": f"Input custom noise to modulate.\n{NOISE_INPUT_TYPES_HINT}",
-                },
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: NoiseNoChainInputTypes()
+        .req_customnoise_sonar_custom_noise(tooltip="Custom noise type to modulate.")
+        .req_field_modulation_type(
+            (
+                "intensity",
+                "frequency",
+                "spectral_signum",
+                "none",
             ),
-            "modulation_type": (
-                (
-                    "intensity",
-                    "frequency",
-                    "spectral_signum",
-                    "none",
-                ),
-                {
-                    "tooltip": "Type of modulation to use.",
-                },
-            ),
-            "dims": (
-                "INT",
-                {
-                    "default": 3,
-                    "min": 1,
-                    "max": 3,
-                    "tooltip": "Dimensions to modulate over. 1 - channels only, 2 - height and width, 3 - both",
-                },
-            ),
-            "strength": (
-                "FLOAT",
-                {
-                    "default": 2.0,
-                    "min": -100.0,
-                    "max": 100.0,
-                    "step": 0.001,
-                    "round": False,
-                    "tooltip": "Controls the strength of the modulation effect.",
-                },
-            ),
-            "normalize_result": (
-                ("default", "forced", "disabled"),
-                {
-                    "tooltip": "Controls whether the final result is normalized to 1.0 strength.",
-                },
-            ),
-            "normalize_noise": (
-                ("default", "forced", "disabled"),
-                {
-                    "tooltip": "Controls whether the generated noise is normalized to 1.0 strength.",
-                },
-            ),
-            "normalize_ref": (
-                "BOOLEAN",
-                {
-                    "default": True,
-                    "tooltip": "Controls whether the reference latent (when present) is normalized to 1.0 strength.",
-                },
-            ),
-        }
-        result["optional"] |= {"ref_latent_opt": ("LATENT",)}
-        return result
+            tooltip="Type of modulation to use.",
+        )
+        .req_int_dims(
+            default=3,
+            min=1,
+            max=3,
+            tooltip="Dimensions to modulate over. 1 - channels only, 2 - height and width, 3 - both",
+        )
+        .req_float_strength(
+            default=2.0,
+            min=-100.0,
+            max=100.0,
+            tooltip="Controls the strength of the modulation effect.",
+        )
+        .req_normalizetristate_normalize_result(
+            tooltip="Controls whether the final result is normalized to 1.0 strength.",
+        )
+        .req_normalizetristate_normalize_noise(
+            tooltip="Controls whether the generated noise is normalized to 1.0 strength.",
+        )
+        .req_bool_normalize_ref(
+            default=True,
+            tooltip="Controls whether the reference latent (when present) is normalized to 1.0 strength.",
+        )
+        .opt_latent_ref_latent_opt(),
+    )
 
     @classmethod
     def get_item_class(cls):
@@ -115,48 +90,30 @@ class SonarModulatedNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeM
 class SonarRepeatedNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMixin):
     DESCRIPTION = "Custom noise type that allows caching the output of other custom noise generators."
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        result = super().INPUT_TYPES(include_rescale=False, include_chain=False)
-        result["required"] |= {
-            "sonar_custom_noise": (
-                WILDCARD_NOISE,
-                {
-                    "tooltip": f"Custom noise input for items to repeat. Note: Unlike most other custom noise nodes, this is treated like a list.\n{NOISE_INPUT_TYPES_HINT}",
-                },
-            ),
-            "repeat_length": (
-                "INT",
-                {
-                    "default": 8,
-                    "min": 1,
-                    "max": 100,
-                    "tooltip": "Number of items to cache.",
-                },
-            ),
-            "max_recycle": (
-                "INT",
-                {
-                    "default": 1000,
-                    "min": 1,
-                    "max": 1000,
-                    "tooltip": "Number of times an individual item will be used before it is replaced with fresh noise.",
-                },
-            ),
-            "normalize": (
-                ("default", "forced", "disabled"),
-                {
-                    "tooltip": "Controls whether the generated noise is normalized to 1.0 strength.",
-                },
-            ),
-            "permute": (
-                ("enabled", "disabled", "always"),
-                {
-                    "tooltip": "When enabled, recycled noise will be permuted by randomly flipping it, rolling the channels, etc. If set to always, the noise will be permuted the first time it's used as well.",
-                },
-            ),
-        }
-        return result
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: NoiseNoChainInputTypes()
+        .req_customnoise_sonar_custom_noise(tooltip="Custom noise type to modulate.")
+        .req_int_repeat_length(
+            default=8,
+            min=1,
+            max=100,
+            tooltip="Number of items to cache.",
+        )
+        .req_int_max_recycle(
+            default=1000,
+            min=1,
+            max=1000,
+            tooltip="Number of times an individual item will be used before it is replaced with fresh noise.",
+        )
+        .req_normalizetristate_normalize(
+            tooltip="Controls whether the generated noise is normalized to 1.0 strength.",
+        )
+        .req_field_permute(
+            ("enabled", "disabled", "always"),
+            default="enabled",
+            tooltip="When enabled, recycled noise will be permuted by randomly flipping it, rolling the channels, etc. If set to always, the noise will be permuted the first time it's used as well.",
+        ),
+    )
 
     @classmethod
     def get_item_class(cls):
@@ -185,60 +142,33 @@ class SonarRepeatedNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMi
 class SonarScheduledNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMixin):
     DESCRIPTION = "Custom noise type that allows scheduling the output of other custom noise generators. NOTE: If you don't connect the fallback custom noise input, no noise will be generated outside of the start_percent, end_percent range. I recommend connecting a 1.0 strength Gaussian custom noise node as the fallback."
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        result = super().INPUT_TYPES(include_rescale=False, include_chain=False)
-        result["required"] |= {
-            "model": (
-                "MODEL",
-                {
-                    "tooltip": "The model input is required to calculate sampling percentages.",
-                },
-            ),
-            "sonar_custom_noise": (
-                WILDCARD_NOISE,
-                {
-                    "tooltip": f"Custom noise to use when start_percent and end_percent matches.\n{NOISE_INPUT_TYPES_HINT}",
-                },
-            ),
-            "start_percent": (
-                "FLOAT",
-                {
-                    "default": 0.0,
-                    "min": 0.0,
-                    "max": 1.0,
-                    "step": 0.001,
-                    "round": False,
-                    "tooltip": "Time the custom noise becomes active. Note: Sampling percentage where 1.0 indicates 100%, not based on steps.",
-                },
-            ),
-            "end_percent": (
-                "FLOAT",
-                {
-                    "default": 1.0,
-                    "min": 0.0,
-                    "max": 1.0,
-                    "step": 0.001,
-                    "round": False,
-                    "tooltip": "Time the custom noise effect ends - inclusive, so only sampling percentages greater than this will be excluded. Note: Sampling percentage where 1.0 indicates 100%, not based on steps.",
-                },
-            ),
-            "normalize": (
-                ("default", "forced", "disabled"),
-                {
-                    "tooltip": "Controls whether the generated noise is normalized to 1.0 strength.",
-                },
-            ),
-        }
-        result["optional"] |= {
-            "fallback_sonar_custom_noise": (
-                WILDCARD_NOISE,
-                {
-                    "tooltip": f"Optional input for noise to use when outside of the start_percent, end_percent range. NOTE: When not connected, defaults to NO NOISE which is probably not what you want.\n{NOISE_INPUT_TYPES_HINT}",
-                },
-            ),
-        }
-        return result
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: NoiseNoChainInputTypes()
+        .req_model(
+            tooltip="The model input is required to calculate sampling percentages.",
+        )
+        .req_customnoise_sonar_custom_noise(
+            tooltip="Custom noise to use when start_percent and end_percent matches.",
+        )
+        .req_float_start_percent(
+            default=0.0,
+            min=0.0,
+            max=1.0,
+            tooltip="Time the custom noise becomes active. Note: Sampling percentage where 1.0 indicates 100%, not based on steps.",
+        )
+        .req_float_end_percent(
+            default=1.0,
+            min=0.0,
+            max=1.0,
+            tooltip="Time the custom noise effect ends - inclusive, so only sampling percentages greater than this will be excluded. Note: Sampling percentage where 1.0 indicates 100%, not based on steps.",
+        )
+        .req_normalizetristate_normalize(
+            tooltip="Controls whether the generated noise is normalized to 1.0 strength.",
+        )
+        .opt_customnoise_fallback_sonar_custom_noise(
+            tooltip="Optional input for noise to use when outside of the start_percent, end_percent range. NOTE: When not connected, defaults to NO NOISE which is probably not what you want.",
+        ),
+    )
 
     @classmethod
     def get_item_class(cls):
@@ -271,48 +201,28 @@ class SonarScheduledNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeM
 class SonarCompositeNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMixin):
     DESCRIPTION = "Custom noise type that allows compositing two other custom noise generators based on a mask."
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        result = super().INPUT_TYPES(include_rescale=False, include_chain=False)
-        result["required"] |= {
-            "sonar_custom_noise_dst": (
-                WILDCARD_NOISE,
-                {
-                    "tooltip": f"Custom noise input for noise where the mask is not set.\n{NOISE_INPUT_TYPES_HINT}",
-                },
-            ),
-            "sonar_custom_noise_src": (
-                WILDCARD_NOISE,
-                {
-                    "tooltip": f"Custom noise input for noise where the mask is set.\n{NOISE_INPUT_TYPES_HINT}",
-                },
-            ),
-            "normalize_dst": (
-                ("default", "forced", "disabled"),
-                {
-                    "tooltip": "Controls whether noise generated for dst is normalized to 1.0 strength.",
-                },
-            ),
-            "normalize_src": (
-                ("default", "forced", "disabled"),
-                {
-                    "tooltip": "Controls whether noise generated for src is normalized to 1.0 strength.",
-                },
-            ),
-            "normalize_result": (
-                ("default", "forced", "disabled"),
-                {
-                    "tooltip": "Controls whether the final result after composition is normalized to 1.0 strength.",
-                },
-            ),
-            "mask": (
-                "MASK",
-                {
-                    "tooltip": "Mask to use when compositing noise. Where the mask is 1.0, you will get 100% src, where it is 0.75 you will get 75% src and 25% dst. The mask will be rescaled to match the latent size if necessary.",
-                },
-            ),
-        }
-        return result
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: NoiseNoChainInputTypes()
+        .req_customnoise_sonar_custom_noise_dst(
+            tooltip="Custom noise input for noise where the mask is not set.",
+        )
+        .req_customnoise_sonar_custom_noise_src(
+            tooltip="Custom noise input for noise where the mask is set.",
+        )
+        .req_normalizetristate_normalize_dst(
+            tooltip="Controls whether noise generated for dst is normalized to 1.0 strength.",
+        )
+        .req_normalizetristate_normalize_src(
+            tooltip="Controls whether noise generated for src is normalized to 1.0 strength.",
+        )
+        .req_normalizetristate_normalize_result(
+            tooltip="Controls whether the final result after composition is normalized to 1.0 strength.",
+        )
+        .req_field_mask(
+            "MASK",
+            tooltip="Mask to use when compositing noise. Where the mask is 1.0, you will get 100% src, where it is 0.75 you will get 75% src and 25% dst. The mask will be rescaled to match the latent size if necessary.",
+        ),
+    )
 
     @classmethod
     def get_item_class(cls):
@@ -343,62 +253,36 @@ class SonarCompositeNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeM
 class SonarGuidedNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMixin):
     DESCRIPTION = "Custom noise type that mixes a references with another custom noise generator to guide the generation."
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        result = super().INPUT_TYPES(include_rescale=False, include_chain=False)
-        result["required"] |= {
-            "latent": (
-                "LATENT",
-                {
-                    "tooltip": "Latent to use for guidance.",
-                },
-            ),
-            "method": (
-                ("euler", "linear"),
-                {
-                    "tooltip": "Method to use when calculating guidance. When set to linear, will simply LERP the guidance at the specified strength. When set to Euler, will do a Euler step toward the guidance instead.",
-                },
-            ),
-            "guidance_factor": (
-                "FLOAT",
-                {
-                    "default": 0.0125,
-                    "min": -100.0,
-                    "max": 100.0,
-                    "step": 0.001,
-                    "round": False,
-                    "tooltip": "Strength of the guidance to apply. Generally should be a relatively slow value to avoid overpowering the generation.",
-                },
-            ),
-            "normalize_noise": (
-                ("default", "forced", "disabled"),
-                {
-                    "tooltip": "Controls whether the generated noise is normalized to 1.0 strength.",
-                },
-            ),
-            "normalize_result": (
-                ("default", "forced", "disabled"),
-                {
-                    "tooltip": "Controls whether the final result is normalized to 1.0 strength.",
-                },
-            ),
-            "normalize_ref": (
-                "BOOLEAN",
-                {
-                    "default": True,
-                    "tooltip": "Controls whether the reference latent (when present) is normalized to 1.0 strength.",
-                },
-            ),
-        }
-        result["optional"] = {
-            "sonar_custom_noise": (
-                WILDCARD_NOISE,
-                {
-                    "tooltip": f"Optional custom noise input to combine with the guidance. If you don't attach something here your reference will be combined with zeros.\n{NOISE_INPUT_TYPES_HINT}",
-                },
-            ),
-        }
-        return result
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: NoiseNoChainInputTypes()
+        .req_latent(
+            tooltip="Latent to use for guidance.",
+        )
+        .req_field_method(
+            ("euler", "linear"),
+            default="euler",
+            tooltip="Method to use when calculating guidance. When set to linear, will simply LERP the guidance at the specified strength. When set to Euler, will do a Euler step toward the guidance instead.",
+        )
+        .req_float_guidance_factor(
+            default=0.0125,
+            min=-100.0,
+            max=100.0,
+            tooltip="Strength of the guidance to apply. Generally should be a relatively slow value to avoid overpowering the generation.",
+        )
+        .req_normalizetristate_normalize_noise(
+            tooltip="Controls whether the generated noise is normalized to 1.0 strength.",
+        )
+        .req_normalizetristate_normalize_result(
+            tooltip="Controls whether the final result is normalized to 1.0 strength.",
+        )
+        .req_bool_normalize_ref(
+            default=True,
+            tooltip="Controls whether the reference latent (when present) is normalized to 1.0 strength.",
+        )
+        .opt_customnoise_sonar_custom_noise(
+            tooltip="Optional custom noise input to combine with the guidance. If you don't attach something here your reference will be combined with zeros.",
+        ),
+    )
 
     @classmethod
     def get_item_class(cls):
@@ -435,34 +319,21 @@ class SonarGuidedNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMixi
 class SonarRandomNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMixin):
     DESCRIPTION = "Custom noise type that randomly selects between other custom noise items connected to it."
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        result = super().INPUT_TYPES(include_rescale=False, include_chain=False)
-        result["required"] |= {
-            "sonar_custom_noise": (
-                WILDCARD_NOISE,
-                {
-                    "tooltip": f"Custom noise input for noise items to randomize. Note: Unlike most other custom noise nodes, this is treated like a list.\n{NOISE_INPUT_TYPES_HINT}",
-                },
-            ),
-            "mix_count": (
-                "INT",
-                {
-                    "default": 1,
-                    "min": 1,
-                    "max": 100,
-                    "tooltip": "Number of items to select each time noise is generated.",
-                },
-            ),
-            "normalize": (
-                ("default", "forced", "disabled"),
-                {
-                    "tooltip": "Controls whether the generated noise is normalized to 1.0 strength.",
-                },
-            ),
-        }
-
-        return result
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: NoiseNoChainInputTypes()
+        .req_customnoise_sonar_custom_noise(
+            tooltip="Custom noise input for noise items to randomize. Note: Unlike most other custom noise nodes, this is treated like a list.",
+        )
+        .req_int_mix_count(
+            default=1,
+            min=1,
+            max=100,
+            tooltip="Number of items to select each time noise is generated.",
+        )
+        .req_normalizetristate_normalize(
+            tooltip="Controls whether the generated noise is normalized to 1.0 strength.",
+        ),
+    )
 
     @classmethod
     def get_item_class(cls):
@@ -486,32 +357,26 @@ class SonarRandomNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMixi
 class SonarChannelNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMixin):
     DESCRIPTION = "Custom noise type that uses a different noise generator for each channel. Note: The connected noise items are treated as a list. If you want to blend noise types, you can use something like a SonarBlendedNoise node."
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        result = super().INPUT_TYPES(include_rescale=False, include_chain=False)
-        result["required"] |= {
-            "sonar_custom_noise": (
-                WILDCARD_NOISE,
-                {
-                    "tooltip": f"Custom noise input for noise items corresponding to each channel. SD1/2x and SDXL use 4 channels, Flux and SD3 use 16. Note: Unlike most other custom noise nodes, this is treated like a list where the noise item furthest from the node corresponds to channel 0.\n{NOISE_INPUT_TYPES_HINT}",
-                },
-            ),
-            "insufficient_channels_mode": (
-                ("wrap", "repeat", "zero"),
-                {
-                    "default": "wrap",
-                    "tooltip": "Controls behavior for when there are less noise items connected than channels in the latent. wrap - wraps back to the first noise item, repeat - repeats the last item, zero - fills the channel with zeros (generally not recommended).",
-                },
-            ),
-            "normalize": (
-                ("default", "forced", "disabled"),
-                {
-                    "tooltip": "Controls whether the generated noise is normalized to 1.0 strength.",
-                },
-            ),
-        }
-
-        return result
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: NoiseNoChainInputTypes()
+        .req_customnoise_sonar_custom_noise(
+            tooltip="Custom noise input for noise items corresponding to each channel. SD1/2x and SDXL use 4 channels, Flux and SD3 use 16. Note: Unlike most other custom noise nodes, this is treated like a list where the noise item furthest from the node corresponds to channel 0.",
+        )
+        .req_field_insufficient_channels_mode(
+            ("wrap", "repeat", "zero"),
+            default="wrap",
+            tooltip="Controls behavior for when there are less noise items connected than channels in the latent. wrap - wraps back to the first noise item, repeat - repeats the last item, zero - fills the channel with zeros (generally not recommended).",
+        )
+        .req_int_mix_count(
+            default=1,
+            min=1,
+            max=100,
+            tooltip="Number of items to select each time noise is generated.",
+        )
+        .req_normalizetristate_normalize(
+            tooltip="Controls whether the generated noise is normalized to 1.0 strength.",
+        ),
+    )
 
     @classmethod
     def get_item_class(cls):
@@ -536,48 +401,28 @@ class SonarChannelNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMix
 class SonarBlendedNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMixin):
     DESCRIPTION = "Custom noise type that allows blending two other noise items."
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        result = super().INPUT_TYPES()
-        result["required"] |= {
-            "noise_2_percent": (
-                "FLOAT",
-                {
-                    "default": 0.5,
-                    "step": 0.001,
-                    "round": False,
-                    "tooltip": "Blend strength for custom_noise_2. Note that if set to 0 then custom_noise_2 is optional (and will not be called to generate noise) and if set to 1 then custom_noise_1 will not be called to generate noise. This is worth mentioning since going from a strength of 0.000000001 to 0 could make a big difference.",
-                },
-            ),
-            "blend_mode": (
-                tuple(utils.BLENDING_MODES.keys()),
-                {
-                    "default": "lerp",
-                    "tooltip": "Mode used for blending the two noise types. More modes will be available if ComfyUI-bleh is installed.",
-                },
-            ),
-            "normalize": (
-                ("default", "forced", "disabled"),
-                {
-                    "tooltip": "Controls whether the generated noise is normalized to 1.0 strength. For weird blend modes, you may want to set this to forced.",
-                },
-            ),
-        }
-        result["optional"] |= {
-            "custom_noise_1": (
-                WILDCARD_NOISE,
-                {
-                    "tooltip": f"Custom noise. Optional if noise_2 percent is 1.\n{NOISE_INPUT_TYPES_HINT}",
-                },
-            ),
-            "custom_noise_2": (
-                WILDCARD_NOISE,
-                {
-                    "tooltip": f"Custom noise. Optional if noise_2_percent is 0.\n{NOISE_INPUT_TYPES_HINT}",
-                },
-            ),
-        }
-        return result
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: NoiseChainInputTypes()
+        .req_float_noise_2_percent(
+            default=0.5,
+            tooltip="Blend strength for custom_noise_2. Note that if set to 0 then custom_noise_2 is optional (and will not be called to generate noise) and if set to 1 then custom_noise_1 will not be called to generate noise. This only applies when custom_noise_mask is not connected. This is worth mentioning since going from a strength of 0.000000001 to 0 could make a big difference. Important: When custom_noise_mask is connected, this value will be added to the mask and then the mask will be clamped to 0 through 1. In other words, you could use this to ensure the mask ranges between 0.5 and 1.0 by setting it to 0.5 or ensure it ranges between 0 and 0.5 by setting it to -0.5.",
+        )
+        .req_selectblend(
+            tooltip="Mode used for blending the two noise types. More modes will be available if ComfyUI-bleh is installed.",
+        )
+        .req_normalizetristate_normalize(
+            tooltip="Controls whether the generated noise is normalized to 1.0 strength. For weird blend modes, you may want to set this to forced.",
+        )
+        .opt_customnoise_custom_noise_1(
+            tooltip="Custom noise. Optional if noise_2_percent is 1 and custom_noise_mask is not connected..",
+        )
+        .opt_customnoise_custom_noise_2(
+            tooltip="Custom noise. Optional if noise_2_percent is 0 and custom_noise_mask is not connected..",
+        )
+        .opt_customnoise_custom_noise_mask(
+            tooltip="Custom noise. If connected, this will be used instead of noise_2_percent to determine the blend ratio. Noise generated by this will be normalized to a 0 through 1 scale. When connected, both custom noise inputs are mandatory.",
+        ),
+    )
 
     @classmethod
     def get_item_class(cls):
@@ -593,6 +438,7 @@ class SonarBlendedNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMix
         noise_2_percent,
         custom_noise_1=None,
         custom_noise_2=None,
+        custom_noise_mask=None,
         blend_mode="lerp",
     ):
         blend_function = utils.BLENDING_MODES.get(blend_mode)
@@ -606,6 +452,7 @@ class SonarBlendedNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMix
             normalize=self.get_normalize(normalize),
             custom_noise_1=custom_noise_1,
             custom_noise_2=custom_noise_2,
+            custom_noise_mask=custom_noise_mask,
             noise_2_percent=noise_2_percent,
         )
 
@@ -613,109 +460,74 @@ class SonarBlendedNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMix
 class SonarResizedNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMixin):
     DESCRIPTION = "Custom noise type that allows resizing another noise item."
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        result = super().INPUT_TYPES(include_rescale=False, include_chain=False)
-        result["required"] |= {
-            "width": (
-                "INT",
-                {
-                    "default": 1152,
-                    "min": 16,
-                    "max": 1024 * 1024 * 1024,
-                    "step": 8,
-                    "tooltip": "Note: This should almost always be set to a higher value than the image you're actually sampling.",
-                },
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: NoiseNoChainInputTypes()
+        .req_int_width(
+            default=1152,
+            min=16,
+            max=1024 * 1024 * 1024,
+            step=8,
+            tooltip="Note: This should almost always be set to a higher value than the image you're actually sampling.",
+        )
+        .req_int_height(
+            default=1152,
+            min=16,
+            max=1024 * 1024 * 1024,
+            step=8,
+            tooltip="Note: This should almost always be set to a higher value than the image you're actually sampling.",
+        )
+        .req_field_downscale_strategy(
+            ("crop", "scale"),
+            default="crop",
+            tooltip="Scaling noise is something you'd pretty much only use to create weird effects. For normal workflows, leave this on crop.",
+        )
+        .req_field_initial_reference(
+            ("prefer_crop", "prefer_scale"),
+            default="prefer_crop",
+            tooltip="The initial latent the noise sampler uses as a reference may not match the requested width/height. This setting controls whether to crop or scale. Note: Cropping can only occur when the initial reference is larger than width/height in both dimensions which is unlikely (and not recommended).",
+        )
+        .req_field_crop_mode(
+            (
+                "center",
+                "top_left",
+                "top_center",
+                "top_right",
+                "center_left",
+                "center_right",
+                "bottom_left",
+                "bottom_center",
+                "bottom_right",
             ),
-            "height": (
-                "INT",
-                {
-                    "default": 1152,
-                    "min": 16,
-                    "max": 1024 * 1024 * 1024,
-                    "step": 8,
-                    "tooltip": "Note: This should almost always be set to a higher value than the image you're actually sampling.",
-                },
-            ),
-            "downscale_strategy": (
-                ("crop", "scale"),
-                {
-                    "default": "crop",
-                    "tooltip": "Scaling noise is something you'd pretty much only use to create weird effects. For normal workflows, leave this on crop.",
-                },
-            ),
-            "initial_reference": (
-                ("prefer_crop", "prefer_scale"),
-                {
-                    "default": "prefer_crop",
-                    "tooltip": "The initial latent the noise sampler uses as a reference may not match the requested width/height. This setting controls whether to crop or scale. Note: Cropping can only occur when the initial reference is larger than width/height in both dimensions which is unlikely (and not recommended).",
-                },
-            ),
-            "crop_mode": (
-                (
-                    "center",
-                    "top_left",
-                    "top_center",
-                    "top_right",
-                    "center_left",
-                    "center_right",
-                    "bottom_left",
-                    "bottom_center",
-                    "bottom_right",
-                ),
-                {
-                    "default": "center",
-                    "tooltip": "Note: Crops will have a bias toward the lower number when the size isn't divisible by two. For example, a center crop of size 3 from (0, 1, 2, 3, 4, 5) will result in (1, 2, 3).",
-                },
-            ),
-            "crop_offset_horizontal": (
-                "INT",
-                {
-                    "default": 0,
-                    "step": 8,
-                    "min": -8000,
-                    "max": 8000,
-                    "tooltip": "This offsets the cropped view by the specified size. Positive values will move it toward the right, negative values will move it toward the left. The offsets will be adjusted to to fit in the available space. For example, if you have crop_mode set to top_right then setting a positive offset isn't going to do anything: it's already as far right as it can go.",
-                },
-            ),
-            "crop_offset_vertical": (
-                "INT",
-                {
-                    "default": 0,
-                    "step": 8,
-                    "min": -8000,
-                    "max": 8000,
-                    "tooltip": "This offsets the cropped view by the specified size. Positive values will move it toward the bottom, negative values will move it toward the top. The offsets will be adjusted to to fit in the available space. For example, if you have crop_mode set to bottom_right then setting a positive offset isn't going to do anything: it's already as far down as it can go.",
-                },
-            ),
-            "upscale_mode": (
-                utils.UPSCALE_METHODS,
-                {
-                    "tooltip": "Allows setting the scaling mode when width/height is smaller than the requested size.",
-                    "default": "nearest-exact",
-                },
-            ),
-            "downscale_mode": (
-                utils.UPSCALE_METHODS,
-                {
-                    "tooltip": "Allows setting the scaling mode when width/height is larger than the requested size and downscale_strategy is set to 'scale'.",
-                    "default": "nearest-exact",
-                },
-            ),
-            "normalize": (
-                ("default", "forced", "disabled"),
-                {
-                    "tooltip": "Controls whether the generated noise is normalized to 1.0 strength.",
-                },
-            ),
-            "custom_noise": (
-                WILDCARD_NOISE,
-                {
-                    "tooltip": f"Custom noise.\n{NOISE_INPUT_TYPES_HINT}",
-                },
-            ),
-        }
-        return result
+            default="center",
+            tooltip="Note: Crops will have a bias toward the lower number when the size isn't divisible by two. For example, a center crop of size 3 from (0, 1, 2, 3, 4, 5) will result in (1, 2, 3).",
+        )
+        .req_int_crop_offset_horizontal(
+            default=0,
+            step=8,
+            min=-8000,
+            max=8000,
+            tooltip="This offsets the cropped view by the specified size. Positive values will move it toward the right, negative values will move it toward the left. The offsets will be adjusted to to fit in the available space. For example, if you have crop_mode set to top_right then setting a positive offset isn't going to do anything: it's already as far right as it can go.",
+        )
+        .req_int_crop_offset_vertical(
+            default=0,
+            step=8,
+            min=-8000,
+            max=8000,
+            tooltip="This offsets the cropped view by the specified size. Positive values will move it toward the bottom, negative values will move it toward the top. The offsets will be adjusted to to fit in the available space. For example, if you have crop_mode set to bottom_right then setting a positive offset isn't going to do anything: it's already as far down as it can go.",
+        )
+        .req_selectscalemode_upscale_mode(
+            tooltip="Allows setting the scaling mode when width/height is smaller than the requested size.",
+            default="nearest-exact",
+        )
+        .req_selectscalemode_downscale_mode(
+            tooltip="Allows setting the scaling mode when width/height is larger than the requested size and downscale_strategy is set to 'scale'.",
+            default="nearest-exact",
+        )
+        .req_normalizetristate_normalize(
+            tooltip="Controls whether the generated noise is normalized to 1.0 strength.",
+        )
+        .req_customnoise_custom_noise(),
+    )
 
     @classmethod
     def get_item_class(cls):
@@ -739,8 +551,122 @@ class SonarResizedNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMix
     ):
         return super().go(
             factor,
+            width=float(width),
+            height=float(height),
+            spatial_compression=8,
+            spatial_mode="absolute",
+            downscale_strategy=downscale_strategy,
+            initial_reference=initial_reference,
+            crop_offset_horizontal=crop_offset_horizontal,
+            crop_offset_vertical=crop_offset_vertical,
+            crop_mode=crop_mode,
+            upscale_mode=upscale_mode,
+            downscale_mode=downscale_mode,
+            normalize=normalize,
+            custom_noise=custom_noise,
+        )
+
+
+class SonarResizedNoiseAdvNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMixin):
+    DESCRIPTION = "Custom noise type that allows resizing another noise item. Advanced version of the SonarResizedNoise node."
+
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: NoiseNoChainInputTypes()
+        .req_float_width(
+            default=32.0,
+            min=0.0,
+            tooltip="Note: In absolute mode, this should almost always be set to a higher value than the image you're actually sampling.",
+        )
+        .req_float_height(
+            default=32.0,
+            min=0.0,
+            tooltip="Note: In absolute mode, this should almost always be set to a higher value than the image you're actually sampling.",
+        )
+        .req_field_spatial_mode(
+            ("relative", "percentage", "absolute"),
+            default="relative",
+            tooltip="In relative mode, the sizes control padding. In percentage mode, the values will be interpreted as percentages of the origal size where 1.0 would be 100%, 0.5 would be 50% and so on. In absolute mode, this controls the absolute size.",
+        )
+        .req_int_spatial_compression(
+            min=1,
+            default=8,
+            tooltip="Most image models use 8x spatial compression. When spatial mode is absolute, the sizes will be multiplied by this value. It is ignored in percentage mode.",
+        )
+        .req_field_downscale_strategy(
+            ("crop", "scale"),
+            default="crop",
+            tooltip="Scaling noise is something you'd pretty much only use to create weird effects. For normal workflows, leave this on crop.",
+        )
+        .req_field_initial_reference(
+            ("prefer_crop", "prefer_scale"),
+            default="prefer_crop",
+            tooltip="The initial latent the noise sampler uses as a reference may not match the requested width/height. This setting controls whether to crop or scale. Note: Cropping can only occur when the initial reference is larger than width/height in both dimensions which is unlikely (and not recommended).",
+        )
+        .req_field_crop_mode(
+            (
+                "center",
+                "top_left",
+                "top_center",
+                "top_right",
+                "center_left",
+                "center_right",
+                "bottom_left",
+                "bottom_center",
+                "bottom_right",
+            ),
+            default="center",
+            tooltip="Note: Crops will have a bias toward the lower number when the size isn't divisible by two. For example, a center crop of size 3 from (0, 1, 2, 3, 4, 5) will result in (1, 2, 3).",
+        )
+        .req_int_crop_offset_horizontal(
+            default=0,
+            tooltip="This offsets the cropped view by the specified size. Positive values will move it toward the right, negative values will move it toward the left. The offsets will be adjusted to to fit in the available space. For example, if you have crop_mode set to top_right then setting a positive offset isn't going to do anything: it's already as far right as it can go.",
+        )
+        .req_int_crop_offset_vertical(
+            default=0,
+            tooltip="This offsets the cropped view by the specified size. Positive values will move it toward the bottom, negative values will move it toward the top. The offsets will be adjusted to to fit in the available space. For example, if you have crop_mode set to bottom_right then setting a positive offset isn't going to do anything: it's already as far down as it can go.",
+        )
+        .req_selectscalemode_upscale_mode(
+            tooltip="Allows setting the scaling mode when width/height is smaller than the requested size.",
+            default="nearest-exact",
+        )
+        .req_selectscalemode_downscale_mode(
+            tooltip="Allows setting the scaling mode when width/height is larger than the requested size and downscale_strategy is set to 'scale'.",
+            default="nearest-exact",
+        )
+        .req_normalizetristate_normalize(
+            tooltip="Controls whether the generated noise is normalized to 1.0 strength.",
+        )
+        .req_customnoise_custom_noise(),
+    )
+
+    @classmethod
+    def get_item_class(cls):
+        return noise.ResizedNoise
+
+    def go(
+        self,
+        *,
+        factor: float,
+        width: float,
+        height: float,
+        spatial_mode: str,
+        spatial_compression: int,
+        downscale_strategy: str,
+        initial_reference: str,
+        crop_offset_horizontal: int,
+        crop_offset_vertical: int,
+        crop_mode: str,
+        upscale_mode: str,
+        downscale_mode: str,
+        normalize: str,
+        custom_noise,
+    ):
+        return super().go(
+            factor,
             width=width,
             height=height,
+            spatial_compression=spatial_compression,
+            spatial_mode=spatial_mode,
             downscale_strategy=downscale_strategy,
             initial_reference=initial_reference,
             crop_offset_horizontal=crop_offset_horizontal,
@@ -756,84 +682,56 @@ class SonarResizedNoiseNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMix
 class SonarQuantileFilteredNoiseNode(SonarCustomNoiseNodeBase):
     DESCRIPTION = "Custom noise type that allows filtering noise based on the quantile"
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        result = super().INPUT_TYPES(include_chain=False, include_rescale=False)
-        result["required"] |= {
-            "custom_noise": (
-                WILDCARD_NOISE,
-                {
-                    "tooltip": f"Custom noise type to filter.\n{NOISE_INPUT_TYPES_HINT}",
-                },
-            ),
-            "quantile": (
-                "FLOAT",
-                {
-                    "default": 0.85,
-                    "min": 0.0,
-                    "max": 1.0,
-                    "step": 0.001,
-                    "round": False,
-                    "tooltip": "When enabled, will normalize generated noise to this quantile (i.e. 0.75 means outliers >75% will be clipped). Set to 1.0 or 0.0 to disable quantile normalization. A value like 0.75 or 0.85 should be reasonable, it really depends on the input and how many of the values are extreme.",
-                },
-            ),
-            "dim": (
-                ("global", "0", "1", "2", "3", "4"),
-                {
-                    "default": "1",
-                    "tooltip": "Controls what dimensions quantile normalization uses. Dimensions start from 0. Image latents have dimensions: batch, channel, row, column. Video latents have dimensions: batch, channel, frame, row, column.",
-                },
-            ),
-            "flatten": (
-                "BOOLEAN",
-                {
-                    "default": True,
-                    "tooltip": "Controls whether the noise is flattened before quantile normalization. You can try disabling it but they may have a very strong row/column influence.",
-                },
-            ),
-            "norm_factor": (
-                "FLOAT",
-                {
-                    "default": 1.0,
-                    "min": 0.00001,
-                    "max": 10000.0,
-                    "step": 0.001,
-                    "tooltip": "Multiplier on the input noise just before it is clipped to the quantile min/max. Generally should be left at the default.",
-                },
-            ),
-            "norm_power": (
-                "FLOAT",
-                {
-                    "default": 0.5,
-                    "min": -10000.0,
-                    "max": 10000.0,
-                    "step": 0.001,
-                    "tooltip": "The absolute value of the noise is raised to this power after it is clipped to the quantile min/max. You can use negative values here, but anything below -0.3 will probably produce pretty strange effects. Generally should be left at the default.",
-                },
-            ),
-            "normalize_noise": (
-                "BOOLEAN",
-                {
-                    "default": False,
-                    "tooltip": "Controls whether the noise source is normalized before quantile filtering occurs.",
-                },
-            ),
-            "normalize": (
-                ("default", "forced", "disabled"),
-                {
-                    "default": "disabled",
-                    "tooltip": "Controls whether the generated noise is normalized to 1.0 strength after quantile filtering.",
-                },
-            ),
-            "strategy": (
-                tuple(utils.quantile_handlers.keys()),
-                {
-                    "default": "clamp",
-                    "tooltip": "Determines how to treat outliers. zero and reverse_zero modes are only useful if you're going to do something like add the result to some other noise. zero will return zero for anything outside the quantile range, reverse_zero only _keeps_ the outliers and zeros everything else.",
-                },
-            ),
-        }
-        return result
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: NoiseNoChainInputTypes()
+        .req_customnoise_custom_noise(
+            tooltip="Custom noise type to filter.",
+        )
+        .req_float_quantile(
+            default=0.85,
+            min=0.0,
+            max=1.0,
+            step=0.001,
+            round=False,
+            tooltip="When enabled, will normalize generated noise to this quantile (i.e. 0.75 means outliers >75% will be clipped). Set to 1.0 or 0.0 to disable quantile normalization. A value like 0.75 or 0.85 should be reasonable, it really depends on the input and how many of the values are extreme.",
+        )
+        .req_field_dim(
+            ("global", "0", "1", "2", "3", "4"),
+            default="1",
+            tooltip="Controls what dimensions quantile normalization uses. Dimensions start from 0. Image latents have dimensions: batch, channel, row, column. Video latents have dimensions: batch, channel, frame, row, column.",
+        )
+        .req_bool_flatten(
+            default=True,
+            tooltip="Controls whether the noise is flattened before quantile normalization. You can try disabling it but they may have a very strong row/column influence.",
+        )
+        .req_float_norm_factor(
+            default=1.0,
+            min=0.00001,
+            max=10000.0,
+            step=0.001,
+            tooltip="Multiplier on the input noise just before it is clipped to the quantile min/max. Generally should be left at the default.",
+        )
+        .req_float_norm_power(
+            default=0.5,
+            min=-10000.0,
+            max=10000.0,
+            step=0.001,
+            tooltip="The absolute value of the noise is raised to this power after it is clipped to the quantile min/max. You can use negative values here, but anything below -0.3 will probably produce pretty strange effects. Generally should be left at the default.",
+        )
+        .req_bool_normalize_noise(
+            default=False,
+            tooltip="Controls whether the noise source is normalized before quantile filtering occurs.",
+        )
+        .req_normalizetristate_normalize(
+            default="disabled",
+            tooltip="Controls whether the generated noise is normalized to 1.0 strength after quantile filtering.",
+        )
+        .req_field_strategy(
+            tuple(utils.quantile_handlers.keys()),
+            default="clamp",
+            tooltip="Determines how to treat outliers. zero and reverse_zero modes are only useful if you're going to do something like add the result to some other noise. zero will return zero for anything outside the quantile range, reverse_zero only _keeps_ the outliers and zeros everything else.",
+        ),
+    )
 
     @classmethod
     def get_item_class(cls):
@@ -870,41 +768,23 @@ class SonarQuantileFilteredNoiseNode(SonarCustomNoiseNodeBase):
 class SonarShuffledNoiseNode(SonarCustomNoiseNodeBase):
     DESCRIPTION = "Custom noise type that allows shuffling noise along some dimension"
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        result = super().INPUT_TYPES(include_chain=False, include_rescale=False)
-        result["required"] |= {
-            "custom_noise": (
-                WILDCARD_NOISE,
-                {
-                    "tooltip": f"Custom noise type to filter.\n{NOISE_INPUT_TYPES_HINT}",
-                },
-            ),
-            "dims": (
-                "STRING",
-                {
-                    "default": "-1",
-                    "tooltip": "Comma separated list of dimensions to shuffle. May be negative to count from the end.",
-                },
-            ),
-            "flatten": (
-                "BOOLEAN",
-                {
-                    "default": False,
-                    "tooltip": "Controls whether to flatten starting from the dimension before the shuffle operation. May be slow as this requires flattening and then reshaping the tensor back to the correct shape. Flattening will occur between the lowest and highest dimension in the list, other dimensions will be ignored. If they are the same, then it will just flatten from the lowest dimension.",
-                },
-            ),
-            "percentage": (
-                "FLOAT",
-                {
-                    "default": 1.0,
-                    "min": 0.0,
-                    "max": 1.0,
-                    "tooltip": "Percentage of elements to shuffle in the specified dimensions.",
-                },
-            ),
-        }
-        return result
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: NoiseNoChainInputTypes()
+        .req_customnoise_custom_noise(tooltip="Custom noise type to filter.")
+        .req_string_dims(
+            default="-1",
+            tooltip="Comma separated list of dimensions to shuffle. May be negative to count from the end.",
+        )
+        .req_bool_flatten(
+            tooltip="Controls whether to flatten starting from the dimension before the shuffle operation. May be slow as this requires flattening and then reshaping the tensor back to the correct shape. Flattening will occur between the lowest and highest dimension in the list, other dimensions will be ignored. If they are the same, then it will just flatten from the lowest dimension.",
+        )
+        .req_float_percentage(
+            default=1.0,
+            min=0.0,
+            max=1.0,
+            tooltip="Percentage of elements to shuffle in the specified dimensions.",
+        ),
+    )
 
     @classmethod
     def get_item_class(cls):
@@ -933,50 +813,27 @@ class SonarShuffledNoiseNode(SonarCustomNoiseNodeBase):
 class SonarPatternBreakNoiseNode(SonarCustomNoiseNodeBase):
     DESCRIPTION = "Custom noise type that allows breaking patterns in the noise with configurable strength"
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        result = super().INPUT_TYPES(include_chain=False, include_rescale=False)
-        result["required"] |= {
-            "custom_noise": (
-                WILDCARD_NOISE,
-                {
-                    "tooltip": f"Custom noise type to filter.\n{NOISE_INPUT_TYPES_HINT}",
-                },
-            ),
-            "detail_level": (
-                "FLOAT",
-                {
-                    "default": 0.0,
-                    "min": -10000.0,
-                    "max": 10000.0,
-                    "tooltip": "Controls the detail level of the noise when break_pattern is non-zero. No effect when strength is 0.",
-                },
-            ),
-            "blend_mode": (
-                tuple(utils.BLENDING_MODES.keys()),
-                {
-                    "default": "lerp",
-                    "tooltip": "Function to use for blending original noise with pattern broken noise. If you have ComfyUI-bleh then you will have access to many more blend modes.",
-                },
-            ),
-            "percentage": (
-                "FLOAT",
-                {
-                    "default": 1.0,
-                    "min": -10000.0,
-                    "max": 10000.0,
-                    "tooltip": "Percentage pattern-broken noise to mix with the original noise. Going outside of 0.0 through 1.0 is unlikely to work well with normal blend modes.",
-                },
-            ),
-            "restore_scale": (
-                "BOOLEAN",
-                {
-                    "default": True,
-                    "tooltip": "Controls whether the original min/max values get preserved. Not sure which is better, it is slightly slower to do this though.",
-                },
-            ),
-        }
-        return result
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: NoiseNoChainInputTypes()
+        .req_customnoise_custom_noise(tooltip="Custom noise type to filter.")
+        .req_float_detail_level(
+            default=0.0,
+            tooltip="Controls the detail level of the noise when break_pattern is non-zero. No effect when strength is 0.",
+        )
+        .req_selectblend(
+            tooltip="Function to use for blending original noise with pattern broken noise. If you have ComfyUI-bleh then you will have access to many more blend modes.",
+        )
+        .req_float_percentage(
+            default=1.0,
+            min=0.0,
+            max=1.0,
+            tooltip="Percentage of elements to shuffle in the specified dimensions.",
+        )
+        .req_bool_restore_scale(
+            default=True,
+            tooltip="Controls whether the original min/max values get preserved. Not sure which is better, it is slightly slower to do this though.",
+        ),
+    )
 
     @classmethod
     def get_item_class(cls):
@@ -1040,49 +897,23 @@ yl_scale: 1.0
 yh_scales: 1.0
 """
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        result = super().INPUT_TYPES()
-        result["required"] |= {
-            "normalize_noise": (
-                "BOOLEAN",
-                {
-                    "default": False,
-                    "tooltip": "Controls whether the noise source is normalized before wavelet filtering occurs.",
-                },
-            ),
-            "normalize": (
-                ("default", "forced", "disabled"),
-                {
-                    "default": "default",
-                    "tooltip": "Controls whether the generated noise is normalized to 1.0 strength.",
-                },
-            ),
-        }
-        result["optional"] |= {
-            "custom_noise": (
-                WILDCARD_NOISE,
-                {
-                    "tooltip": f"Optional: Custom noise input. If unconnected will default to Gaussian noise.\n{NOISE_INPUT_TYPES_HINT}",
-                },
-            ),
-            "custom_noise_high": (
-                WILDCARD_NOISE,
-                {
-                    "tooltip": f"Optional: Custom noise input. If unconnected will use the same noise generator as custom_noise. However, if you do connect it this noise will be used for the high-frequency side of the wavelet.\n{NOISE_INPUT_TYPES_HINT}",
-                },
-            ),
-            "yaml_parameters": (
-                "STRING",
-                {
-                    "tooltip": "Allows specifying custom parameters via YAML. Note: When specifying paramaters this way, there is no error checking.",
-                    "placeholder": cls._yaml_placeholder,
-                    "dynamicPrompts": False,
-                    "multiline": True,
-                },
-            ),
-        }
-        return result
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda _yaml_placeholder=_yaml_placeholder: NoiseChainInputTypes()
+        .req_bool_normalize_noise(
+            default=False,
+            tooltip="Controls whether the noise source is normalized before wavelet filtering occurs.",
+        )
+        .req_normalizetristate_normalize(
+            tooltip="Controls whether the generated noise is normalized to 1.0 strength.",
+        )
+        .opt_customnoise_custom_noise(
+            tooltip="Optional: Custom noise input. If unconnected will default to Gaussian noise.",
+        )
+        .opt_customnoise_custom_noise_high(
+            tooltip="Optional: Custom noise input. If unconnected will use the same noise generator as custom_noise. However, if you do connect it this noise will be used for the high-frequency side of the wavelet.",
+        )
+        .opt_yaml(placeholder=_yaml_placeholder),
+    )
 
     @classmethod
     def get_item_class(cls):
@@ -1120,89 +951,61 @@ class SonarScatternetFilteredNoiseNode(
 ):
     DESCRIPTION = "Custom noise type that allows filtering noise using a scatternet (basically wavelets). Requires the pytorch_wavelets package to be installed in your Python environment. Can be used to do stuff like take the higher frequency components of a very low-frequency noise type such as Pyramid. Currently only works with 4D latents."
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        result = super().INPUT_TYPES()
-        result["required"] |= {
-            "padding_mode": (
-                "STRING",
-                {
-                    "default": "symmetric",
-                    "tooltip": "This is just passed to the pytorch_wavelets scatternet constructor. Valid padding modes that I know of (second order only supports symmetric and zero): symmetric, reflect, zero, periodization, constant, replicate, periodic",
-                },
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: NoiseChainInputTypes()
+        .req_string_padding_mode(
+            default="symmetric",
+            tooltip="This is just passed to the pytorch_wavelets scatternet constructor. Valid padding modes that I know of (second order only supports symmetric and zero): symmetric, reflect, zero, periodization, constant, replicate, periodic",
+        )
+        .req_bool_use_symmetric_filter(
+            default=False,
+            tooltip="Slower, but possibly higher quality.",
+        )
+        .req_float_magbias(
+            default=1e-02,
+            min=-1000.0,
+            max=1000.0,
+            tooltip="Magnitude bias. Changing it doesn't seem to affect anything, but you can try.",
+        )
+        .req_float_output_offset(
+            default=0.0,
+            min=-100000.0,
+            max=100000.0,
+            tooltip="Controls where the output starts. The beginning is the low frequency bands, the end is high frequencies. If less than 1 (positive or negative) it will be treated as a percentage into the dimension. Negative values count from the end.",
+        )
+        .req_field_output_mode(
+            (
+                "channels_adjusted",
+                "flat_adjusted",
+                "channels",
+                "flat",
+                "channels_scaled",
+                "flat_scaled",
             ),
-            "use_symmetric_filter": (
-                "BOOLEAN",
-                {
-                    "default": False,
-                    "tooltip": "Slower, but possibly higher quality.",
-                },
-            ),
-            "magbias": (
-                "FLOAT",
-                {
-                    "default": 1e-02,
-                    "min": -1000.0,
-                    "max": 1000.0,
-                    "tooltip": "Magnitude bias. Changing it doesn't seem to affect anything, but you can try.",
-                },
-            ),
-            "output_offset": (
-                "FLOAT",
-                {
-                    "default": 0.0,
-                    "min": -100000.0,
-                    "max": 100000.0,
-                    "tooltip": "Controls where the output starts. The beginning is the low frequency bands, the end is high frequencies. If less than 1 (positive or negative) it will be treated as a percentage into the dimension. Negative values count from the end.",
-                },
-            ),
-            "output_mode": (
-                ("channels_adjusted", "flat_adjusted", "channels", "flat"),
-                {
-                    "default": "channels_adjusted",
-                    "tooltip": "The normal scatternet reduces the spatial dimensions 2x, the second order one 4x. The adjusted modes will generate larger noise (in the spatial dimensions) to compensate, this is slower but gives you a lot more room to work with. Modes that start with channels will index along the channel dimension, otherwise the indexing will be flat (after the batch dimension). Note: I recommend channels_adjusted mode, it's very possible the offset indexing math is wrong for other modes.",
-                },
-            ),
-            "scatternet_order": (
-                "INT",
-                {
-                    "default": 1,
-                    "min": -3,
-                    "max": 3,
-                    "tooltip": "Each order increases the number of channels exponentially. You can use a primitive node to bypass the limit of 3 here if you're a crazy person, the code will handle any value but you're very likely to die of old age or run out of VRAM or both if you go above 3 (and even that is stretching it). You can set this to 0 to disable scatternet filtering quickly. Negative values are the same as positive ones here with one exception: there's a specialized 2nd order scatternet which will be used by default for order 2, however it may not support the normal parameters (like padding modes). Use -2 here if you just want to stack two normal scatternet layers instead.",
-                },
-            ),
-            "per_channel_scatternet": (
-                "BOOLEAN",
-                {
-                    "default": False,
-                    "tooltip": "Runs the scatternet on each channel separately. May be very slow. Models like SDXL use 4 channels, models like Flux have 16. Enabling this may help with non-adjusted output modes.",
-                },
-            ),
-            "normalize_noise": (
-                "BOOLEAN",
-                {
-                    "default": False,
-                    "tooltip": "Controls whether the noise source is normalized before scatternet filtering occurs.",
-                },
-            ),
-            "normalize": (
-                ("default", "forced", "disabled"),
-                {
-                    "default": "default",
-                    "tooltip": "Controls whether the generated noise is normalized to 1.0 strength.",
-                },
-            ),
-        }
-        result["optional"] |= {
-            "custom_noise": (
-                WILDCARD_NOISE,
-                {
-                    "tooltip": f"Optional: Custom noise input. If unconnected will default to Gaussian noise.\n{NOISE_INPUT_TYPES_HINT}",
-                },
-            ),
-        }
-        return result
+            default="channels_adjusted",
+            tooltip="The normal scatternet reduces the spatial dimensions 2x, the second order one 4x. The adjusted modes will generate larger noise (in the spatial dimensions) to compensate, this is slower but gives you a lot more room to work with. The scaled modes will just scale the noise to compensate (likely doesn't work well). Modes that start with channels will index along the channel dimension, otherwise the indexing will be flat (after the batch dimension). Note: I recommend channels_adjusted mode, it's very possible the offset indexing math is wrong for other modes.",
+        )
+        .req_int_scatternet_order(
+            default=1,
+            min=-3,
+            max=3,
+            tooltip="Each order increases the number of channels exponentially. You can use a primitive node to bypass the limit of 3 here if you're a crazy person, the code will handle any value but you're very likely to die of old age or run out of VRAM or both if you go above 3 (and even that is stretching it). You can set this to 0 to disable scatternet filtering quickly. Negative values are the same as positive ones here with one exception: there's a specialized 2nd order scatternet which will be used by default for order 2, however it may not support the normal parameters (like padding modes). Use -2 here if you just want to stack two normal scatternet layers instead.",
+        )
+        .req_bool_per_channel_scatternet(
+            default=False,
+            tooltip="Runs the scatternet on each channel separately. May be very slow. Models like SDXL use 4 channels, models like Flux have 16. Enabling this may help with non-adjusted output modes.",
+        )
+        .req_bool_normalize_noise(
+            default=False,
+            tooltip="Controls whether the noise source is normalized before scatternet filtering occurs.",
+        )
+        .req_normalizetristate_normalize(
+            tooltip="Controls whether the generated noise is normalized to 1.0 strength.",
+        )
+        .opt_customnoise_custom_noise(
+            tooltip="Optional: Custom noise input. If unconnected will default to Gaussian noise.",
+        ),
+    )
 
     @classmethod
     def get_item_class(cls):
@@ -1248,99 +1051,62 @@ class SonarRippleFilteredNoiseNode(
         "Custom noise filter that allows applying scaling based on a wave (sin or cos)."
     )
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        result = super().INPUT_TYPES()
-        result["required"] |= {
-            "custom_noise": (
-                WILDCARD_NOISE,
-                {
-                    "tooltip": f"Custom noise input. \n{NOISE_INPUT_TYPES_HINT}",
-                },
-            ),
-            "mode": (
-                ("sin", "cos", "sin_copysign", "cos_copysign"),
-                {
-                    "default": "cos",
-                    "tooltip": "Function to use for rippling. The copysign variations are not recommended, they will force the noise to the sign of the wave (whether it's above or below the midline) which has an extremely strong effect. If you want to try it, use something like a 1:16 ratio or higher with normal noise.",
-                },
-            ),
-            "dim": (
-                "INT",
-                {
-                    "default": -1,
-                    "min": -100,
-                    "max": 100,
-                    "tooltip": "Dimension to use for the ripple effect. Negative dimensions count from the end where -1 is the last dimension.",
-                },
-            ),
-            "flatten": (
-                "BOOLEAN",
-                {
-                    "default": False,
-                    "tooltip": "When enabled, the noise will be flattened starting from (and including) the specified dimension.",
-                },
-            ),
-            "offset": (
-                "FLOAT",
-                {
-                    "default": 0.0,
-                    "min": -10000,
-                    "max": 10000.0,
-                    "tooltip": "Simple addition to the base value used for the wave.",
-                },
-            ),
-            "roll": (
-                "FLOAT",
-                {
-                    "default": 0.0,
-                    "min": -10000,
-                    "max": 10000.0,
-                    "tooltip": "Rolls the wave by this many elements each time the noise generator is called. Negative values roll backward.",
-                },
-            ),
-            "amplitude_high": (
-                "FLOAT",
-                {
-                    "default": 0.25,
-                    "min": -10000,
-                    "max": 10000.0,
-                    "tooltip": "Scale for noise at the highest point of the wave. This adds to the base value (respecting sign). For example, if set to 0.25 you will get noise * 1.25 at that point. It's also possible to use negative values, -0.25 will result in noise * -1.25.",
-                },
-            ),
-            "amplitude_low": (
-                "FLOAT",
-                {
-                    "default": 0.15,
-                    "min": -10000,
-                    "max": 10000.0,
-                    "tooltip": "Scale for noise at the lowest point of the wave. This subtracts from the base value (respecting sign). For example, if set to 0.25 you will get noise * 0.75 at that point. It's also possible to use negative values, -0.25 will result in noise * -0.75.",
-                },
-            ),
-            "period": (
-                "FLOAT",
-                {
-                    "default": 3.0,
-                    "min": -10000,
-                    "max": 10000.0,
-                    "tooltip": "Number of oscillations along the specified dimension.",
-                },
-            ),
-            "normalize_noise": (
-                "BOOLEAN",
-                {
-                    "default": False,
-                    "tooltip": "Controls whether the noise source is normalized before wavelet filtering occurs.",
-                },
-            ),
-            "normalize": (
-                ("default", "forced", "disabled"),
-                {
-                    "tooltip": "Controls whether the generated noise is normalized to 1.0 strength.",
-                },
-            ),
-        }
-        return result
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: NoiseChainInputTypes()
+        .req_customnoise_custom_noise()
+        .req_field_mode(
+            ("sin", "cos", "sin_copysign", "cos_copysign"),
+            default="cos",
+            tooltip="Function to use for rippling. The copysign variations are not recommended, they will force the noise to the sign of the wave (whether it's above or below the midline) which has an extremely strong effect. If you want to try it, use something like a 1:16 ratio or higher with normal noise.",
+        )
+        .req_int_dim(
+            default=-1,
+            min=-100,
+            max=100,
+            tooltip="Dimension to use for the ripple effect. Negative dimensions count from the end where -1 is the last dimension.",
+        )
+        .req_bool_flatten(
+            default=False,
+            tooltip="When enabled, the noise will be flattened starting from (and including) the specified dimension.",
+        )
+        .req_float_offset(
+            default=0.0,
+            min=-10000,
+            max=10000.0,
+            tooltip="Simple addition to the base value used for the wave.",
+        )
+        .req_float_roll(
+            default=0.0,
+            min=-10000,
+            max=10000.0,
+            tooltip="Rolls the wave by this many elements each time the noise generator is called. Negative values roll backward.",
+        )
+        .req_float_amplitude_high(
+            default=0.25,
+            min=-10000,
+            max=10000.0,
+            tooltip="Scale for noise at the highest point of the wave. This adds to the base value (respecting sign). For example, if set to 0.25 you will get noise * 1.25 at that point. It's also possible to use negative values, -0.25 will result in noise * -1.25.",
+        )
+        .req_float_amplitude_low(
+            default=0.15,
+            min=-10000,
+            max=10000.0,
+            tooltip="Scale for noise at the lowest point of the wave. This subtracts from the base value (respecting sign). For example, if set to 0.25 you will get noise * 0.75 at that point. It's also possible to use negative values, -0.25 will result in noise * -0.75.",
+        )
+        .req_float_period(
+            default=3.0,
+            min=-10000,
+            max=10000.0,
+            tooltip="Number of oscillations along the specified dimension.",
+        )
+        .req_bool_normalize_noise(
+            default=False,
+            tooltip="Controls whether the noise source is normalized before wavelet filtering occurs.",
+        )
+        .req_normalizetristate_normalize(
+            tooltip="Controls whether the generated noise is normalized to 1.0 strength.",
+        ),
+    )
 
     @classmethod
     def get_item_class(cls):
@@ -1388,82 +1154,71 @@ class SonarNormalizeNoiseToScaleNode(
 ):
     DESCRIPTION = "Custom noise type that allows precisely controling noise normalization. The default range of -4.5 to 4.5 is roughly what you'd get from 10,000 items of Gaussian noise."
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        result = super().INPUT_TYPES()
-        result["required"] |= {
-            "custom_noise": (
-                WILDCARD_NOISE,
-                {
-                    "tooltip": f"Custom noise input. \n{NOISE_INPUT_TYPES_HINT}",
-                },
-            ),
-            "min_negative_value": (
-                "FLOAT",
-                {
-                    "default": -4.5,
-                    "min": -10000.0,
-                    "max": 10000.0,
-                    "tooltip": "In simple mode, this is just the lowest value in the range (and can be positive, despite the name). In advanced mode, this controls the minimum negative value. If you set it to 0 or higher then normalization will leave negative values alone.",
-                },
-            ),
-            "max_negative_value": (
-                "FLOAT",
-                {
-                    "default": 0.0,
-                    "min": -10000.0,
-                    "max": 10000.0,
-                    "tooltip": "Not used in simple mode. In advanced mode, this controls the maximum negative value. If you set it to 0 or higher, a maximum negative value will be automatically determined from negative value closest (but not equal to) zero.",
-                },
-            ),
-            "min_positive_value": (
-                "FLOAT",
-                {
-                    "default": 0.0,
-                    "min": -10000.0,
-                    "max": 10000.0,
-                    "tooltip": "Not used in simple mode. In advanced mode, this controls the minmum positive value. If you set it to 0 or lower, a minimum positive value will be automatically determined from positive value closest (but not equal to) zero.",
-                },
-            ),
-            "max_positive_value": (
-                "FLOAT",
-                {
-                    "default": 4.5,
-                    "min": -10000.0,
-                    "max": 10000.0,
-                    "tooltip": "In simple mode, this is just the highest value in the range (and can be negative, despite the name). In advanced mode, this controls the maximum positive value. If you set it to 0 or lower then normalization will leave positive values alone.",
-                },
-            ),
-            "mode": (
-                ("simple", "advanced"),
-                {
-                    "default": "simple",
-                    "tooltip": "There are several modes:\nsimple: The noise will be rebalanced to be in between min_negative_value and max_positive_value. Though it sounds weird, you don't need to respect the positive/negative in the names. It is just treated as a simple range.\nadvanced: Positive and negative values in the noise are separately rebalanced to be between the specified ranges. If you set max_negative_value to something positive or min_positive_value to something negative this will automatically determine whatever the closest value to zero is for each sign. Additionally, if you set max_positive_value to something negative or min_negative_value to something positive then values for that sign will be left alone.",
-                },
-            ),
-            "dims": (
-                "STRING",
-                {
-                    "default": "-3, -2, -1",
-                    "tooltip": "A comma separated list of dimensions which can be negative to count from the end. This behaves differently in advanced mode: If left blank, normalization will be global. If set to anything, normalization will be over each batch item separately. The actual values of the dimensions are ignored in advanced mode currently.",
-                },
-            ),
-            "normalize_noise": (
-                "BOOLEAN",
-                {
-                    "default": False,
-                    "tooltip": "Controls whether the noise source is normalized before wavelet filtering occurs.",
-                },
-            ),
-            "normalize": (
-                ("default", "forced", "disabled"),
-                {
-                    "default": "disabled",
-                    "tooltip": "Controls whether the generated noise is normalized to 1.0 strength.",
-                },
-            ),
-        }
-        return result
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: NoiseChainInputTypes()
+        .req_customnoise_custom_noise()
+        .req_float_min_negative_value(
+            default=-4.5,
+            min=-10000.0,
+            max=10000.0,
+            tooltip="In simple mode, this is just the lowest value in the range (and can be positive, despite the name). In advanced mode, this controls the minimum negative value. If you set it to 0 or higher then normalization will leave negative values alone.",
+        )
+        .req_float_max_negative_value(
+            default=0.0,
+            min=-10000.0,
+            max=10000.0,
+            tooltip="Not used in simple mode. In advanced mode, this controls the maximum negative value. If you set it to 0 or higher, a maximum negative value will be automatically determined from negative value closest (but not equal to) zero.",
+        )
+        .req_float_min_positive_value(
+            default=0.0,
+            min=-10000.0,
+            max=10000.0,
+            tooltip="Not used in simple mode. In advanced mode, this controls the minmum positive value. If you set it to 0 or lower, a minimum positive value will be automatically determined from positive value closest (but not equal to) zero.",
+        )
+        .req_float_max_positive_value(
+            default=4.5,
+            min=-10000.0,
+            max=10000.0,
+            tooltip="In simple mode, this is just the highest value in the range (and can be negative, despite the name). In advanced mode, this controls the maximum positive value. If you set it to 0 or lower then normalization will leave positive values alone.",
+        )
+        .req_field_mode(
+            ("simple", "advanced"),
+            default="simple",
+            tooltip="There are several modes:\nsimple: The noise will be rebalanced to be in between min_negative_value and max_positive_value. Though it sounds weird, you don't need to respect the positive/negative in the names. It is just treated as a simple range.\nadvanced: Positive and negative values in the noise are separately rebalanced to be between the specified ranges. If you set max_negative_value to something positive or min_positive_value to something negative this will automatically determine whatever the closest value to zero is for each sign. Additionally, if you set max_positive_value to something negative or min_negative_value to something positive then values for that sign will be left alone.",
+        )
+        .req_string_dims(
+            default="-3, -2, -1",
+            tooltip="A comma separated list of dimensions which can be negative to count from the end. This behaves differently in advanced mode: If left blank, normalization will be global. If set to anything, normalization will be over each batch item separately. The actual values of the dimensions are ignored in advanced mode currently.",
+        )
+        .req_string_std_dims(
+            default="-3, -2, -1",
+            tooltip="A comma separated list of dimensions which can be negative to count from the end.",
+        )
+        .req_float_std_multiplier(
+            default=1.0,
+            min=-10000.0,
+            max=10000.0,
+            tooltip="Multiplier on the distance of the std from 1.0. The noise will be divided by this. You can set it to 1.0 to skip the division. When enabled, the division occurs before the final normalize and scaling and after the min/max value parameters are applied.",
+        )
+        .req_string_mean_dims(
+            default="-3, -2, -1",
+            tooltip="A comma separated list of dimensions which can be negative to count from the end.",
+        )
+        .req_float_mean_multiplier(
+            default=1.0,
+            min=-10000.0,
+            max=10000.0,
+            tooltip="Multiplier on the mean of the noise. The mean will be subtracted from the noise if it's not 0. This occurs before the final normalize and scaling and after the min/max value parameters are applied.",
+        )
+        .req_bool_normalize_noise(
+            default=False,
+            tooltip="Controls whether the noise source is normalized immediately after generation.",
+        )
+        .req_normalizetristate_normalize(
+            default="disabled",
+            tooltip="Controls whether the generated noise is normalized to 1.0 strength. Enabling this does the same thing as the default mean/std settings.",
+        ),
+    )
 
     @classmethod
     def get_item_class(cls):
@@ -1481,6 +1236,10 @@ class SonarNormalizeNoiseToScaleNode(
         max_positive_value: float,
         mode: str,
         dims: str,
+        std_dims: str,
+        std_multiplier: float,
+        mean_dims: str,
+        mean_multiplier: float,
         normalize_noise: bool,
         custom_noise=None,
         sonar_custom_noise_opt=None,
@@ -1495,6 +1254,14 @@ class SonarNormalizeNoiseToScaleNode(
             max_positive_value=max_positive_value,
             mode=mode,
             dims=() if not dims.strip() else tuple(int(i) for i in dims.split(",")),
+            std_dims=()
+            if not std_dims.strip()
+            else tuple(int(i) for i in dims.split(",")),
+            std_multiplier=std_multiplier,
+            mean_dims=()
+            if not mean_dims.strip()
+            else tuple(int(i) for i in dims.split(",")),
+            mean_multiplier=mean_multiplier,
             normalize=self.get_normalize(normalize),
             normalize_noise=normalize_noise,
             noise=custom_noise,
@@ -1507,65 +1274,34 @@ class SonarPerDimNoiseNode(
 ):
     DESCRIPTION = "Custom noise type that allows calling the noise sampler multiple times along a dimension. Can be useful for stuff like moving slices of 3D Perlin noise into the batch dimension."
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        result = super().INPUT_TYPES()
-        result["required"] |= {
-            "custom_noise": (
-                WILDCARD_NOISE,
-                {
-                    "tooltip": f"Custom noise input. \n{NOISE_INPUT_TYPES_HINT}",
-                },
-            ),
-            "dim": (
-                "INT",
-                {
-                    "default": 0,
-                    "min": -100,
-                    "max": 100,
-                    "tooltip": "Dimension to use. The default usually corresponds to the batch. Be careful using dimensions above 1 as those tend to be spatial and you might end up calling a slow noise sampler hundreds of times.",
-                },
-            ),
-            "shrink_dim": (
-                "BOOLEAN",
-                {
-                    "default": False,
-                    "tooltip": "When enabled, the reference latent will be chunk_size in the specified dimension. When disabled, noise will be generated according to the initial latent size and then sliced along the specified dimension. Enabling it should be considerably faster/more memory efficient but may not work well for some noise types.",
-                },
-            ),
-            "chunk_size": (
-                "INT",
-                {
-                    "default": 1,
-                    "min": 1,
-                    "max": 10000,
-                    "tooltip": "Can be used to control how many times the noise sampler is called. For example, if you have dim=0, chunk_size=2 and are dealing with a batch of 4, this will call the noise sampler twice, taking the first two items from the first call and the last two items from the second call.",
-                },
-            ),
-            # "offset": (
-            #     "INT",
-            #     {
-            #         "default": 0,
-            #         "min": -10000,
-            #         "max": 10000,
-            #     },
-            # ),
-            "normalize_noise": (
-                "BOOLEAN",
-                {
-                    "default": False,
-                    "tooltip": "Controls whether the noise source is normalized initially.",
-                },
-            ),
-            "normalize": (
-                ("default", "forced", "disabled"),
-                {
-                    "default": "disabled",
-                    "tooltip": "Controls whether the generated noise is normalized to 1.0 strength.",
-                },
-            ),
-        }
-        return result
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: NoiseChainInputTypes()
+        .req_customnoise_custom_noise()
+        .req_int_dim(
+            default=0,
+            min=-100,
+            max=100,
+            tooltip="Dimension to use. The default usually corresponds to the batch. Be careful using dimensions above 1 as those tend to be spatial and you might end up calling a slow noise sampler hundreds of times.",
+        )
+        .req_bool_shrink_dim(
+            default=False,
+            tooltip="When enabled, the reference latent will be chunk_size in the specified dimension. When disabled, noise will be generated according to the initial latent size and then sliced along the specified dimension. Enabling it should be considerably faster/more memory efficient but may not work well for some noise types.",
+        )
+        .req_int_chunk_size(
+            default=1,
+            min=1,
+            max=10000,
+            tooltip="Can be used to control how many times the noise sampler is called. For example, if you have dim=0, chunk_size=2 and are dealing with a batch of 4, this will call the noise sampler twice, taking the first two items from the first call and the last two items from the second call.",
+        )
+        .req_bool_normalize_noise(
+            default=False,
+            tooltip="Controls whether the noise source is normalized initially.",
+        )
+        .req_normalizetristate_normalize(
+            default="disabled",
+            tooltip="Controls whether the generated noise is normalized to 1.0 strength.",
+        ),
+    )
 
     @classmethod
     def get_item_class(cls):
@@ -1591,7 +1327,7 @@ class SonarPerDimNoiseNode(
             sonar_custom_noise_opt=sonar_custom_noise_opt,
             dim=dim,
             shrink_dim=shrink_dim,
-            # offset=offset,
+            offset=0,
             chunk_size=chunk_size,
             normalize=self.get_normalize(normalize),
             normalize_noise=normalize_noise,
@@ -1605,64 +1341,38 @@ class SonarLatentOperationFilteredNoiseNode(
 ):
     DESCRIPTION = "Custom noise type that allows filtering noise with a LATENT_OPERATION. If you connect more than one, the operations will be run in sequence."
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        result = super().INPUT_TYPES()
-        result["required"] |= {
-            "custom_noise": (
-                WILDCARD_NOISE,
-                {
-                    "tooltip": f"Custom noise input. \n{NOISE_INPUT_TYPES_HINT}",
-                },
-            ),
-            "normalize_noise": (
-                "BOOLEAN",
-                {
-                    "default": False,
-                    "tooltip": "Controls whether the noise source is normalized initially.",
-                },
-            ),
-            "normalize": (
-                ("default", "forced", "disabled"),
-                {
-                    "default": "disabled",
-                    "tooltip": "Controls whether the generated noise is normalized to 1.0 strength.",
-                },
-            ),
-        }
-        result["optional"] |= {
-            "operation_1": (
-                "LATENT_OPERATION",
-                {
-                    "tooltip": "Optional LATENT_OPERATION. The operations will be applied in sequence.",
-                },
-            ),
-            "operation_2": (
-                "LATENT_OPERATION",
-                {
-                    "tooltip": "Optional LATENT_OPERATION. The operations will be applied in sequence.",
-                },
-            ),
-            "operation_3": (
-                "LATENT_OPERATION",
-                {
-                    "tooltip": "Optional LATENT_OPERATION. The operations will be applied in sequence.",
-                },
-            ),
-            "operation_4": (
-                "LATENT_OPERATION",
-                {
-                    "tooltip": "Optional LATENT_OPERATION. The operations will be applied in sequence.",
-                },
-            ),
-            "operation_5": (
-                "LATENT_OPERATION",
-                {
-                    "tooltip": "Optional LATENT_OPERATION. The operations will be applied in sequence.",
-                },
-            ),
-        }
-        return result
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: NoiseChainInputTypes()
+        .req_customnoise_custom_noise()
+        .req_bool_normalize_noise(
+            default=False,
+            tooltip="Controls whether the noise source is normalized initially.",
+        )
+        .req_normalizetristate_normalize(
+            default="disabled",
+            tooltip="Controls whether the generated noise is normalized to 1.0 strength.",
+        )
+        .opt_field_operation_1(
+            "LATENT_OPERATION",
+            tooltip="Optional LATENT_OPERATION. The operations will be applied in sequence.",
+        )
+        .opt_field_operation_2(
+            "LATENT_OPERATION",
+            tooltip="Optional LATENT_OPERATION. The operations will be applied in sequence.",
+        )
+        .opt_field_operation_3(
+            "LATENT_OPERATION",
+            tooltip="Optional LATENT_OPERATION. The operations will be applied in sequence.",
+        )
+        .opt_field_operation_4(
+            "LATENT_OPERATION",
+            tooltip="Optional LATENT_OPERATION. The operations will be applied in sequence.",
+        )
+        .opt_field_operation_5(
+            "LATENT_OPERATION",
+            tooltip="Optional LATENT_OPERATION. The operations will be applied in sequence.",
+        ),
+    )
 
     @classmethod
     def get_item_class(cls):
@@ -1699,23 +1409,147 @@ class SonarLatentOperationFilteredNoiseNode(
         )
 
 
+class SonarCustomNoiseParametersNode(
+    SonarCustomNoiseNodeBase,
+    SonarNormalizeNoiseNodeMixin,
+):
+    DESCRIPTION = "Custom noise type that allows setting parameters like dtype or forking the RNG."
+
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: NoiseNoChainInputTypes()
+        .req_customnoise_custom_noise()
+        .req_int_rng_state_offset(
+            default=0,
+            min=0,
+            tooltip="In other words, seed. Avoiding using the word seed here to suppress ComfyUI's annoying default behavior. If you want stuff like auto-increment you can connect an INT primitive node.",
+        )
+        .req_field_rng_offset_mode(
+            ("disabled", "override", "add"),
+            default="disabled",
+            tooltip="Controls the seed passed to the noise sampler and also seeding when rng_mode is set to separate. Most noise samplers don't care about the seed so this generally will only have an effect in when rng_mode is set to separate.",
+        )
+        .req_field_rng_mode(
+            ("default", "separate", "fork"),
+            default="default",
+            tooltip="default mode doesn't do anything special. separate mode creates a generator and saves/restores the state when generating noise (also includes the Python random module). fork uses the existing RNG state (for both Torch and Python random module) but restores it to whatever it was before the custom noise was called.",
+        )
+        .req_bool_frames_to_channels(
+            tooltip="Only applicable for 5D latents (video models). Will move the frame dimension into channels, may be necessary if a noise type can't deal with 5D latents directly. It's safe to enable this for all models.",
+        )
+        .req_bool_ensure_square_aspect_ratio(
+            tooltip="Will rearrange the height/width sizes to be square, padding with zeros if necessary. May help some noise types work better with extreme aspect ratios, can also deal with 3D (1 spatial dimension) latents.",
+        )
+        .req_bool_fix_invalid(
+            tooltip="Replaces any NaNs or infinite values with 0.",
+        )
+        .req_field_override_dtype(
+            (
+                "default",
+                "float64",
+                "float32",
+                "float16",
+                "bfloat16",
+                "float8_e4m3fn",
+                "float8_e4m3fnuz",
+                "float8_e5m2",
+                "float8_e5m2fnuz",
+                "float8_e8m0fnu",
+                "int64",
+                "int32",
+                "int16",
+                "int8",
+            ),
+            default="default",
+            tooltip="Can be used to override the dtype the noise is generated with. Not all noise generators support all types. I don't recommend using the int or float8 types. Probably the most useful override is float64.",
+        )
+        .req_field_override_device(
+            ("default", "cpu", "gpu"),
+            default="default",
+            tooltip="default just uses whatever device normally would be used. gpu will use ComfyUI's default GPU device and also toggle the cpu_noise flag off. cpu will use the CPU device and toggle the cpu_noise flag on.",
+        )
+        .req_normalizetristate_normalize(),
+    )
+
+    @classmethod
+    def get_item_class(cls):
+        return noise.CustomNoiseParametersNoise
+
+    def go(
+        self,
+        *,
+        factor,
+        rng_state_offset: int,
+        rng_offset_mode: str,
+        rng_mode: str,
+        frames_to_channels: bool,
+        ensure_square_aspect_ratio: bool,
+        fix_invalid: bool,
+        override_dtype: str,
+        override_device: str,
+        normalize: str,
+        custom_noise: object,
+    ):
+        valid_dtypes = {
+            "default",
+            "float64",
+            "float32",
+            "float16",
+            "bfloat16",
+            "float8_e4m3fn",
+            "float8_e4m3fnuz",
+            "float8_e5m2",
+            "float8_e5m2fnuz",
+            "float8_e8m0fnu",
+            "int64",
+            "int32",
+            "int16",
+            "int8",
+        }
+        dt = getattr(torch, override_dtype, None)
+        if override_dtype not in valid_dtypes or (
+            override_dtype != "default" and dt is None
+        ):
+            raise ValueError("Bad dtype, may not be supported by your PyTorch version")
+        if override_device == "default":
+            device = None
+        elif override_device == "cpu":
+            device = "cpu"
+        elif override_device == "gpu":
+            device = model_management.get_torch_device()
+        return super().go(
+            factor,
+            rng_state_offset=rng_state_offset,
+            rng_offset_mode=rng_offset_mode,
+            rng_mode=rng_mode,
+            frames_to_channels=frames_to_channels,
+            ensure_square_aspect_ratio=ensure_square_aspect_ratio,
+            fix_invalid=fix_invalid,
+            override_dtype=dt,
+            override_device=device,
+            normalize=normalize,
+            noise=custom_noise,
+        )
+
+
 NODE_CLASS_MAPPINGS = {
-    "SonarCompositeNoise": SonarCompositeNoiseNode,
-    "SonarModulatedNoise": SonarModulatedNoiseNode,
-    "SonarRepeatedNoise": SonarRepeatedNoiseNode,
-    "SonarScheduledNoise": SonarScheduledNoiseNode,
-    "SonarGuidedNoise": SonarGuidedNoiseNode,
-    "SonarRandomNoise": SonarRandomNoiseNode,
-    "SonarShuffledNoise": SonarShuffledNoiseNode,
-    "SonarPatternBreakNoise": SonarPatternBreakNoiseNode,
-    "SonarChannelNoise": SonarChannelNoiseNode,
     "SonarBlendedNoise": SonarBlendedNoiseNode,
-    "SonarResizedNoise": SonarResizedNoiseNode,
-    "SonarWaveletFilteredNoise": SonarWaveletFilteredNoiseNode,
-    "SonarRippleFilteredNoise": SonarRippleFilteredNoiseNode,
-    "SonarQuantileFilteredNoise": SonarQuantileFilteredNoiseNode,
-    "SonarNormalizeNoiseToScale": SonarNormalizeNoiseToScaleNode,
-    "SonarPerDimNoise": SonarPerDimNoiseNode,
-    "SonarScatternetFilteredNoise": SonarScatternetFilteredNoiseNode,
+    "SonarChannelNoise": SonarChannelNoiseNode,
+    "SonarCompositeNoise": SonarCompositeNoiseNode,
+    "SonarCustomNoiseParameters": SonarCustomNoiseParametersNode,
+    "SonarGuidedNoise": SonarGuidedNoiseNode,
     "SonarLatentOperationFilteredNoise": SonarLatentOperationFilteredNoiseNode,
+    "SonarModulatedNoise": SonarModulatedNoiseNode,
+    "SonarNormalizeNoiseToScale": SonarNormalizeNoiseToScaleNode,
+    "SonarPatternBreakNoise": SonarPatternBreakNoiseNode,
+    "SonarPerDimNoise": SonarPerDimNoiseNode,
+    "SonarQuantileFilteredNoise": SonarQuantileFilteredNoiseNode,
+    "SonarRandomNoise": SonarRandomNoiseNode,
+    "SonarRepeatedNoise": SonarRepeatedNoiseNode,
+    "SonarResizedNoise": SonarResizedNoiseNode,
+    "SonarResizedNoiseAdv": SonarResizedNoiseAdvNode,
+    "SonarRippleFilteredNoise": SonarRippleFilteredNoiseNode,
+    "SonarScatternetFilteredNoise": SonarScatternetFilteredNoiseNode,
+    "SonarScheduledNoise": SonarScheduledNoiseNode,
+    "SonarShuffledNoise": SonarShuffledNoiseNode,
+    "SonarWaveletFilteredNoise": SonarWaveletFilteredNoiseNode,
 }

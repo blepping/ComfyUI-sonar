@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import math
+import random
 from functools import partial
+from typing import TYPE_CHECKING, Callable
 
 import torch
-from comfy.model_management import device_supports_non_blocking
+from comfy.model_management import device_supports_non_blocking, get_torch_device
 from comfy.utils import common_upscale
 
 from .external import MODULES as EXT
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 BLENDING_MODES = {
     "lerp": torch.lerp,
@@ -23,6 +28,31 @@ UPSCALE_METHODS = (
     "bislerp",
     "adaptive_avg_pool2d",
 )
+
+
+def blend_scalar(
+    a: float,
+    b: float,
+    t: float,
+    *,
+    blend_function: Callable | None = None,
+    clamp_function: Callable | None = None,
+) -> float:
+    if blend_function is None:
+        return maybe_apply(
+            a * (1.0 - t) + b * t,
+            clamp_function is not None,
+            clamp_function,
+        )
+    return maybe_apply(
+        blend_function(
+            *(torch.tensor((v,), device="cpu", dtype=torch.float64) for v in (a, b, t)),
+        )
+        .cpu()
+        .item(),
+        clamp_function is not None,
+        clamp_function,
+    )
 
 
 def scale_samples(
@@ -99,8 +129,12 @@ def _quantile_norm_scaledown(
     **_kwargs: dict,
 ) -> torch.Tensor:
     noiseabs = noise.abs()
-    mv = noiseabs.max(dim=dim, keepdim=True).clamp(min=1e-06)
-    return noise if mv == 0 else torch.where(noiseabs > nq, noise * (nq / mv), noise)
+    mv = noiseabs.max(dim=dim, keepdim=True).values.clamp(min=1e-06)
+    return (
+        noise
+        if mv.sum().item() == 0
+        else torch.where(noiseabs > nq, noise * (nq / mv), noise)
+    )
 
 
 def _quantile_norm_wave(
@@ -139,6 +173,24 @@ def _quantile_norm_mode(
         noise.round(decimals=decimals).mode(dim=dim, keepdim=True).values,
         noise,
     )
+
+
+def _quantile_norm_replace(
+    noise: torch.Tensor,
+    nq: torch.Tensor,
+    *,
+    keep_sign: bool = False,
+    avoid_sign: bool = False,
+    **_kwargs: dict,
+) -> torch.Tensor:
+    mask = noise.abs() <= nq
+    candidates = noise[mask].flatten()
+    candidates = candidates[torch.arange(noise.numel()) % candidates.numel()].reshape(
+        noise.shape,
+    )
+    if keep_sign or avoid_sign:
+        candidates = candidates.copysign_(noise.neg() if avoid_sign else noise)
+    return torch.where(mask, noise, candidates)
 
 
 quantile_handlers = {
@@ -235,6 +287,9 @@ quantile_handlers = {
     ),
     "mode_1dec": partial(_quantile_norm_mode, decimals=1),
     "mode_2dec": partial(_quantile_norm_mode, decimals=2),
+    "replace": _quantile_norm_replace,
+    "replace_keepsign": partial(_quantile_norm_replace, keep_sign=True),
+    "replace_avoidsign": partial(_quantile_norm_replace, avoid_sign=True),
 }
 
 
@@ -484,3 +539,126 @@ def trunc_decimals(x: torch.Tensor, decimals: int = 3) -> torch.Tensor:
 
 def maybe_apply(val, cond, fun):
     return fun(val) if cond else val
+
+
+def maybe_apply_kwargs(d: dict | None, cond, fun, *, default=None):
+    return default if d is None or not cond else fun(**d)
+
+
+def tensor_item(val: torch.Tensor | float, *, collapse_function=torch.max) -> float:
+    if isinstance(val, torch.Tensor):
+        return float(collapse_function(val).detach().cpu().item())
+    return float(val)
+
+
+# Does not handle out of order or duplicated sigmas.
+def step_from_sigmas(
+    sigma: float | torch.Tensor,
+    sigmas: torch.Tensor,
+    *,
+    decimals: int | None = 4,
+    output_decimals: int = 2,
+) -> float | None:
+    sigma = tensor_item(sigma)
+    sigmas = sigmas.detach().cpu()
+    if sigmas.ndim == 2:
+        sigmas = sigmas.max(dim=0).values
+    elif sigmas.ndim != 1:
+        errstr = f"Unexpected number of dimensions in sigmas, should be 1 or 2 but got shape {sigmas.shape}"
+        raise ValueError(errstr)
+    sigmas = sigmas[:-1]
+    if not len(sigmas) or torch.any(sigmas <= 0):
+        return None
+    if decimals is not None:
+        sigmas = sigmas.round(decimals=decimals)
+        sigma = round(sigma, decimals)
+    sigma_min, sigma_max = sigmas.aminmax()
+    if not sigma_min <= sigma <= sigma_max:
+        return None
+    max_idx = len(sigmas) - 1
+    idx = int(tensor_item((sigmas - sigma).abs().argmin()))
+    idx_sigma = tensor_item(sigmas[idx])
+    if decimals is not None:
+        idx_sigma = round(idx_sigma, decimals)
+    if sigma == idx_sigma:
+        return float(idx)
+    # Between sigmas, but guaranteed to be in range here.
+    idx_low, idx_high = (idx, idx - 1) if sigma > idx_sigma else (idx + 1, idx)
+    if idx_low < 0 or idx_high < 0 or idx_low > max_idx or idx_high > max_idx:
+        return None
+    sigma_low, sigma_high = tensor_item(sigmas[idx_low]), tensor_item(sigmas[idx_high])
+    step_diff = sigma_high - sigma_low
+    if step_diff == 0:
+        return float(idx)
+    pct = 1.0 - ((sigma - sigma_low) / step_diff)
+    return round(idx_high + pct, output_decimals)
+
+
+def clamp_float(val: float, minval=0.0, maxval=1.0) -> float:
+    return max(minval, min(val, maxval))
+
+
+def filter_dict(d: dict, keep: set | Sequence, *, recursive: bool = False) -> dict:
+    return {
+        k: v if not (recursive and isinstance(v, dict)) else filter_dict(v, keep)
+        for k, v in d.items()
+        if k in keep
+    }
+
+
+class RNGStates:
+    DEFAULT_GPU_TYPE = get_torch_device().type
+
+    def __init__(
+        self,
+        device_types: set | str | Sequence | None = None,
+        *,
+        add_defaults: bool = True,
+    ):
+        if device_types is None:
+            device_types = set()
+        elif isinstance(device_types, str):
+            device_types = {device_types}
+        elif not isinstance(device_types, set):
+            device_types = set(device_types)
+        if add_defaults:
+            device_types = device_types | {"python", "cpu", self.DEFAULT_GPU_TYPE}  # noqa: PLR6104
+        self.rng_states = self.get_states(device_types)
+
+    def update(self):
+        self.rng_states = self.get_states(set(self.rng_states))
+
+    @staticmethod
+    def get_states(device_types: set) -> dict:
+        return {
+            k: torch.get_rng_state()
+            if k == "cpu"
+            else (
+                random.getstate()
+                if k == "python"
+                else getattr(torch, k).get_rng_state()
+            )
+            for k in device_types
+            if k in {"python", "cpu"} or hasattr(torch, k)
+        }
+
+    def set_states(self, *, update: bool = True, override_states: dict | None = None):
+        states = self.rng_states if override_states is None else override_states
+        new_states = {}
+        for k, v in states.items():
+            if isinstance(v, torch.Tensor):
+                v = v.clone()  # noqa: PLW2901
+            if k == "cpu":
+                new_states[k] = v
+                torch.set_rng_state(v)
+                continue
+            if k == "python":
+                new_states[k] = v
+                random.setstate(v)
+                continue
+            tm = getattr(torch, k, None)
+            if tm is not None:
+                new_states[k] = v
+                tm.set_rng_state(v)
+        if update:
+            self.rng_states = new_states

@@ -1,15 +1,13 @@
-# ruff: noqa: TID252
-
 from __future__ import annotations
 
 from comfy import samplers
 
-from .. import external, noise, utils
+from .. import external, noise
 from .base import (
-    NOISE_INPUT_TYPES_HINT,
-    WILDCARD_NOISE,
-    IntegratedNode,
+    NoiseNoChainInputTypes,
     SonarCustomNoiseNodeBase,
+    SonarInputTypes,
+    SonarLazyInputTypes,
     SonarNormalizeNoiseNodeMixin,
 )
 
@@ -25,68 +23,28 @@ class SonarBlendFilterNoiseNode(
 ):
     DESCRIPTION = "Custom noise type that allows blending and filtering the output of another noise generator using ComfyUI-bleh."
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        result = super().INPUT_TYPES(include_rescale=False, include_chain=False)
-        bleh_filter_presets = (
-            () if bleh is None else tuple(bleh.py.latent_utils.FILTER_PRESETS.keys())
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: NoiseNoChainInputTypes()
+        .req_customnoise_sonar_custom_noise()
+        .req_selectblend(insert_modes=("simple_add",), default="simple_add")
+        .req_field_ffilter(
+            () if bleh is None else tuple(bleh.py.latent_utils.FILTER_PRESETS.keys()),
         )
-        bleh_enhance_methods = (
-            () if bleh is None else ("none", *bleh.py.latent_utils.ENHANCE_METHODS)
+        .req_string_ffilter_custom(default="")
+        .req_float_ffilter_scale(default=1.0)
+        .req_float_ffilter_strength(default=0.0)
+        .req_int_ffilter_threshold(default=1, min=1, max=32)
+        .req_field_enhance_mode(
+            ("none",)
+            if bleh is None
+            else ("none", *bleh.py.latent_utils.ENHANCE_METHODS),
+            default="none",
         )
-        result["required"] |= {
-            "sonar_custom_noise": (
-                WILDCARD_NOISE,
-                {
-                    "tooltip": f"Custom noise input.\n{NOISE_INPUT_TYPES_HINT}",
-                },
-            ),
-            "blend_mode": (
-                ("simple_add", *utils.BLENDING_MODES.keys()),
-                {"default": "simple_add"},
-            ),
-            "ffilter": (bleh_filter_presets,),
-            "ffilter_custom": ("STRING", {"default": ""}),
-            "ffilter_scale": (
-                "FLOAT",
-                {
-                    "default": 1.0,
-                    "min": -100.0,
-                    "max": 100.0,
-                    "step": 0.001,
-                    "round": False,
-                },
-            ),
-            "ffilter_strength": (
-                "FLOAT",
-                {
-                    "default": 0.0,
-                    "min": -100.0,
-                    "max": 100.0,
-                    "step": 0.001,
-                    "round": False,
-                },
-            ),
-            "ffilter_threshold": (
-                "INT",
-                {"default": 1, "min": 1, "max": 32},
-            ),
-            "enhance_mode": (bleh_enhance_methods,),
-            "enhance_strength": (
-                "FLOAT",
-                {
-                    "default": 0.0,
-                    "min": -100.0,
-                    "max": 100.0,
-                    "step": 0.001,
-                    "round": False,
-                },
-            ),
-            "affect": (("result", "noise", "both"),),
-            "normalize_result": (("default", "forced", "disabled"),),
-            "normalize_noise": (("default", "forced", "disabled"),),
-        }
-        return result
+        .req_float_enhance_strength(default=0.0)
+        .req_field_affect(("result", "noise", "both"), default="result")
+        .req_normalizetristate_normalize_result()
+        .req_normalizetristate_normalize_noise(),
+    )
 
     @classmethod
     def get_item_class(cls):
@@ -122,6 +80,8 @@ class SonarBlendFilterNoiseNode(
         )
         if ffilter_custom:
             ffilter = ast.literal_eval(f"[{ffilter_custom}]")
+        elif ffilter == "none":
+            ffilter = None
         else:
             ffilter = bleh.py.latent_utils.FILTER_PRESETS[ffilter]
         return super().go(
@@ -148,33 +108,15 @@ class SonarBlehOpsNoiseNode(
         "Custom noise type that allows manipulating noise with ComfyUI-bleh ops."
     )
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        result = super().INPUT_TYPES(include_rescale=False, include_chain=False)
-        result["required"] |= {
-            "sonar_custom_noise": (
-                WILDCARD_NOISE,
-                {
-                    "tooltip": f"Custom noise input.\n{NOISE_INPUT_TYPES_HINT}",
-                },
-            ),
-            "normalize": (
-                ("default", "forced", "disabled"),
-                {
-                    "tooltip": "Controls whether the generated noise is normalized to 1.0 strength.",
-                },
-            ),
-            "rules": (
-                "STRING",
-                {
-                    "tooltip": "Enter rules in the bleh block ops format here.",
-                    "placeholder": "# YAML ops here",
-                    "dynamicPrompts": False,
-                    "multiline": True,
-                },
-            ),
-        }
-        return result
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: NoiseNoChainInputTypes()
+        .req_customnoise_sonar_custom_noise()
+        .req_normalizetristate_normalize()
+        .req_yaml_rules(
+            tooltip="Enter rules in the bleh block ops format here.",
+            placeholder="# YAML ops here",
+        ),
+    )
 
     @classmethod
     def get_item_class(cls):
@@ -201,69 +143,48 @@ class SonarBlehOpsNoiseNode(
 restart = None
 
 
-class KRestartSamplerCustomNoise(metaclass=IntegratedNode):
+def KRestartSamplerCustomNoise_INPUT_TYPES_BUILDER():
+    if restart is not None:
+        get_normal_schedulers = getattr(
+            restart.nodes,
+            "get_supported_normal_schedulers",
+            restart.nodes.get_supported_restart_schedulers,
+        )
+        restart_normal_schedulers = get_normal_schedulers()
+        restart_schedulers = restart.nodes.get_supported_restart_schedulers()
+        restart_default_segments = restart.restart_sampling.DEFAULT_SEGMENTS
+    else:
+        restart_default_segments = ""
+        restart_normal_schedulers = restart_schedulers = ()
+    return (
+        SonarInputTypes()
+        .req_model()
+        .req_field_add_noise(("enable", "disable"), default="enable")
+        .req_seed_noise_seed()
+        .req_int_steps(default=20, min=1)
+        .req_float_cfg(default=8.0, min=0.0)
+        .req_sampler()
+        .req_field_scheduler(restart_normal_schedulers)
+        .req_conditioning_positive()
+        .req_conditioning_negative()
+        .req_latent_latent_image()
+        .req_int_start_at_step(default=0, min=0)
+        .req_int_end_at_step(default=10000, min=0)
+        .req_field_return_with_leftover_noise(
+            ("disable", "enable"),
+            default="disable",
+        )
+        .req_string_segments(default=restart_default_segments)
+        .req_field_restart_scheduler(restart_schedulers)
+        .req_bool_chunked_mode(default=True)
+        .opt_customnoise_custom_noise_opt(tooltip="Optional custom noise input.")
+    )
+
+
+class KRestartSamplerCustomNoise:
     DESCRIPTION = "Restart sampler variant that allows specifying a custom noise type for noise added by restarts."
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        if restart is not None:
-            get_normal_schedulers = getattr(
-                restart.nodes,
-                "get_supported_normal_schedulers",
-                restart.nodes.get_supported_restart_schedulers,
-            )
-            restart_normal_schedulers = get_normal_schedulers()
-            restart_schedulers = restart.nodes.get_supported_restart_schedulers()
-            restart_default_segments = restart.restart_sampling.DEFAULT_SEGMENTS
-        else:
-            restart_default_segments = ""
-            restart_normal_schedulers = restart_schedulers = ()
-        return {
-            "required": {
-                "model": ("MODEL",),
-                "add_noise": (["enable", "disable"],),
-                "noise_seed": (
-                    "INT",
-                    {"default": 0, "min": 0, "max": 0xFFFFFFFFFFFFFFFF},
-                ),
-                "steps": ("INT", {"default": 20, "min": 1, "max": 10000}),
-                "cfg": (
-                    "FLOAT",
-                    {
-                        "default": 8.0,
-                        "min": 0.0,
-                        "max": 100.0,
-                        "step": 0.001,
-                        "round": False,
-                    },
-                ),
-                "sampler": ("SAMPLER",),
-                "scheduler": (restart_normal_schedulers,),
-                "positive": ("CONDITIONING",),
-                "negative": ("CONDITIONING",),
-                "latent_image": ("LATENT",),
-                "start_at_step": ("INT", {"default": 0, "min": 0, "max": 10000}),
-                "end_at_step": ("INT", {"default": 10000, "min": 0, "max": 10000}),
-                "return_with_leftover_noise": (["disable", "enable"],),
-                "segments": (
-                    "STRING",
-                    {
-                        "default": restart_default_segments,
-                        "multiline": False,
-                    },
-                ),
-                "restart_scheduler": (restart_schedulers,),
-                "chunked_mode": ("BOOLEAN", {"default": True}),
-            },
-            "optional": {
-                "custom_noise_opt": (
-                    WILDCARD_NOISE,
-                    {
-                        "tooltip": f"Optional custom noise input.\n{NOISE_INPUT_TYPES_HINT}",
-                    },
-                ),
-            },
-        }
+    INPUT_TYPES = SonarLazyInputTypes(KRestartSamplerCustomNoise_INPUT_TYPES_BUILDER)
 
     RETURN_TYPES = ("LATENT", "LATENT")
     RETURN_NAMES = ("output", "denoised_output")
@@ -317,29 +238,19 @@ class KRestartSamplerCustomNoise(metaclass=IntegratedNode):
         )
 
 
-class RestartSamplerCustomNoise(metaclass=IntegratedNode):
+class RestartSamplerCustomNoise:
     DESCRIPTION = "Wrapper used to make another sampler Restart compatible. Allows specifying a custom type for noise added by restarts."
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "sampler": ("SAMPLER",),
-                "chunked_mode": ("BOOLEAN", {"default": True}),
-            },
-            "optional": {
-                "custom_noise_opt": (
-                    WILDCARD_NOISE,
-                    {
-                        "tooltip": f"Optional custom noise input.\n{NOISE_INPUT_TYPES_HINT}",
-                    },
-                ),
-            },
-        }
 
     RETURN_TYPES = ("SAMPLER",)
     FUNCTION = "go"
     CATEGORY = "sampling/custom_sampling/samplers"
+
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: SonarInputTypes()
+        .req_sampler()
+        .req_bool_chunked_mode(default=True)
+        .opt_customnoise_custom_noise_opt(tooltip="Optional custom noise input."),
+    )
 
     @classmethod
     def go(cls, sampler, chunked_mode, custom_noise_opt=None):

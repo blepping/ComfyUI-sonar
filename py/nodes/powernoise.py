@@ -16,14 +16,16 @@ from comfy.k_diffusion.sampling import BrownianTreeNoiseSampler
 from PIL import Image
 from torch import Tensor
 
-from .nodes.base import (
+from ..noise import CustomNoiseItemBase
+from ..utils import scale_noise
+from .base import (
     NOISE_INPUT_TYPES_HINT,
     WILDCARD_NOISE,
+    NoiseChainInputTypes,
     SonarCustomNoiseNodeBase,
+    SonarInputTypes,
     SonarNormalizeNoiseNodeMixin,
 )
-from .noise import CustomNoiseItemBase
-from .utils import scale_noise
 
 PREVIEW_FORMAT = comfy.latent_formats.SD15()
 
@@ -555,122 +557,69 @@ class PowerFilterNoiseItem(PowerNoiseItem):
 class SonarPowerNoiseNode(SonarCustomNoiseNodeBase):
     DESCRIPTION = "Custom noise type that applies a filter to generated noise."
 
-    @classmethod
-    def INPUT_TYPES(cls, *args: list, **kwargs: dict):
-        result = super().INPUT_TYPES(*args, **kwargs)
-        result["required"] |= {
-            "time_brownian": (
-                "BOOLEAN",
-                {
-                    "default": False,
-                    "tooltip": "Controls whether brownian noise is used when mix isn't 1.0.",
-                },
-            ),
-            "alpha": (
-                "FLOAT",
-                {
-                    "default": 0.0,
-                    "min": -5.0,
-                    "max": 5.0,
-                    "step": 0.001,
-                    "round": False,
-                    "tooltip": "Values above 0 will amplify low frequencies, negative values will amplify high frequencies.",
-                },
-            ),
-            "max_freq": (
-                "FLOAT",
-                {
-                    "default": 0.7071,
-                    "min": 0.0,
-                    "max": 0.7071,
-                    "step": 0.001,
-                    "round": False,
-                    "tooltip": "Maximum frequency to pass through the filter.",
-                },
-            ),
-            "min_freq": (
-                "FLOAT",
-                {
-                    "default": 0.0,
-                    "min": 0.0,
-                    "max": 0.7071,
-                    "step": 0.001,
-                    "round": False,
-                    "tooltip": "Minimum frequency to pass through the filter.",
-                },
-            ),
-            "stretch": (
-                "FLOAT",
-                {
-                    "default": 1.0,
-                    "min": 0.01,
-                    "max": 100,
-                    "step": 0.1,
-                    "round": False,
-                    "tooltip": "Stretches the filter's shape by the specified factor.",
-                },
-            ),
-            "rotate": (
-                "FLOAT",
-                {
-                    "default": 0,
-                    "min": -90,
-                    "max": 90,
-                    "step": 5,
-                    "round": False,
-                    "tooltip": "Rotates the filter.",
-                },
-            ),
-            "pnorm": (
-                "FLOAT",
-                {
-                    "default": 2,
-                    "min": 0.125,
-                    "max": 100,
-                    "step": 0.1,
-                    "round": False,
-                    "tooltip": "Factor used for cushioning the band-pass region.",
-                },
-            ),
-            "mix": (
-                "FLOAT",
-                {
-                    "default": 1.0,
-                    "min": 0.0,
-                    "max": 1.0,
-                    "step": 0.001,
-                    "round": False,
-                    "tooltip": "Controls the ratio of filtered noise. For example, 0.75 means 75% noise with the filter effects applied, 25% raw noise.",
-                },
-            ),
-            "common_mode": (
-                "FLOAT",
-                {
-                    "default": 0.0,
-                    "min": -100.0,
-                    "max": 100.0,
-                    "step": 0.001,
-                    "round": False,
-                    "tooltip": "Attempts to desaturate the latent by injecting the average across channels (controlled by channel_correction). Applied after mix.",
-                },
-            ),
-            "channel_correlation": (
-                "STRING",
-                {
-                    "default": "1, 1, 1, 1, 1, 1",
-                    "multiline": False,
-                    "dynamicPrompts": False,
-                    "tooltip": "Comma-separated list of channel correlation strengths.",
-                },
-            ),
-            "preview": (
-                ("none", "no_mix", "mix"),
-                {
-                    "tooltip": "When enabled, displays a preview of the filter shape and a sample of noise. Mix - previews noise after mix is applied. no_mix - only previews the filtered noise.",
-                },
-            ),
-        }
-        return result
+    INPUT_TYPES = (
+        NoiseChainInputTypes()
+        .req_bool_time_brownian(
+            tooltip="Controls whether brownian noise is used when mix isn't 1.0.",
+        )
+        .req_float_alpha(
+            default=0.0,
+            min=-5.0,
+            max=5.0,
+            tooltip="Values above 0 will amplify low frequencies, negative values will amplify high frequencies.",
+        )
+        .req_float_max_freq(
+            default=0.7071,
+            min=0.0,
+            max=0.7071,
+            tooltip="Maximum frequency to pass through the filter.",
+        )
+        .req_float_min_freq(
+            default=0.0,
+            min=0.0,
+            max=0.7071,
+            tooltip="Minimum frequency to pass through the filter.",
+        )
+        .req_float_stretch(
+            default=1.0,
+            min=0.01,
+            max=100.0,
+            tooltip="Stretches the filter's shape by the specified factor.",
+        )
+        .req_float_rotate(
+            default=0.0,
+            min=-90.0,
+            max=90.0,
+            step=5.0,
+            tooltip="Rotates the filter.",
+        )
+        .req_float_pnorm(
+            default=2.0,
+            min=0.125,
+            max=100.0,
+            step=0.1,
+            tooltip="Factor used for cushioning the band-pass region.",
+        )
+        .req_floatpct_mix(
+            default=1.0,
+            tooltip="Controls the ratio of filtered noise. For example, 0.75 means 75% noise with the filter effects applied, 25% raw noise.",
+        )
+        .req_float_common_mode(
+            default=0.0,
+            min=-100.0,
+            max=100.0,
+            tooltip="Attempts to desaturate the latent by injecting the average across channels (controlled by channel_correction). Applied after mix.",
+        )
+        .req_string_channel_correlation(
+            default="1, 1, 1, 1, 1, 1",
+            tooltip="Comma-separated list of channel correlation strengths.",
+        )
+        .req_field_preview(
+            ("none", "no_mix", "mix"),
+            default="none",
+            tooltip="When enabled, displays a preview of the filter shape and a sample of noise. Mix - previews noise after mix is applied. no_mix - only previews the filtered noise.",
+        )
+    )
 
     @classmethod
     def get_item_class(cls):
@@ -695,7 +644,7 @@ class SonarPowerFilterNoiseNode(SonarPowerNoiseNode, SonarNormalizeNoiseNodeMixi
 
     @classmethod
     def INPUT_TYPES(cls):
-        result = super().INPUT_TYPES(include_rescale=False, include_chain=False)
+        result = super().INPUT_TYPES()
         for k in (
             "min_freq",
             "max_freq",
@@ -876,67 +825,42 @@ class SonarPreviewFilterNode:
     FUNCTION = "go"
     OUTPUT_NODE = True
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "sonar_power_filter": (
-                    "SONAR_POWER_FILTER",
-                    {
-                        "tooltip": "Power Filter to preview.",
-                    },
-                ),
-                "filter_gain": (
-                    "FLOAT",
-                    {
-                        "default": 1 / 3,
-                        "min": 0.0,
-                        "max": 1000000.0,
-                        "step": 0.1,
-                        "round": False,
-                        "tooltip": "Gain factor applied to the filter part of the preview.",
-                    },
-                ),
-                "kernel_gain": (
-                    "FLOAT",
-                    {
-                        "default": 1 / 3,
-                        "min": 0.0,
-                        "max": 1000000.0,
-                        "step": 0.1,
-                        "round": False,
-                        "tooltip": "Gain factor applied to the kernel part of the preview.",
-                    },
-                ),
-                "norm_factor": (
-                    "FLOAT",
-                    {
-                        "default": 1.0,
-                        "min": 0.0,
-                        "max": 1.0,
-                        "step": 0.1,
-                        "round": False,
-                        "tooltip": "Normalization factor applied to the filter before previewing. 1.0 means 100% normalized.",
-                    },
-                ),
-                "preview_size": (
-                    (
-                        "128x128",
-                        "256x256",
-                        "384x256",
-                        "256x384",
-                        "768x512",
-                        "512x768",
-                        "768x768",
-                        "128x127",
-                        "127x128",
-                    ),
-                    {
-                        "tooltip": "Controls the size of the generated preview. Note: Sizes are in latent pixels. For most models, one latent pixel equals eight pixels",
-                    },
-                ),
-            },
-        }
+    INPUT_TYPES = (
+        SonarInputTypes()
+        .req_field_sonar_power_filter(
+            "SONAR_POWER_FILTER",
+            tooltip="Power Filter to preview.",
+        )
+        .req_float_filter_gain(
+            default=1 / 3,
+            min=0.0,
+            tooltip="Gain factor applied to the filter part of the preview.",
+        )
+        .req_float_kernel_gain(
+            default=1 / 3,
+            min=0.0,
+            tooltip="Gain factor applied to the kernel part of the preview.",
+        )
+        .req_floatpct_norm_factor(
+            default=1.0,
+            tooltip="Normalization factor applied to the filter before previewing. 1.0 means 100% normalized.",
+        )
+        .req_field_preview_size(
+            (
+                "128x128",
+                "256x256",
+                "384x256",
+                "256x384",
+                "768x512",
+                "512x768",
+                "768x768",
+                "128x127",
+                "127x128",
+            ),
+            default="128x128",
+            tooltip="Controls the size of the generated preview. Note: Sizes are in latent pixels. For most models, one latent pixel equals eight pixels",
+        )
+    )
 
     @classmethod
     def go(

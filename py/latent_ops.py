@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import math
 import random
+from typing import TYPE_CHECKING
 
 import torch
 
 from . import utils
 
+if TYPE_CHECKING:
+    from types import Sequence
+
 
 class SonarLatentOperation:
-    SKIP_ARGS = frozenset(("sigma", "t2", "cond", "uncond", "cond_scale", "raw_args"))
+    EXTENDED_LATENT_OPERATION = True
 
     def __init__(
         self,
@@ -23,6 +27,8 @@ class SonarLatentOperation:
         self.op = op
 
     def enabled(self, sigma: torch.Tensor | float | None = None) -> bool:
+        if isinstance(sigma, torch.Tensor):
+            sigma = sigma.detach().max().cpu().item()
         return sigma is None or self.end_sigma <= sigma <= self.start_sigma
 
     def call_op(
@@ -36,9 +42,9 @@ class SonarLatentOperation:
             op = self.op
         if op is None:
             return t
-        if not isinstance(op, SonarLatentOperation):
-            kwargs = {k: v for k, v in kwargs.items() if k not in self.SKIP_ARGS}
-        return op(t, *args, **kwargs)
+        if not getattr(op, "EXTENDED_LATENT_OPERATION", False):
+            return op(latent=t)
+        return op(*args, latent=t, **kwargs)
 
     def __call__(
         self,
@@ -61,6 +67,7 @@ class SonarLatentOperationAdvanced(SonarLatentOperation):
         input_multiplier: float,
         output_multiplier: float,
         difference_multiplier: float,
+        ops: Sequence,
         op_alt=None,
         **kwargs: dict,
     ) -> None:
@@ -71,6 +78,7 @@ class SonarLatentOperationAdvanced(SonarLatentOperation):
         self.output_multiplier = output_multiplier
         self.difference_multiplier = difference_multiplier
         self.op_alt = op_alt
+        self.ops = ops
 
     def __call__(
         self,
@@ -87,14 +95,12 @@ class SonarLatentOperationAdvanced(SonarLatentOperation):
                 if self.op_alt is None
                 else self.call_op(t, sigma=sigma, op=self.op_alt, **kwargs)
             )
-        output = self.call_op(
-            t if self.input_multiplier == 1.0 else t * self.input_multiplier,
-            sigma=sigma,
-            **kwargs,
-        )
-        if self.output_multiplier != 1.0:
-            output = output * self.output_multiplier  # noqa: PLR6104
-        diff = output - t
+        output = t * self.input_multiplier if self.input_multiplier != 1.0 else t
+        for op in self.ops:
+            output = self.call_op(output, sigma=sigma, op=op, **kwargs)
+        diff = (
+            output * self.output_multiplier if self.output_multiplier == 1.0 else output
+        ) - t
         if self.difference_multiplier != 1.0:
             diff *= self.difference_multiplier
         return self.blend_function(t, diff, self.blend_strength)
@@ -181,11 +187,23 @@ class SonarLatentOperationNoise(SonarLatentOperation):
 
 
 class SonarLatentOperationSetSeed(SonarLatentOperation):
-    def __init__(self, *args: list, seed: int, **kwargs: dict):
+    def __init__(self, *args: list, seed: int, restore_rng_state: bool, **kwargs: dict):
         super().__init__(*args, **kwargs)
         self.seed = seed
+        self.restore_rng_state = restore_rng_state
 
     def __call__(self, *args: list, **kwargs: dict) -> torch.Tensor:
-        torch.manual_seed(self.seed)
-        random.seed(self.seed)
-        return super().__call__(*args, **kwargs)
+        if self.restore_rng_state:
+            pyrandst = random.getstate()
+            torchrandst = torch.random.get_rng_state()
+        else:
+            pyrandst = torchrandst = None
+        try:
+            torch.manual_seed(self.seed)
+            random.seed(self.seed)
+            result = super().__call__(*args, **kwargs)
+        finally:
+            if self.restore_rng_state:
+                torch.random.set_rng_state(torchrandst)
+                random.setstate(pyrandst)
+        return result

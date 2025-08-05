@@ -1,5 +1,3 @@
-# ruff: noqa: TID252
-
 from __future__ import annotations
 
 import functools
@@ -12,14 +10,17 @@ import numpy as np
 import torch
 import yaml
 from comfy import model_management, samplers
+from tqdm import tqdm
 
 from .. import noise, utils
 from ..external import IntegratedNode
 from ..noise import NoiseType
+from ..wavelet_cfg import WaveletCFG, WCFGRules
 from .base import (
-    NOISE_INPUT_TYPES_HINT,
-    WILDCARD_NOISE,
+    NoiseChainInputTypes,
     SonarCustomNoiseNodeBase,
+    SonarInputTypes,
+    SonarLazyInputTypes,
     SonarNormalizeNoiseNodeMixin,
 )
 
@@ -32,96 +33,44 @@ class NoisyLatentLikeNode(metaclass=IntegratedNode):
 
     FUNCTION = "go"
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "noise_type": (
-                    tuple(noise.NoiseType.get_names()),
-                    {
-                        "default": "gaussian",
-                        "tooltip": "Sets the type of noise to generate. Has no effect when the custom_noise_opt input is connected.",
-                    },
-                ),
-                "seed": (
-                    "INT",
-                    {
-                        "default": 0,
-                        "min": 0,
-                        "max": 0xFFFFFFFFFFFFFFFF,
-                        "tooltip": "Seed to use for generated noise.",
-                    },
-                ),
-                "latent": (
-                    "LATENT",
-                    {
-                        "tooltip": "Latent used as a reference for generating noise.",
-                    },
-                ),
-                "multiplier": (
-                    "FLOAT",
-                    {
-                        "default": 1.0,
-                        "step": 0.001,
-                        "min": -10000.0,
-                        "max": 10000.0,
-                        "round": False,
-                        "tooltip": "Multiplier for the strength of the generated noise. Performed after mul_by_sigmas_opt.",
-                    },
-                ),
-                "add_to_latent": (
-                    "BOOLEAN",
-                    {
-                        "default": False,
-                        "tooltip": "Add the generated noise to the reference latent rather than adding it to an empty latent. Generally should be enabled for img2img workflows.",
-                    },
-                ),
-                "repeat_batch": (
-                    "INT",
-                    {
-                        "default": 1,
-                        "tooltip": "Repeats the noise generation the specified number of times. For example, if set to two and your reference latent is also batch two you will get a batch of four as output.",
-                    },
-                ),
-                "cpu_noise": (
-                    "BOOLEAN",
-                    {
-                        "default": True,
-                        "tooltip": "Controls whether noise will be generated on GPU or CPU. Only affects noise types that support GPU generation (maybe only Brownian).",
-                    },
-                ),
-                "normalize": (
-                    "BOOLEAN",
-                    {
-                        "default": True,
-                        "tooltip": "Controls whether the generated noise is normalized to 1.0 strength before scaling. Generally should be left enabled.",
-                    },
-                ),
-            },
-            "optional": {
-                "custom_noise_opt": (
-                    WILDCARD_NOISE,
-                    {
-                        "tooltip": f"Allows connecting a custom noise chain. When connected, noise_type has no effect.\n{NOISE_INPUT_TYPES_HINT}",
-                    },
-                ),
-                "mul_by_sigmas_opt": (
-                    "SIGMAS",
-                    {
-                        "tooltip": "When connected, will scale the generated noise by the first sigma. Must also connect model_opt to enable.",
-                    },
-                ),
-                "model_opt": (
-                    "MODEL",
-                    {
-                        "tooltip": "Used when mul_by_sigmas_opt is connected, no effect otherwise.",
-                    },
-                ),
-            },
-        }
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: SonarInputTypes()
+        .req_selectnoise_noise_type(
+            tooltip="Sets the type of noise to generate. Has no effect when the custom_noise_opt input is connected.",
+        )
+        .req_seed()
+        .req_latent(tooltip="Latent used as a reference for generating noise.")
+        .req_float_multiplier(
+            default=1.0,
+            tooltip="Multiplier for the strength of the generated noise. Performed after mul_by_sigmas_opt.",
+        )
+        .req_bool_add_to_latent(
+            tooltip="Add the generated noise to the reference latent rather than adding it to an empty latent. Generally should be enabled for img2img workflows.",
+        )
+        .req_int_repeat_batch(
+            default=1,
+            min=1,
+            tooltip="Repeats the noise generation the specified number of times. For example, if set to two and your reference latent is also batch two you will get a batch of four as output.",
+        )
+        .req_bool_cpu_noise(
+            default=True,
+            tooltip="Controls whether noise will be generated on GPU or CPU. Only affects noise types that support GPU generation (maybe only Brownian).",
+        )
+        .req_bool_normalize(
+            default=True,
+            tooltip="Controls whether the generated noise is normalized to 1.0 strength before scaling. Generally should be left enabled.",
+        )
+        .opt_customnoise_custom_noise_opt()
+        .opt_sigmas_mul_by_sigmas_opt(
+            tooltip="When connected, will scale the generated noise by the first sigma. Must also connect model_opt to enable.",
+        )
+        .opt_model_model_opt(
+            tooltip="Used when mul_by_sigmas_opt is connected, no effect otherwise.",
+        ),
+    )
 
     @classmethod
-    def go(  # noqa: PLR0914
+    def go(
         cls,
         *,
         noise_type: str,
@@ -213,161 +162,86 @@ class SonarNoiseImageNode(metaclass=IntegratedNode):
 
     FUNCTION = "go"
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "noise_type": (
-                    tuple(NoiseType.get_names()),
-                    {
-                        "default": "gaussian",
-                        "tooltip": "Sets the type of noise to generate. Has no effect when the custom_noise_opt input is connected.",
-                    },
-                ),
-                "seed": (
-                    "INT",
-                    {
-                        "default": 0,
-                        "min": 0,
-                        "max": 0xFFFFFFFFFFFFFFFF,
-                        "tooltip": "Seed to use for generated noise.",
-                    },
-                ),
-                "image": (
-                    "IMAGE",
-                    {
-                        "tooltip": "Image noise will be added to.",
-                    },
-                ),
-                "noise_min": (
-                    "FLOAT",
-                    {
-                        "default": 0.0,
-                        "step": 0.001,
-                        "min": -1000.0,
-                        "max": 1000.0,
-                        "round": False,
-                        "tooltip": "Generated noise will be normalized to have values between noise_min and noise_max. If you set them both to the same value then this disables normalization.",
-                    },
-                ),
-                "noise_max": (
-                    "FLOAT",
-                    {
-                        "default": 1.0,
-                        "step": 0.001,
-                        "min": -1000.0,
-                        "max": 1000.0,
-                        "round": False,
-                        "tooltip": "Generated noise will be normalized to have values between noise_min and noise_max. If you set them both to the same value then this disables normalization.",
-                    },
-                ),
-                "noise_multiplier": (
-                    "FLOAT",
-                    {
-                        "default": 0.5,
-                        "step": 0.001,
-                        "min": -1000.0,
-                        "max": 1000.0,
-                        "round": False,
-                        "tooltip": "Multiplier for the strength of the generated noise. This is performed after noise_min/max scaling.",
-                    },
-                ),
-                "channel_mode": (
-                    (
-                        "RGB",
-                        "RGBA",
-                        "R",
-                        "G",
-                        "B",
-                        "A",
-                        "RA",
-                        "GA",
-                        "BA",
-                        "RG",
-                        "RB",
-                        "GB",
-                        "RGA",
-                        "RBA",
-                        "GBA",
-                    ),
-                    {
-                        "default": "RGB",
-                        "tooltip": "RGBA will also add noise to the alpha channel as well if it exists. Only used for 3 or 4 channel images, for other numbers of channels (i.e. one channel) then all channels will be targeted.",
-                    },
-                ),
-                "blend_mode": (
-                    ("simple_add", *utils.BLENDING_MODES.keys()),
-                    {
-                        "default": "simple_add",
-                        "tooltip": "Controls how the generated noise is combined with the image. simple_add just adds it and blend_strength is ignored in that case.",
-                    },
-                ),
-                "blend_strength": (
-                    "FLOAT",
-                    {
-                        "default": 0.5,
-                        "step": 0.001,
-                        "min": -1000.0,
-                        "max": 1000.0,
-                        "round": False,
-                        "tooltip": "Multiplier for the strength of the generated noise.",
-                    },
-                ),
-                "overflow_mode": (
-                    ("clamp", "rescale"),
-                    {
-                        "default": "clamp",
-                        "tooltip": "When set to clamp, values above/below 0, 1 will be set to those values. When set to rescale, the image values will be rescaled such that the minimum value is 0 and the maximum is 1.",
-                    },
-                ),
-                "greyscale_mode": (
-                    "BOOLEAN",
-                    {
-                        "default": False,
-                        "tooltip": "When enabled, generated noise will be averaged so the same amount value is added to all specified channels.",
-                    },
-                ),
-                "pure_noise_mode": (
-                    "BOOLEAN",
-                    {
-                        "default": False,
-                        "tooltip": "When enabled, the original image is only used for its shape and you will be adding noise to an image full of zeros (black), suitable for creating pure noise images.",
-                    },
-                ),
-                "dtype": (
-                    ("default", "float32", "float64", "float16", "bfloat16"),
-                    {
-                        "default": "default",
-                        "tooltip": "When set to default it will use the same type as the input tensor (probably float32). You can manually set the dtype if you want, though it likely isn't going to matter. Using dtypes with limited range (float16, bfloat16) isn't recommended.",
-                    },
-                ),
-                "cpu_noise": (
-                    "BOOLEAN",
-                    {
-                        "default": True,
-                        "tooltip": "Controls whether noise will be generated on GPU or CPU.",
-                    },
-                ),
-                "normalize": (
-                    "BOOLEAN",
-                    {
-                        "default": True,
-                        "tooltip": "Controls whether the generated noise is normalized to 1.0 strength before scaling. Generally should be left enabled.",
-                    },
-                ),
-            },
-            "optional": {
-                "custom_noise_opt": (
-                    WILDCARD_NOISE,
-                    {
-                        "tooltip": f"Allows connecting a custom noise chain. When connected, noise_type has no effect.\n{NOISE_INPUT_TYPES_HINT}",
-                    },
-                ),
-            },
-        }
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: SonarInputTypes()
+        .req_selectnoise_noise_type(
+            tooltip="Sets the type of noise to generate. Has no effect when the custom_noise_opt input is connected.",
+        )
+        .req_seed()
+        .req_image(tooltip="Image noise will be added to.")
+        .req_float_noise_min(
+            default=0.0,
+            tooltip="Generated noise will be normalized to have values between noise_min and noise_max. If you set them both to the same value then this disables normalization.",
+        )
+        .req_float_noise_max(
+            default=1.0,
+            tooltip="Generated noise will be normalized to have values between noise_min and noise_max. If you set them both to the same value then this disables normalization.",
+        )
+        .req_float_noise_multiplier(
+            default=0.5,
+            tooltip="Multiplier for the strength of the generated noise. This is performed after noise_min/max scaling.",
+        )
+        .req_field_channel_mode(
+            (
+                "RGB",
+                "RGBA",
+                "R",
+                "G",
+                "B",
+                "A",
+                "RA",
+                "GA",
+                "BA",
+                "RG",
+                "RB",
+                "GB",
+                "RGA",
+                "RBA",
+                "GBA",
+            ),
+            default="RGB",
+            tooltip="RGBA will also add noise to the alpha channel as well if it exists. Only used for 3 or 4 channel images, for other numbers of channels (i.e. one channel) then all channels will be targeted.",
+        )
+        .req_selectblend(
+            insert_modes=("simple_add",),
+            default="simple_add",
+            tooltip="Controls how the generated noise is combined with the image. simple_add just adds it and blend_strength is ignored in that case.",
+        )
+        .req_float_blend_strength(
+            default=0.5,
+            tooltip="Multiplier for the strength of the generated noise.",
+        )
+        .req_field_overflow_mode(
+            ("clamp", "rescale"),
+            default="clamp",
+            tooltip="When set to clamp, values above/below 0, 1 will be set to those values. When set to rescale, the image values will be rescaled such that the minimum value is 0 and the maximum is 1.",
+        )
+        .req_bool_greyscale_mode(
+            tooltip="When set to clamp, values above/below 0, 1 will be set to those values. When set to rescale, the image values will be rescaled such that the minimum value is 0 and the maximum is 1.",
+        )
+        .req_bool_pure_noise_mode(
+            tooltip="When enabled, the original image is only used for its shape and you will be adding noise to an image full of zeros (black), suitable for creating pure noise images.",
+        )
+        .req_field_dtype(
+            ("default", "float32", "float64", "float16", "bfloat16"),
+            default="default",
+            tooltip="When set to default it will use the same type as the input tensor (probably float32). You can manually set the dtype if you want, though it likely isn't going to matter. Using dtypes with limited range (float16, bfloat16) isn't recommended.",
+        )
+        .req_bool_cpu_noise(
+            default=True,
+            tooltip="Controls whether noise will be generated on GPU or CPU.",
+        )
+        .req_bool_normalize(
+            default=True,
+            tooltip="Controls whether the generated noise is normalized to 1.0 strength before scaling. Generally should be left enabled.",
+        )
+        .opt_customnoise_custom_noise_opt(
+            tooltip="Allows connecting a custom noise chain. When connected, noise_type has no effect.",
+        ),
+    )
 
     @classmethod
-    def go(  # noqa: PLR0914
+    def go(
         cls,
         *,
         noise_type: str,
@@ -551,52 +425,25 @@ class SonarToComfyNOISENode(metaclass=IntegratedNode):
     CATEGORY = "sampling/custom_sampling/noise"
     FUNCTION = "go"
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "custom_noise": (
-                    WILDCARD_NOISE,
-                    {
-                        "tooltip": f"Custom noise type to convert.\n{NOISE_INPUT_TYPES_HINT}",
-                    },
-                ),
-                "seed": (
-                    "INT",
-                    {
-                        "default": 0,
-                        "min": 0,
-                        "max": 0xFFFFFFFFFFFFFFFF,
-                        "tooltip": "Seed to use for generated noise.",
-                    },
-                ),
-                "cpu_noise": (
-                    "BOOLEAN",
-                    {
-                        "default": True,
-                        "tooltip": "Controls whether noise is generated on CPU or GPU.",
-                    },
-                ),
-                "normalize": (
-                    "BOOLEAN",
-                    {
-                        "default": True,
-                        "tooltip": "Controls whether generated noise is normalized to 1.0 strength.",
-                    },
-                ),
-                "multiplier": (
-                    "FLOAT",
-                    {
-                        "default": 1.0,
-                        "step": 0.001,
-                        "min": -1000.0,
-                        "max": 1000.0,
-                        "round": False,
-                        "tooltip": "Simple multiplier applied to noise after all other scaling and normalization effects. If set to 0, no noise will be generated (same as disabling noise).",
-                    },
-                ),
-            },
-        }
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: SonarInputTypes()
+        .req_customnoise_custom_noise(
+            tooltip="Custom noise type to convert.",
+        )
+        .req_seed(tooltip="Seed to use for generated noise.")
+        .req_bool_cpu_noise(
+            default=True,
+            tooltip="Controls whether noise is generated on CPU or GPU.",
+        )
+        .req_bool_normalize(
+            default=True,
+            tooltip="Controls whether generated noise is normalized to 1.0 strength.",
+        )
+        .req_float_multiplier(
+            default=1.0,
+            tooltip="Simple multiplier applied to noise after all other scaling and normalization effects. If set to 0, no noise will be generated (same as disabling noise).",
+        ),
+    )
 
     @classmethod
     def go(cls, *, custom_noise, seed, cpu_noise=True, normalize=True, multiplier=1.0):
@@ -614,100 +461,47 @@ class SonarToComfyNOISENode(metaclass=IntegratedNode):
 class SamplerNodeConfigOverride(metaclass=IntegratedNode):
     DESCRIPTION = "Allows overriding paramaters for a SAMPLER. Only parameters that particular sampler supports will be applied, so for example setting ETA will have no effect for non-ancestral Euler."
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "sampler": ("SAMPLER",),
-                "eta": (
-                    "FLOAT",
-                    {
-                        "default": 1.0,
-                        "step": 0.01,
-                        "max": 1000.0,
-                        "round": False,
-                        "tooltip": "Basically controls the ancestralness of the sampler. When set to 0, you will get a non-ancestral (or SDE) sampler.",
-                    },
-                ),
-                "s_noise": (
-                    "FLOAT",
-                    {
-                        "default": 1.0,
-                        "step": 0.01,
-                        "min": -1000.0,
-                        "max": 1000.0,
-                        "round": False,
-                        "tooltip": "Multiplier for noise added during ancestral or SDE sampling.",
-                    },
-                ),
-                "s_churn": (
-                    "FLOAT",
-                    {
-                        "default": 0.0,
-                        "step": 0.01,
-                        "min": -1000.0,
-                        "max": 1000.0,
-                        "round": False,
-                        "tooltip": "Churn was the predececessor of ETA. Only used by a few types of samplers (notably Euler non-ancestral). Not used by any ancestral or SDE samplers.",
-                    },
-                ),
-                "r": (
-                    "FLOAT",
-                    {
-                        "default": 0.5,
-                        "step": 0.01,
-                        "min": -1000.0,
-                        "max": 1000.0,
-                        "round": False,
-                        "tooltip": "Used by dpmpp_sde.",
-                    },
-                ),
-                "sde_solver": (
-                    ("midpoint", "heun"),
-                    {
-                        "tooltip": "Solver used by dpmpp_2m_sde.",
-                    },
-                ),
-                "cpu_noise": (
-                    "BOOLEAN",
-                    {
-                        "default": True,
-                        "tooltip": "Controls whether noise is generated on CPU or GPU.",
-                    },
-                ),
-                "normalize": (
-                    "BOOLEAN",
-                    {
-                        "default": True,
-                        "tooltip": "Controls whether generated noise is normalized to 1.0 strength.",
-                    },
-                ),
-            },
-            "optional": {
-                "noise_type": (
-                    ("DEFAULT", *NoiseType.get_names()),
-                    {
-                        "default": "DEFAULT",
-                        "tooltip": "Noise type used during ancestral or SDE sampling. Leave blank to use the default for the attached sampler. Only used when the custom noise input is not connected.",
-                    },
-                ),
-                "custom_noise_opt": (
-                    WILDCARD_NOISE,
-                    {
-                        "tooltip": f"Optional input for custom noise used during ancestral or SDE sampling. When connected, the built-in noise_type selector is ignored.\n{NOISE_INPUT_TYPES_HINT}",
-                    },
-                ),
-                "yaml_parameters": (
-                    "STRING",
-                    {
-                        "tooltip": "Allows specifying custom parameters via YAML. Note: When specifying paramaters this way, there is no error checking.",
-                        "placeholder": "# YAML or JSON here",
-                        "dynamicPrompts": False,
-                        "multiline": True,
-                    },
-                ),
-            },
-        }
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: SonarInputTypes()
+        .req_sampler()
+        .req_float_eta(
+            default=1.0,
+            tooltip="Basically controls the ancestralness of the sampler. When set to 0, you will get a non-ancestral (or SDE) sampler.",
+        )
+        .req_float_s_noise(
+            default=1.0,
+            tooltip="Multiplier for noise added during ancestral or SDE sampling.",
+        )
+        .req_float_s_churn(
+            default=0.0,
+            tooltip="Churn was the predececessor of ETA. Only used by a few types of samplers (notably Euler non-ancestral). Not used by any ancestral or SDE samplers.",
+        )
+        .req_float_r(
+            default=0.5,
+            tooltip="Used by dpmpp_sde (and perhaps a few other SDE samplers).",
+        )
+        .req_field_sde_solver(
+            ("midpoint", "heun"),
+            tooltip="Solver used by dpmpp_2m_sde.",
+        )
+        .req_bool_cpu_noise(
+            default=True,
+            tooltip="Controls whether noise is generated on CPU or GPU.",
+        )
+        .req_bool_normalize(
+            default=True,
+            tooltip="Controls whether generated noise is normalized to 1.0 strength.",
+        )
+        .opt_selectnoise_noise_type(
+            insert_types=("DEFAULT",),
+            default="DEFAULT",
+            tooltip="Noise type used during ancestral or SDE sampling. DEFAULT will use the default for the attached sampler. Only used when the custom noise input is not connected.",
+        )
+        .opt_customnoise_custom_noise_opt(
+            tooltip="Optional input for custom noise used during ancestral or SDE sampling. When connected, the built-in noise_type selector is ignored.",
+        )
+        .opt_yaml(),
+    )
 
     RETURN_TYPES = ("SAMPLER",)
     CATEGORY = "sampling/custom_sampling/samplers"
@@ -834,24 +628,13 @@ class SamplerNodeConfigOverride(metaclass=IntegratedNode):
 class SonarSplitNoiseChainNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNodeMixin):
     DESCRIPTION = "Custom noise type that allows splitting off a new chain. This can be useful if you want a link in the chain to be a blended type."
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        result = super().INPUT_TYPES()
-        result["required"] |= {
-            "normalize": (
-                ("default", "forced", "disabled"),
-                {
-                    "tooltip": "Controls whether the generated noise is normalized to 1.0 strength.",
-                },
-            ),
-        }
-        result["optional"] |= {
-            "custom_noise": (
-                WILDCARD_NOISE,
-                {"tooltip": f"Custom noise. \n{NOISE_INPUT_TYPES_HINT}"},
-            ),
-        }
-        return result
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: NoiseChainInputTypes()
+        .req_normalizetristate_normalize(
+            tooltip="Controls whether the generated noise is normalized to 1.0 strength.",
+        )
+        .opt_customnoise_custom_noise(),
+    )
 
     @classmethod
     def get_item_class(cls):
@@ -878,10 +661,246 @@ class SonarSplitNoiseChainNode(SonarCustomNoiseNodeBase, SonarNormalizeNoiseNode
         )
 
 
+class SonarWaveletCFGNode(metaclass=IntegratedNode):
+    DESCRIPTION = "Wavelet CFG function that allows you to apply different CFG strength to different frequencies."
+    CATEGORY = "model_patches"
+    RETURN_TYPES = ("MODEL",)
+    FUNCTION = "go"
+
+    _yaml_placeholder = """# YAML or JSON here.
+# I recommend reading the documentation at https://github.com/blepping/ComfyUI-sonar/docs/waveletcfg.md
+# For wavelet information, see: https://pytorch-wavelets.readthedocs.io/en/latest/index.html
+
+# You may override the fields from the node like start_sigma here.
+
+# This section is basically the CFG scale. (All scales sections use the same format.)
+difference:
+    # Scale for the low frequency components.
+    yl_scale: 5.0
+
+    # Scale (or scales) for high frequency components.
+    # This can be scalar or a list or list of lists.
+    # List example:
+    #  yh_scales:
+    #      - [1, 2, 3]
+    #      - fill
+    #      - 5
+    # You can separately apply a scale to items equal to the wavelet level. Levels go from fine to coarse.
+    # If the item is a list, the three items correspond to horizontal, vertical, diagonal for DWT. (DTCWT has 6.)
+    # You can have one "fill" item, this will replicate the item before it however many times is necessary to
+    # match the wavelet level.
+    yh_scales: 3.0
+
+    # You can optionally include a scales_end block with yl_scale/yh_scales.
+    # to interpolate from the toplevel scales (can also be in a scales_start blockx if you prefer).
+
+    # scales_end:
+    #     yl_scale: 1.0
+    #     yh_scales: 1.0
+
+    # The following scheduling parameters only apply if scales_end exists.
+
+    # One of linear, logarithmic, exponential, half_cosine, sine
+    # Sine mode will hit the peak scales_after values in the middle of the range.
+    schedule: linear
+
+    # One of: sampling, enabled_sampling, sigmas, enabled_sigmas, step, enabled_steps
+    schedule_mode: sampling
+
+    # When enabled, flips the schedule percentage. This happens before the schedule is applied
+    # or any offset/multiplier stuff. If you want to flip the final result you can do something like
+    # schedule_offset_after: -1.0 and schedule_multiplier_after: -1.0
+    reverse_schedule: false
+
+    # Added to the percentage before the schedule function is applied.
+    schedule_offset: 0.0
+
+    # Applied to the percentage before the schedule function (but after the offset).
+    schedule_multiplier: 1.0
+
+    # Added to the percentage after the schedule function is applied.
+    schedule_offset_after: 0.0
+
+    # Applied to the percentage after the schedule function (but after the offset).
+    schedule_multiplier_after: 1.0
+
+    # Min/max for the final calculated percent. Must be between 0 and 1.
+    schedule_min: 0.0
+    schedule_max: 1.0
+
+    # If you're a crazy person, you can use non-standard blend modes for interpolating
+    # the scales. Not recommended.
+    blend_mode: lerp
+
+
+# Wavelet type
+wave: db4
+
+# Wavelet level
+level: 5
+
+### Start of advanced options
+
+# Mode used for padding
+padding_mode: symmetric
+
+# Mutually exclusive with DTCWT mode.
+use_1d_dwt: false
+
+# Enables DTCWT mode.
+use_dtcwt: false
+
+# Configuration for DTCWT, only relevant when enabled.
+biort: near_sym_a
+qshift: qshift_a
+
+# It's also possible to set these wavelet options with an "inv_"
+# prefix: mode, biort, qshift, wave, padding_mode
+
+# One of: noise_norm, noise, denoised
+# Normal CFG uses denoised mode. noise_norm divides by the current sigma, noise just uses the raw noise prediction.
+target_mode: denoised
+
+# Can be used to scale cond before the difference is calculated.
+cond:
+    yl_scale: 1.0
+    yh_scales: 1.0
+
+# Can be used to scale uncond before the difference is calculated.
+uncond:
+    yl_scale: 1.0
+    yh_scales: 1.0
+
+# Can be used to scale the final result after blending.
+final:
+    yl_scale: 1.0
+    yh_scales: 1.0
+
+# Uses float64 for the wavelets/scaling/blending operations.
+# It doesn't seem to hurt performance much, but you can disable it if you want.
+high_precision_mode: true
+
+# Inject is just addition which is usually what you want. The normal CFG function is:
+# uncond + (cond - uncond) * cfg_scale
+difference_blend_mode: inject
+difference_blend_strength: 1.0
+
+# Per-rule value, can be enabled to spam your console with information when
+# rules activate, dump exactly what high/low scales are used, etc.
+verbose: false
+
+# You may include a rules block which is a list of these configuration definitions.
+# Include start_sigma/end_sigma parameters. The first matching definition will be used.
+# rules:
+#     - start_sigma: -1.0
+"""
+
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda _yaml_placeholder=_yaml_placeholder: SonarInputTypes()
+        .req_model()
+        .req_float_start_sigma(
+            default=-1.0,
+            min=-1.0,
+            tooltip="First sigma wavelet CFG will be used.",
+        )
+        .req_float_end_sigma(
+            default=0.0,
+            min=0.0,
+            tooltip="Last sigma wavelet CFG will be used.",
+        )
+        .req_field_fallback_mode(
+            ("existing", "own"),
+            default="existing",
+            tooltip="Existing mode uses whatever CFG function existed set when this model patch was applied. Own mode does the CFG calculation on its own. The scale will be whatever you set in your guider or sampler.",
+        )
+        .req_selectblend_blend_mode(
+            tooltip="Controls how the result from wavelet CFG is blended with normal CFG. The default of LERP with strength 1.0 uses 100% wavelet CFG.",
+        )
+        .req_float_blend_strength(
+            default=1.0,
+            tooltip="Controls how the result from wavelet CFG is blended with normal CFG. The default of LERP with strength 1.0 uses 100% wavelet CFG.",
+        )
+        .req_yaml(default=_yaml_placeholder)
+        .opt_field_operation_cond(
+            "LATENT_OPERATION",
+            tooltip="Optional latent operation that will be applied to cond. Note: Latent operations only apply if a rule matches.",
+        )
+        .opt_field_operation_uncond(
+            "LATENT_OPERATION",
+            tooltip="Optional latent operation that will be applied to uncond. Note: Latent operations only apply if a rule matches.",
+        )
+        .opt_field_operation_fallback_cfg(
+            "LATENT_OPERATION",
+            tooltip="Optional latent operation that will be applied to the fallback (non-wavelet) CFG result. Note: Latent operations only apply if a rule matches.",
+        )
+        .opt_field_operation_wavelet_cfg(
+            "LATENT_OPERATION",
+            tooltip="Optional latent operation that will be applied to wavelet CFG result. Note: Latent operations only apply if a rule matches.",
+        )
+        .opt_field_operation_result(
+            "LATENT_OPERATION",
+            tooltip="Optional latent operation that will be applied to the final result, after wavelet and normal CFG are potentially blended. Note: Latent operations only apply if a rule matches.",
+        ),
+    )
+
+    @classmethod
+    def go(
+        cls,
+        *,
+        model: object,
+        start_sigma: float,
+        end_sigma: float,
+        fallback_mode: str,
+        blend_mode: str,
+        blend_strength: float,
+        yaml_parameters: str,
+        operation_cond: Callable | None = None,
+        operation_uncond: Callable | None = None,
+        operation_fallback_cfg: Callable | None = None,
+        operation_wavelet_cfg: Callable | None = None,
+        operation_result: Callable | None = None,
+        _override_rules_dict: dict | None = None,
+    ) -> tuple[object]:
+        if start_sigma < 0:
+            start_sigma = math.inf
+        if _override_rules_dict is not None:
+            wavelet_params = _override_rules_dict.copy()
+        else:
+            wavelet_params = yaml.safe_load(yaml_parameters)
+        rules = WCFGRules.build(
+            **(
+                {
+                    "start_sigma": start_sigma,
+                    "end_sigma": end_sigma,
+                    "fallback_existing": fallback_mode == "existing",
+                    "blend_mode": blend_mode,
+                    "blend_strength": blend_strength,
+                }
+                | wavelet_params
+            ),
+        )
+        if len(rules) and rules[0].verbose:
+            tqdm.write(f"\nWCFG: Using rules: {rules}\n")
+        model = model.clone()
+        model.set_model_sampler_cfg_function(
+            WaveletCFG(
+                existing_cfg=model.model_options.get("sampler_cfg_function"),
+                rules=rules,
+                operation_cond=operation_cond,
+                operation_uncond=operation_uncond,
+                operation_fallback_cfg=operation_fallback_cfg,
+                operation_wavelet_cfg=operation_wavelet_cfg,
+                operation_result=operation_result,
+            ),
+        )
+        return (model,)
+
+
 NODE_CLASS_MAPPINGS = {
     "NoisyLatentLike": NoisyLatentLikeNode,
     "SamplerConfigOverride": SamplerNodeConfigOverride,
     "SONAR_CUSTOM_NOISE to NOISE": SonarToComfyNOISENode,
     "SonarNoiseImage": SonarNoiseImageNode,
     "SonarSplitNoiseChain": SonarSplitNoiseChainNode,
+    "SonarWaveletCFG": SonarWaveletCFGNode,
 }

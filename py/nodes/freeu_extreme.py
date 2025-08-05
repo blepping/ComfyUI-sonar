@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import torch
 
-from . import utils
-from .external import IntegratedNode
+from .. import utils
+from .base import SonarInputTypes, SonarLazyInputTypes
 from .powernoise import PowerFilter
 
 
@@ -29,156 +29,81 @@ def ffilter(x, pfilter, normalization_factor=1.0, cfg_idx=None, filter_cache=Non
     return x_filt.to(x.dtype, non_blocking=True)
 
 
-class FreeUExtremeConfigNode(metaclass=IntegratedNode):
+class FreeUExtremeConfigNode:
     DESCRIPTION = "Allows setting configuration for FreeU Extreme."
     RETURN_TYPES = ("FRUX_CONFIG",)
     FUNCTION = "go"
     CATEGORY = "model_patches"
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "stage_1": (
-                    "BOOLEAN",
-                    {
-                        "default": True,
-                        "tooltip": "Controls whether this configuration applies to stage 1.",
-                    },
-                ),
-                "stage_2": (
-                    "BOOLEAN",
-                    {
-                        "default": False,
-                        "tooltip": "Controls whether this configuration applies to stage 2.",
-                    },
-                ),
-                "stage_3": (
-                    "BOOLEAN",
-                    {
-                        "default": False,
-                        "tooltip": "Controls whether this configuration applies to stage 3.",
-                    },
-                ),
-                "target": (
-                    ("backbone", "skip", "both"),
-                    {
-                        "tooltip": "Controls whether this filter applies to backbone or skip layers (or both).",
-                    },
-                ),
-                "start": (
-                    "FLOAT",
-                    {
-                        "default": 0.0,
-                        "min": 0.0,
-                        "max": 1.0,
-                        "step": 0.1,
-                        "round": False,
-                        "tooltip": "Start time as percentage of sampling this configuration applies to. Inclusive.",
-                    },
-                ),
-                "end": (
-                    "FLOAT",
-                    {
-                        "default": 1.0,
-                        "min": 0.0,
-                        "max": 1.0,
-                        "step": 0.1,
-                        "round": False,
-                        "tooltip": "End time as percentage of sampling this configuration applies to. Inclusive.",
-                    },
-                ),
-                "slice": (
-                    "FLOAT",
-                    {
-                        "default": 1.0,
-                        "min": 0.0,
-                        "max": 1.0,
-                        "step": 0.1,
-                        "round": False,
-                        "tooltip": "Percentage of the layer the FreeU effect is applied to.",
-                    },
-                ),
-                "slice_offset": (
-                    "FLOAT",
-                    {
-                        "default": 0.0,
-                        "min": 0.0,
-                        "max": 1.0,
-                        "step": 0.1,
-                        "round": False,
-                        "tooltip": "Offset as a percentage the layer is applied to. For example if slice is 0.25 and slice_offset is 0.25 then the filter will apply to the range 25% through 50%.",
-                    },
-                ),
-                "filter_norm": (
-                    "FLOAT",
-                    {
-                        "default": 0.0,
-                        "min": -10.0,
-                        "max": 10.0,
-                        "step": 0.1,
-                        "round": False,
-                        "tooltip": "Normalization factor applied to the filter. 1.0 means 100% normalized.",
-                    },
-                ),
-                "scale": (
-                    "FLOAT",
-                    {
-                        "default": 1,
-                        "min": -100.0,
-                        "max": 100.0,
-                        "step": 0.1,
-                        "round": False,
-                        "tooltip": "Strength of the effects applied by this configuration.",
-                    },
-                ),
-                "blend": (
-                    "FLOAT",
-                    {
-                        "default": 1.0,
-                        "min": -10.0,
-                        "max": 10.0,
-                        "step": 0.1,
-                        "round": False,
-                        "tooltip": "Blends the filtered result based on the specified strength where 1.0 means 100% filtered.",
-                    },
-                ),
-                "blend_mode": (
-                    tuple(utils.BLENDING_MODES.keys()),
-                    {
-                        "tooltip": "Mode used when blending. Generally only has an effect when blend is set to values other than 0 or 1",
-                    },
-                ),
-                "hidden_mean": (
-                    "BOOLEAN",
-                    {
-                        "default": True,
-                        "tooltip": "You can think of this as FreeU V2 mode.",
-                    },
-                ),
-                "final": (
-                    "BOOLEAN",
-                    {
-                        "default": True,
-                        "tooltip": "When enabled, other configurations won't be considered if this one matched. Otherwise, multiple configurations/filter effects can be stacked.",
-                    },
-                ),
-            },
-            "optional": {
-                "sonar_power_filter_opt": (
-                    "SONAR_POWER_FILTER",
-                    {
-                        "tooltip": "Optionally attach a Power Filter here to set filtering parameters.",
-                    },
-                ),
-                "frux_config_opt": (
-                    "FRUX_CONFIG",
-                    {
-                        "tooltip": "Optionally attach another configuration node here.",
-                    },
-                ),
-            },
-        }
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: SonarInputTypes()
+        .req_bool_stage_1(
+            default=True,
+            tooltip="Controls whether this configuration applies to stage 1.",
+        )
+        .req_bool_stage_2(
+            default=False,
+            tooltip="Controls whether this configuration applies to stage 2.",
+        )
+        .req_bool_stage_3(
+            default=False,
+            tooltip="Controls whether this configuration applies to stage 3.",
+        )
+        .req_field_target(
+            ("backbone", "skip", "both"),
+            default="backbone",
+            tooltip="Controls whether this filter applies to backbone or skip layers (or both).",
+        )
+        .req_floatpct_start(
+            default=0.0,
+            tooltip="Start time as percentage of sampling this configuration applies to. Inclusive.",
+        )
+        .req_floatpct_end(
+            default=1.0,
+            tooltip="End time as percentage of sampling this configuration applies to. Inclusive.",
+        )
+        .req_floatpct_slice(
+            default=1.0,
+            tooltip="Percentage of the layer the FreeU effect is applied to.",
+        )
+        .req_floatpct_slice_offset(
+            default=0.0,
+            tooltip="Offset as a percentage the layer is applied to. For example if slice is 0.25 and slice_offset is 0.25 then the filter will apply to the range 25% through 50%.",
+        )
+        .req_float_filter_norm(
+            default=0.0,
+            min=-10.0,
+            max=10.0,
+            tooltip="Normalization factor applied to the filter. 1.0 means 100% normalized.",
+        )
+        .req_float_scale(
+            default=1.0,
+            tooltip="Strength of the effects applied by this configuration.",
+        )
+        .req_float_blend(
+            default=1.0,
+            tooltip="Blends the filtered result based on the specified strength where 1.0 means 100% filtered.",
+        )
+        .req_selectblend_blend_mode(
+            tooltip="Mode used when blending. Generally only has an effect when blend is set to values other than 0 or 1",
+        )
+        .req_bool_hidden_mean(
+            default=True,
+            tooltip="You can think of this as FreeU V2 mode.",
+        )
+        .req_bool_final(
+            default=True,
+            tooltip="When enabled, other configurations won't be considered if this one matched. Otherwise, multiple configurations/filter effects can be stacked.",
+        )
+        .opt_field_sonar_power_filter_opt(
+            "SONAR_POWER_FILTER",
+            tooltip="Optionally attach a Power Filter here to set filtering parameters.",
+        )
+        .opt_field_frux_config_opt(
+            "FRUX_CONFIG",
+            tooltip="Optionally attach another configuration node here.",
+        ),
+    )
 
     @classmethod
     def go(cls, **kwargs: dict):
@@ -330,51 +255,31 @@ class FreeUExtremeConfig:
         return f"<FRUXConfig: {meh}>"
 
 
-class FreeUExtremeNode(metaclass=IntegratedNode):
+class FreeUExtremeNode:
     DESCRIPTION = "Main FreeU Extreme node. Allows patching a model with the FreeU (V2) effect with more control."
     RETURN_TYPES = ("MODEL",)
     FUNCTION = "go"
     CATEGORY = "model_patches"
 
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "model": (
-                    "MODEL",
-                    {
-                        "tooltip": "Model to patch.",
-                    },
-                ),
-                "cpu_fft": (
-                    "BOOLEAN",
-                    {
-                        "default": False,
-                        "tooltip": "Controls whether to perform FFT calculations on the CPU. May be necessary for some GPUs that don't have native support for FFT operations at the cost of performance.",
-                    },
-                ),
-            },
-            "optional": {
-                "input_config": (
-                    "FRUX_CONFIG",
-                    {
-                        "tooltip": "Allows specifying configuration for input blocks.",
-                    },
-                ),
-                "middle_config": (
-                    "FRUX_CONFIG",
-                    {
-                        "tooltip": "Allows specifying configuration for middle blocks.",
-                    },
-                ),
-                "output_config": (
-                    "FRUX_CONFIG",
-                    {
-                        "tooltip": "Allows specifying configuration for output blocks.",
-                    },
-                ),
-            },
-        }
+    INPUT_TYPES = (
+        SonarInputTypes()
+        .req_model(tooltip="Model to patch.")
+        .req_bool_cpu_fft(
+            tooltip="Controls whether to perform FFT calculations on the CPU. May be necessary for some GPUs that don't have native support for FFT )operations at the cost of performance.",
+        )
+        .opt_field_input_config(
+            "FRUX_CONFIG",
+            tooltip="Allows specifying configuration for input blocks.",
+        )
+        .opt_field_middle_config(
+            "FRUX_CONFIG",
+            tooltip="Allows specifying configuration for middle blocks.",
+        )
+        .opt_field_output_config(
+            "FRUX_CONFIG",
+            tooltip="Allows specifying configuration for output blocks.",
+        )
+    )
 
     @classmethod
     def go(

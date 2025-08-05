@@ -11,17 +11,19 @@ if TYPE_CHECKING:
 
 try:
     import pytorch_wavelets as ptwav
+    import pywt
 
     HAVE_WAVELETS = True
 except ImportError:
     ptwav = None
+    pywt = None
     HAVE_WAVELETS = False
 
 
 class Wavelet:
-    DEFAULT_MODE = "periodization"
+    DEFAULT_MODE = "symmetric"
     DEFAULT_LEVEL = 3
-    DEFAULT_WAVE = "haar"
+    DEFAULT_WAVE = "db4"
     DEFAULT_USE_1D_DWT = False
     DEFAULT_USE_DTCWT = False
     DEFAULT_QSHIFT = "qshift_a"
@@ -102,16 +104,97 @@ class Wavelet:
         ))
         return result
 
-    def to(self, *args: list, **kwargs: dict) -> None:
-        self._wavelet_forward = self._wavelet_forward.to(*args, **kwargs)
-        self._wavelet_inverse = self._wavelet_inverse.to(*args, **kwargs)
+    def to(self, *args: list, copy: bool = False, **kwargs: dict) -> Wavelet:
+        o = Wavelet.__new__(Wavelet) if copy else self
+        o._wavelet_forward = self._wavelet_forward.to(*args, **kwargs)  # noqa: SLF001
+        o._wavelet_inverse = self._wavelet_inverse.to(*args, **kwargs)  # noqa: SLF001
+        return o
+
+    @staticmethod
+    def wavelist() -> tuple:
+        return tuple(pywt.wavelist()) if HAVE_WAVELETS else ()
+
+    @staticmethod
+    def biortlist() -> tuple:
+        return (
+            ("near_sym_a", "near_sym_b", "antonini", "legall") if HAVE_WAVELETS else ()
+        )
+
+    @staticmethod
+    def qshiftlist() -> tuple:
+        return (
+            ("qshift_a", "qshift_b", "qshift_c", "qshift_d", "qshift_06")
+            if HAVE_WAVELETS
+            else ()
+        )
+
+    @staticmethod
+    def modelist() -> tuple:
+        return (
+            (
+                "symmetric",
+                "zero",
+                "reflect",
+                "replicate",
+                "periodization",
+                "periodic",
+                "constant",
+            )
+            if HAVE_WAVELETS
+            else ()
+        )
+
+
+def expand_yh_scales(
+    yh: Sequence,
+    *,
+    yh_scales: float | Sequence = 1.0,
+) -> float | tuple:
+    yhlen = len(yh)
+    yh_shape = yh[0].shape
+    # Doesn't make sense to target orientations for 1D DWD (3D here).
+    olen = yh_shape[2] if len(yh_shape) > 3 else 1
+    # print(f"\nSIZES: yhlen={yhlen}, olen={olen}, yh_shape={yh[0].shape}")
+    if isinstance(yh_scales, (float, int)):
+        return ((float(yh_scales),) * olen,) * yhlen
+    otemplate = (1.0,) * olen
+    yh_scales = tuple(
+        (float(band),) * olen
+        if isinstance(band, (float, int))
+        else (
+            (
+                *(float(i) for i in band[:olen]),
+                *otemplate[: olen - len(band[:olen])],
+            )
+            if isinstance(band, (tuple, list))
+            else band
+        )
+        for band in yh_scales
+    )
+    if "fill" in yh_scales:
+        fillidx = yh_scales.index("fill")
+        if "fill" in yh_scales[fillidx + 1 :]:
+            raise ValueError("Only one fill allowed.")
+        if fillidx == 0 or len(yh_scales) < 2:
+            raise ValueError(
+                "Invalid fill value, cannot be in the first position or the only item.",
+            )
+        yhslen = len(yh_scales)
+        if yhslen - 1 < yhlen:
+            # Need to pad.
+            fill = (yh_scales[fillidx - 1],) * (yhlen - (len(yh_scales) - 1))
+            yh_scales = (*yh_scales[:fillidx], *fill, *yh_scales[fillidx + 1 :])
+        else:
+            # Just remove the "fill".
+            yh_scales = (*yh_scales[:fillidx], *yh_scales[fillidx + 1 :])
+    return yh_scales[:yhlen]
 
 
 def wavelet_scaling(
     yl: torch.Tensor,
     yh: Sequence,
     yl_scale: float | torch.Tensor,
-    yh_scales: float | torch.Tensor | None,
+    yh_scales: float | Sequence | None,
     *,
     in_place: bool = False,
 ) -> tuple:
@@ -120,19 +203,16 @@ def wavelet_scaling(
         yh = tuple(yhband.clone() for yhband in yh)
     if yl_scale != 1.0:
         yl *= yl_scale
-    if yh_scales is None or yh_scales == 1.0:
-        return (yl, yh)
-    if isinstance(yh_scales, (int, float)):
-        yh_scales = (yh_scales,) * len(yh)
-    # print("SCALES", self.yl_scale, yh_scales)
+    yh_scales = expand_yh_scales(
+        yh,
+        yh_scales=yh_scales if yh_scales is not None else 1.0,
+    )
     for hscale, ht in zip(yh_scales, yh):
-        # print(">> SCALING", hscale)
         if isinstance(hscale, (int, float)):
             ht *= hscale  # noqa: PLW2901
             continue
         for lidx in range(min(ht.shape[2], len(hscale))):
-            # print(">>    SCALE IDX", lidx)
-            ht[:, :, lidx, :, :] *= hscale[lidx]
+            ht[:, :, lidx] *= hscale[lidx]
     return (yl, yh)
 
 
