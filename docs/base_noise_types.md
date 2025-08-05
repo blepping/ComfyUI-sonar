@@ -18,6 +18,8 @@ noise of that type. However you can either schedule the noise type to kick in at
 * `onef_pinkishgreenish` (50/50 mix of `onef_pinkish` and `onef_greenish`.)
 * `velvet`
 * `violet`
+* `voronoi_mix` - A mix of Voronoi (60%) and Gaussian noise types.
+* `voronoi_fuzz` - Voronoi noise with distance mode `fuzz:name=angle_tanh:fuzz=0.1`.
 * `white`
 
 ## Brownian

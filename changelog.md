@@ -2,7 +2,7 @@
 
 Note, only relatively significant changes to user-visible functionality will be included here. Most recent changes at the top.
 
-## 20250804
+## 20250805
 
 Once again, large set of changes/internal reorganization which may break stuff. If you run into problems or experience anything weird, please create an issue.
 
