@@ -689,11 +689,11 @@ class SonarQuantileFilteredNoiseNode(SonarCustomNoiseNodeBase):
         )
         .req_float_quantile(
             default=0.85,
-            min=0.0,
+            min=-1.0,
             max=1.0,
             step=0.001,
             round=False,
-            tooltip="When enabled, will normalize generated noise to this quantile (i.e. 0.75 means outliers >75% will be clipped). Set to 1.0 or 0.0 to disable quantile normalization. A value like 0.75 or 0.85 should be reasonable, it really depends on the input and how many of the values are extreme.",
+            tooltip="When enabled, will normalize generated noise to this quantile (i.e. 0.75 means outliers >75% will be clipped). Set to 1.0 or 0.0 to disable quantile normalization. A value like 0.75 or 0.85 should be reasonable, it really depends on the input and how many of the values are extreme. (Experimental) You can also use a negative quantile to consider values closest to 0 to be 'extreme'.",
         )
         .req_field_dim(
             ("global", "0", "1", "2", "3", "4"),
@@ -766,23 +766,28 @@ class SonarQuantileFilteredNoiseNode(SonarCustomNoiseNodeBase):
 
 
 class SonarShuffledNoiseNode(SonarCustomNoiseNodeBase):
-    DESCRIPTION = "Custom noise type that allows shuffling noise along some dimension"
+    DESCRIPTION = (
+        "Custom noise type that allows shuffling noise along dimensions you specify."
+    )
 
     INPUT_TYPES = SonarLazyInputTypes(
         lambda: NoiseNoChainInputTypes()
         .req_customnoise_custom_noise(tooltip="Custom noise type to filter.")
         .req_string_dims(
-            default="-1",
+            default="1,-2,-1",
             tooltip="Comma separated list of dimensions to shuffle. May be negative to count from the end.",
         )
-        .req_bool_flatten(
-            tooltip="Controls whether to flatten starting from the dimension before the shuffle operation. May be slow as this requires flattening and then reshaping the tensor back to the correct shape. Flattening will occur between the lowest and highest dimension in the list, other dimensions will be ignored. If they are the same, then it will just flatten from the lowest dimension.",
+        .req_string_percentages(
+            default="1.0,0.25,0.25",
+            tooltip="Comma separated list of percentages (0.0 to 1.0 for 100%) of elements to shuffle. Paired with the list of dimensions and wrap if it's shorter. For example, if you specified three dimensions and two percentages, the third dimension in the list would use the first percentage again.",
         )
-        .req_float_percentage(
-            default=1.0,
-            min=0.0,
-            max=1.0,
-            tooltip="Percentage of elements to shuffle in the specified dimensions.",
+        .req_bool_fork_rng(
+            default=True,
+            tooltip="When enabled, the RNG state will be forked to generate the shuffle values.",
+        )
+        .req_bool_no_identity(
+            default=True,
+            tooltip="When enabled, ensures shuffle never ends up selecting the original element.",
         ),
     )
 
@@ -795,18 +800,24 @@ class SonarShuffledNoiseNode(SonarCustomNoiseNodeBase):
         *,
         factor: float,
         dims: str,
-        flatten: bool,
-        percentage: float,
+        percentages: str,
+        fork_rng: bool,
+        no_identity: bool,
         custom_noise: object,
     ):
         dims = dims.strip()
         dims = () if not dims else tuple(int(i) for i in dims.split(","))
+        percentages = percentages.strip()
+        percentages = (
+            () if not percentages else tuple(float(p) for p in percentages.split(","))
+        )
         return super().go(
             factor,
             noise=custom_noise,
             dims=dims,
-            flatten=flatten,
-            percentage=percentage,
+            percentages=percentages,
+            fork_rng=fork_rng,
+            no_identity=no_identity,
         )
 
 

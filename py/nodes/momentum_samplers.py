@@ -98,7 +98,7 @@ class SamplerNodeSonarBase:
             max=15.0,
             tooltip="Multiplier applied to the result of normal sampling.",
         )
-        .req_field_init_noise_type(
+        .req_field_rand_init_noise_type(
             tuple(NoiseType.get_names(skip=(NoiseType.BROWNIAN,))),
             default="gaussian",
             tooltip="Noise type to use when momentum_init is set to RANDOM.",

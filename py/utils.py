@@ -181,13 +181,32 @@ def _quantile_norm_replace(
     *,
     keep_sign: bool = False,
     avoid_sign: bool = False,
+    count: int = 1,
+    count_flipping: bool = False,
     **_kwargs: dict,
 ) -> torch.Tensor:
     mask = noise.abs() <= nq
     candidates = noise[mask].flatten()
-    candidates = candidates[torch.arange(noise.numel()) % candidates.numel()].reshape(
-        noise.shape,
-    )
+    n_candidates = candidates.numel()
+    idxs = torch.arange(noise.numel()) % n_candidates
+    cresult = candidates[idxs]
+    if count < 2:
+        candidates = cresult
+    else:
+        multiplier = 1.0 / count
+        cresult = cresult * multiplier  # noqa: PLR6104
+        for i in range(1, count):
+            cresult += (
+                candidates[
+                    torch.roll(
+                        idxs,
+                        i if not count_flipping or (i % 2) == 0 else -i,
+                        dims=(-1,),
+                    )
+                ]
+                * multiplier
+            )
+    candidates = cresult.reshape(noise.shape)
     if keep_sign or avoid_sign:
         candidates = candidates.copysign_(noise.neg() if avoid_sign else noise)
     return torch.where(mask, noise, candidates)
@@ -202,9 +221,12 @@ quantile_handlers = {
         noise.tanh().mul_(nq.abs()),
         noise,
     ),
-    "sigmoid": lambda noise, nq, **_kwargs: noise.sigmoid()
+    "sigmoid_keepsign": lambda noise, nq, **_kwargs: noise.sigmoid()
     .mul_(nq.abs())
     .copysign(noise),
+    "sigmoid": lambda noise, nq, **_kwargs: noise.sigmoid()
+    .mul_(nq.abs() * 2)
+    .sub_(nq.abs()),
     "sigmoid_outliers": lambda noise, nq, **_kwargs: torch.where(
         noise.abs() > nq,
         noise.sigmoid().mul_(nq.abs()).copysign(noise),
@@ -290,6 +312,54 @@ quantile_handlers = {
     "replace": _quantile_norm_replace,
     "replace_keepsign": partial(_quantile_norm_replace, keep_sign=True),
     "replace_avoidsign": partial(_quantile_norm_replace, avoid_sign=True),
+    "replace_2pt": partial(_quantile_norm_replace, count=2),
+    "replace_3pt": partial(_quantile_norm_replace, count=3),
+    "replace_2pt_flip": partial(_quantile_norm_replace, count=2, count_flipping=True),
+    "replace_3pt_flip": partial(_quantile_norm_replace, count=3, count_flipping=True),
+    "replace_2pt_keepsign": partial(
+        _quantile_norm_replace,
+        count=2,
+        keep_sign=True,
+    ),
+    "replace_3pt_keepsign": partial(
+        _quantile_norm_replace,
+        count=3,
+        keep_sign=True,
+    ),
+    "replace_2pt_flip_keepsign": partial(
+        _quantile_norm_replace,
+        count=2,
+        count_flipping=True,
+        keep_sign=True,
+    ),
+    "replace_3pt_flip_keepsign": partial(
+        _quantile_norm_replace,
+        count=3,
+        count_flipping=True,
+        keep_sign=True,
+    ),
+    "replace_2pt_avoidsign": partial(
+        _quantile_norm_replace,
+        count=2,
+        avoid_sign=True,
+    ),
+    "replace_3pt_avoidsign": partial(
+        _quantile_norm_replace,
+        count=3,
+        avoid_sign=True,
+    ),
+    "replace_2pt_flip_avoidsign": partial(
+        _quantile_norm_replace,
+        count=2,
+        count_flipping=True,
+        avoid_sign=True,
+    ),
+    "replace_3pt_flip_avoidsign": partial(
+        _quantile_norm_replace,
+        count=3,
+        count_flipping=True,
+        avoid_sign=True,
+    ),
 }
 
 
@@ -297,14 +367,14 @@ quantile_handlers = {
 def quantile_normalize(
     noise: torch.Tensor,
     *,
-    quantile: float = 0.75,
+    quantile: float | tuple | list = 0.75,
     dim: int | None = 1,
     flatten: bool = True,
     nq_fac: float = 1.0,
     pow_fac: float = 0.5,
     strategy: str = "clamp",
     strategy_handler=None,
-    use_abs: bool = True,
+    eps=1e-08,
 ) -> torch.Tensor:
     if noise.numel() == 0:
         return noise
@@ -319,51 +389,18 @@ def quantile_normalize(
                 pow_fac=pow_fac,
                 strategy=strategy,
                 strategy_handler=strategy_handler,
-                use_abs=use_abs,
             )
         return noise
-    if quantile is None or quantile <= 0 or quantile >= 1:
+    if quantile is None or quantile >= 1 or quantile <= -1:
         return noise
-    if not use_abs:
-        pos_mask = noise >= 0
-        neg_mask = ~pos_mask
-        result = torch.zeros_like(noise)
-        result[pos_mask] = quantile_normalize(
-            noise=noise[pos_mask],
-            quantile=quantile,
-            dim=dim,
-            flatten=flatten,
-            nq_fac=nq_fac,
-            pow_fac=pow_fac,
-            strategy=strategy,
-            strategy_handler=strategy_handler,
-            use_abs=True,
-        )
-        result[neg_mask] = quantile_normalize(
-            noise=noise[neg_mask],
-            quantile=quantile,
-            dim=dim,
-            flatten=flatten,
-            nq_fac=nq_fac,
-            pow_fac=pow_fac,
-            strategy=strategy,
-            strategy_handler=strategy_handler,
-            use_abs=True,
-        )
-        return result
+    centered = quantile < 0
+    absquantile = abs(quantile)
     orig_shape = noise.shape
     if noise.ndim > 1 and flatten:
         flatnoise = noise.flatten(start_dim=dim)
     else:
         flatten = False
         flatnoise = noise
-    nq = torch.quantile(
-        flatnoise.abs(),
-        quantile,
-        dim=-1 if flatten else dim,
-        keepdim=True,
-    )
-    nq = nq.mul_(nq_fac)
     handler = (
         quantile_handlers.get(strategy)
         if strategy_handler is None
@@ -371,13 +408,42 @@ def quantile_normalize(
     )
     if handler is None:
         raise ValueError("Unknown strategy")
-    noise = handler(
-        flatnoise,
-        nq,
-        orig_noise=noise,
-        dim=dim,
-        flatten=flatten,
-    )
+    if not centered:
+        nq = torch.quantile(
+            flatnoise.abs(),
+            quantile,
+            dim=-1 if flatten else dim,
+            keepdim=True,
+        )
+        nq = nq.mul_(nq_fac).add_(eps)
+        # print(f"\nNQ: {nq}")
+        noise = handler(
+            flatnoise,
+            nq,
+            orig_noise=noise,
+            dim=dim,
+            flatten=flatten,
+        )
+    else:
+        absnoise = flatnoise.abs()
+        maxabs = absnoise.amax(dim=-1 if flatten else dim, keepdim=True)
+        proxy = flatnoise.sign().mul_(maxabs - absnoise)
+        nq_proxy = torch.quantile(
+            proxy.abs(),
+            absquantile,
+            dim=-1 if flatten else dim,
+            keepdim=True,
+        )
+        nq_proxy = nq_proxy.mul_(nq_fac).add_(eps)
+        # print(f"\nNQ proxy: {nq_proxy}")
+        out_proxy = handler(
+            proxy,
+            nq_proxy,
+            orig_noise=noise,
+            dim=dim,
+            flatten=flatten,
+        )
+        noise = out_proxy.sign().mul_(maxabs - out_proxy.abs())
     if pow_fac not in {0.0, 1.0}:
         noise = noise.abs().pow_(pow_fac).copysign(noise)
     return noise if noise.shape == orig_shape else noise.reshape(orig_shape)
@@ -528,6 +594,67 @@ def pattern_break(
     if restore_scale:
         result = normalize_to_scale(result, orig_min, orig_max, dim=())
     return blend_function(noise, result, percentage).to(dtype=orig_dtype)
+
+
+def elementwise_shuffle_by_dim(
+    t: torch.Tensor,
+    *,
+    dim: int = -1,
+    prob: float = 1.0,
+    no_identity: bool = False,
+    generator=None,
+) -> torch.Tensor:
+    orig_shape = t.shape
+    device = t.device
+
+    num_positions = math.prod(orig_shape[:dim] + orig_shape[dim + 1 :])
+    num_elements = orig_shape[dim]
+
+    tensor_2d = t.permute(
+        *tuple(d for d in range(t.dim()) if d != dim),
+        dim,
+    ).reshape(-1, num_elements)
+
+    rand_perms = (
+        torch.arange(num_elements, device=device).expand(num_positions, -1).clone()
+    )
+
+    if prob < 1.0:
+        mask = torch.rand(num_positions, device=device, generator=generator) < prob
+    else:
+        mask = torch.ones(num_positions, device=device, dtype=torch.bool)
+
+    if no_identity:
+        offsets = torch.randint(
+            1,
+            num_elements,
+            (num_positions,),
+            device=device,
+            generator=generator,
+        )
+        rand_perms[mask] = (
+            torch.arange(num_elements, device=device) + offsets[mask][:, None]
+        ) % num_elements
+    else:
+        rand_perms[mask] = torch.rand(
+            num_positions,
+            num_elements,
+            device=device,
+            generator=generator,
+        )[mask].argsort(dim=1)
+
+    shuffled_2d = torch.gather(tensor_2d, 1, rand_perms)
+
+    shuffled = shuffled_2d.reshape(
+        *orig_shape[:dim],
+        *orig_shape[dim + 1 :],
+        orig_shape[dim],
+    )
+    return shuffled.permute(
+        *tuple(d for d in range(t.dim() - 1) if d < dim),
+        t.dim() - 1,
+        *tuple(d for d in range(t.dim() - 1) if d >= dim),
+    ).contiguous()
 
 
 def trunc_decimals(x: torch.Tensor, decimals: int = 3) -> torch.Tensor:

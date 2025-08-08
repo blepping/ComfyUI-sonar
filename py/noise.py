@@ -1909,6 +1909,54 @@ class ShuffledNoise(CustomNoiseItemBase):
         **kwargs,
     ):
         factor = self.factor
+        dims = tuple(d if d >= 0 else x.ndim + d for d in self.dims)
+        if not all(d >= 0 and d < x.ndim for d in dims):
+            raise ValueError("Dimension out of range")
+        percentages = self.percentages
+        if not all(0.0 <= p <= 1.0 for p in percentages):
+            raise ValueError("Percentage out of range, must be between 0 and 1")
+        ns = self.noise.make_noise_sampler(
+            x,
+            *args,
+            sigma_min=sigma_min,
+            sigma_max=sigma_max,
+            normalized=normalized,
+            **kwargs,
+        )
+        if not percentages or not dims or all(p == 0 for p in percentages):
+            return ns
+        n_percentages = len(percentages)
+        fork_rng = self.fork_rng
+        no_identity = self.no_identity
+
+        def noise_sampler(sigma, sigma_next):
+            noise = scale_noise(
+                ns(sigma, sigma_next),
+                factor,
+                normalized=normalized,
+            )
+            with torch.random.fork_rng(enabled=fork_rng, devices=(noise.device,)):
+                for idx, dim in enumerate(dims):
+                    noise = utils.elementwise_shuffle_by_dim(
+                        noise,
+                        dim=dim,
+                        prob=percentages[idx % n_percentages],
+                        no_identity=no_identity,
+                    )
+            return noise
+
+        return noise_sampler
+
+    def make_noise_sampler_(
+        self,
+        x,
+        sigma_min,
+        sigma_max,
+        *args,
+        normalized=True,
+        **kwargs,
+    ):
+        factor = self.factor
         dims = {x.ndim + d if d < 0 else d for d in self.dims}
         if not all(-1 < d < x.ndim for d in dims):
             raise ValueError("Dimension out of range")

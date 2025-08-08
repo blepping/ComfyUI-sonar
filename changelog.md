@@ -2,6 +2,17 @@
 
 Note, only relatively significant changes to user-visible functionality will be included here. Most recent changes at the top.
 
+## 20250808
+
+Aside from the `sigmoid` quantile mode change and `SonarShuffledNoise`, these changes should not break workflows. Let me know if you experience anything unusual.
+
+* The `sigmoid` quantile norm mode was renamed to `sigmoid_keepsign` since that's what it was doing. There is a replacement `sigmoid` quantile norm mode that doesn't care about sign.
+* Quantile normalization can now take a negative quantile to consider values closest to zero the "extremes". Note: Experimental feature that may not be implemented correctly/subject to change.
+* `SonarShuffledNoise` node reworked. Unfortunately, this will break workflows. If anyone has a burning need for the old version, let me know and I can bring it back as a separate node. The new approach should be better in general though.
+* Fixed momentum sampler init parameter passing.
+* Added more Voronoi noise octave modes.
+* Added replace_2pt/3pt (and variants) quantile norm result modes that use multiple replacement values.
+
 ## 20250805
 
 Once again, large set of changes/internal reorganization which may break stuff. If you run into problems or experience anything weird, please create an issue.

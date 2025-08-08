@@ -6,6 +6,7 @@ from enum import Enum, auto
 from typing import TYPE_CHECKING, Callable, ClassVar, NamedTuple
 
 import torch
+import torch.nn.functional as F  # noqa: N812
 from comfy.k_diffusion import sampling
 from comfy.model_management import throw_exception_if_processing_interrupted
 from torch import FloatTensor, Generator, Tensor
@@ -1292,6 +1293,42 @@ class VoronoiNoiseGenerator(NoiseGenerator):
     MIN_DIMS = 4
     MAX_DIMS = 4
 
+    voronoi_distance_modes = frozenset((
+        "angle_sigmoid",
+        "angle_tanh",
+        "angle",
+        "chebyshev",
+        "euclidean",
+        "fractal_norm",
+        "fuzz",
+        "manhatten",
+        "minkowski",
+        "quadratic",
+        "weight",
+    ))
+
+    voronoi_result_modes = frozenset((
+        "cellid",
+        "diff",
+        "diff2",
+        "f",
+        "f1",
+        "f2",
+        "f3",
+        "f4",
+        "fractal_norm",
+        "fuzz",
+        "inv_f",
+        "inv_f1",
+        "inv_f2",
+        "inv_f3",
+        "inv_f4",
+        "gradient_magnitude",
+        "median_distance",
+        "ridge",
+        "softmin",
+    ))
+
     @classmethod
     def ng_params(cls, *, no_super: bool = False):
         result = {
@@ -1388,7 +1425,26 @@ class VoronoiNoiseGenerator(NoiseGenerator):
         )
 
     def get_feature_points(self, octave: int) -> torch.Tensor:
-        return self.feature_points[octave % len(self.feature_points)]
+        result = self.feature_points[octave % len(self.feature_points)]
+        odd_octave = (octave % 2) == 1
+        om = self.octave_mode
+        if (om == "same_invert_odd" and odd_octave) or (
+            om == "same_invert_even" and not odd_octave
+        ):
+            return 1.0 - result
+        if octave > 0 and om in {"same_roll_chan_up", "same_roll_chan_down"}:
+            return torch.roll(
+                result,
+                (-1 if om == "same_roll_chan_up" else 1) * (octave % 3),
+                dims=(1,),
+            )
+        if octave > 0 and om in {"same_roll_dir_up", "same_roll_dir_down"}:
+            return torch.roll(
+                result,
+                (-1 if om == "same_roll_dir_up" else 1) * (octave % 3),
+                dims=(3,),
+            )
+        return result
 
     def get_distance_mode(self, octave: int) -> torch.Tensor:
         return self.distance_mode[octave % len(self.distance_mode)]
@@ -1396,17 +1452,29 @@ class VoronoiNoiseGenerator(NoiseGenerator):
     def get_result_mode(self, octave: int) -> torch.Tensor:
         return self.result_mode[octave % len(self.result_mode)]
 
-    voronoi_distance_modes = frozenset((
-        "euclidean",
-        "manhatten",
-        "chebyshev",
-        "minkowski",
-        "quadratic",
-        "angle",
-        "angle_tanh",
-        "angle_sigmoid",
-        "fuzz",
-    ))
+    def voronoi_call_mode(
+        self,
+        name: str,
+        *,
+        result: bool,
+        args: list | tuple = (),
+        kwargs: dict | None = None,
+    ) -> torch.Tensor:
+        name = name.strip().lower()
+        modes = self.voronoi_result_modes if result else self.voronoi_distance_modes
+        mode_label = "result" if result else "distance"
+        if name not in modes:
+            errstr = f"Bad Voronoi {mode_label} mode {name}"
+            raise ValueError(errstr)
+        kwargs = (
+            {}
+            if kwargs is None
+            else {
+                k[1:] if k.startswith("_") and len(k) > 1 else k: v
+                for k, v in kwargs.items()
+            }
+        )
+        return getattr(self, f"_voronoi_{mode_label}_{name}")(*args, **kwargs)
 
     @staticmethod
     def _voronoi_distance_euclidean(d: torch.Tensor, **_kwargs) -> torch.Tensor:
@@ -1471,19 +1539,59 @@ class VoronoiNoiseGenerator(NoiseGenerator):
             .acos_()
         )
 
+    def _voronoi_distance_weight(
+        self,
+        d: torch.Tensor,
+        *args,
+        name: str = "euclidean",
+        h: float | str = 1.0,
+        w: float | str = 1.0,
+        z: float | str = 0.25,
+        **kwargs,
+    ) -> torch.Tensor:
+        weights = d.new_tensor((float(h), float(w), float(z)))
+        return self.voronoi_call_mode(
+            name,
+            result=False,
+            args=(d * weights, *args),
+            kwargs=kwargs,
+        )
+
+    def _voronoi_distance_fractal_norm(
+        self,
+        d: torch.Tensor,
+        *args,
+        name: str = "euclidean",
+        mode: str = "sin",
+        scale: str | float = 0.1,
+        multiplier: str | float = 10.0,
+        **kwargs,
+    ) -> torch.Tensor:
+        if mode == "sin":
+            fun = torch.sin
+        elif mode == "cos":
+            fun = torch.cos
+        else:
+            raise ValueError(
+                "Bad mode parameter for fractal_norm distance mode, must be one of: sin, cos",
+            )
+        adjustment = float(scale) * fun(d * float(multiplier))
+        return self.voronoi_call_mode(
+            name,
+            result=False,
+            args=(d + adjustment, *args),
+            kwargs=kwargs,
+        )
+
     def _voronoi_distance_fuzz(
         self,
         *args,
-        name: str = "f1",
+        name: str = "euclidean",
         fuzz: float | str = 0.25,
         **kwargs,
     ) -> torch.Tensor:
         fuzz = float(fuzz)
-        name = name.strip().lower()
-        if name not in self.voronoi_distance_modes:
-            errstr = f"Bad voronoi fuzz distance mode name: {name}"
-            raise ValueError(errstr)
-        result = getattr(self, f"_voronoi_distance_{name}")(*args, **kwargs)
+        result = self.voronoi_call_mode(name, result=False, args=args, kwargs=kwargs)
         rmin, rmax = result.aminmax()
         fuzz = max(abs(rmin.item()), abs(rmax.item())) * fuzz
         result += (
@@ -1493,48 +1601,6 @@ class VoronoiNoiseGenerator(NoiseGenerator):
             .to(device=result.device)
         )
         return utils.normalize_to_scale(result, rmin.item(), rmax.item(), dim=(-2, -1))
-
-    def voronoi_distance(self, d: torch.Tensor, octave: int) -> torch.Tensor:
-        modes = self.get_distance_mode(octave).split("+")
-        result_scale_base = 1.0 / len(modes)
-        result = None
-        for mode in modes:
-            if ":" in mode:
-                mode_name, *mode_rest = mode.split(":")
-                mode_kwargs = dict(
-                    tuple(v.strip() for v in di.split("=", 1)) for di in mode_rest
-                )
-                result_scale = result_scale_base * float(mode_kwargs.pop("dscale", 1.0))
-            else:
-                mode_name = mode
-                mode_kwargs = {}
-                result_scale = result_scale_base
-            if mode_name not in self.voronoi_distance_modes:
-                errstr = f"Bad distance mode {mode}"
-                raise ValueError(errstr)
-            handler = getattr(self, f"_voronoi_distance_{mode_name}")
-            curr_result = handler(d, **mode_kwargs).mul_(result_scale)
-            result = curr_result if result is None else result.add_(curr_result)
-        return result
-
-    voronoi_result_modes = frozenset((
-        "f",
-        "f1",
-        "f2",
-        "f3",
-        "f4",
-        "diff",
-        "diff2",
-        "inv_f",
-        "inv_f1",
-        "inv_f2",
-        "inv_f3",
-        "inv_f4",
-        "cellid",
-        "ridge",
-        "median_distance",
-        "fuzz",
-    ))
 
     @staticmethod
     def _voronoi_result_f(
@@ -1609,12 +1675,9 @@ class VoronoiNoiseGenerator(NoiseGenerator):
         exp: float | str = -10.0,
         **kwargs,
     ) -> torch.Tensor:
-        name = name.strip().lower()
-        if name not in self.voronoi_result_modes:
-            errstr = f"Bad voronoi ridge result mode name: {name}"
-            raise ValueError(errstr)
         return 1.0 - (
-            float(exp) * getattr(self, f"_voronoi_result_{name}")(*args, **kwargs)
+            float(exp)
+            * self.voronoi_call_mode(name, result=True, args=args, kwargs=kwargs)
         )
 
     @staticmethod
@@ -1625,6 +1688,76 @@ class VoronoiNoiseGenerator(NoiseGenerator):
     ) -> torch.Tensor:
         return get_sorted().median(dim=-1).values
 
+    @staticmethod
+    def _voronoi_result_softmin(
+        d: torch.Tensor,
+        *_args,
+        temperature=50.0,
+        use_sorted=None,
+        d_orig: torch.Tensor,
+        get_sorted: Callable,
+        **_kwargs,
+    ) -> torch.Tensor:
+        d_norm = d_orig.norm(dim=-1)
+        soft_weights = F.softmax(-d_norm * float(temperature), dim=-1)
+        eff_d = get_sorted() if use_sorted is not None else d
+        return (eff_d * soft_weights).sum(dim=-1)
+
+    def _voronoi_result_gradient_magnitude(
+        self,
+        *args,
+        name1: str = "f4",
+        name2: str = "f4",
+        pad_mode: str = "replicate",
+        **kwargs,
+    ) -> torch.Tensor:
+        r1 = self.voronoi_call_mode(name1, result=True, args=args, kwargs=kwargs)
+        r1_padded = F.pad(r1, (1, 1, 1, 1), mode=pad_mode)
+        if name2 != name1:
+            r2 = self.voronoi_call_mode(name2, result=True, args=args, kwargs=kwargs)
+            r2_padded = F.pad(r2, (1, 1, 1, 1), mode=pad_mode)
+        else:
+            r2 = r1
+            r2_padded = r1_padded
+        dx = r1_padded[..., 1:-1, 2:] - r2_padded[..., 1:-1, :-2]
+        dy = r1_padded[..., 2:, 1:-1] - r2_padded[..., :-2, 1:-1]
+        return (dx**2 + dy**2).sqrt_()
+
+    def _voronoi_result_fractal_norm(
+        self,
+        d: torch.Tensor,
+        *args,
+        name: str = "diff",
+        mode: str = "sin",
+        scale: str | float = 0.1,
+        multiplier: str | float = 10.0,
+        **kwargs,
+    ) -> torch.Tensor:
+        if mode == "sin":
+            fun = torch.sin
+        elif mode == "cos":
+            fun = torch.cos
+        else:
+            raise ValueError(
+                "Bad mode parameter for fractal_norm result mode, must be one of: sin, cos",
+            )
+        d_adjusted = float(scale) * fun(d * float(multiplier))
+        my_d_sorted = None
+
+        def my_get_sorted():
+            nonlocal my_d_sorted
+            if my_d_sorted is not None:
+                return my_d_sorted
+            my_d_sorted = d_adjusted.sort(dim=-1).values
+            return my_d_sorted
+
+        return self.voronoi_call_mode(
+            name,
+            result=True,
+            args=(d_adjusted, *args),
+            kwargs=kwargs | {"get_sorted": my_get_sorted},
+        )
+
     def _voronoi_result_fuzz(
         self,
         *args,
@@ -1633,11 +1766,7 @@ class VoronoiNoiseGenerator(NoiseGenerator):
         **kwargs,
     ) -> torch.Tensor:
         fuzz = float(fuzz)
-        name = name.strip().lower()
-        if name not in self.voronoi_result_modes:
-            errstr = f"Bad voronoi fuzz result mode name: {name}"
-            raise ValueError(errstr)
-        result = getattr(self, f"_voronoi_result_{name}")(*args, **kwargs)
+        result = self.voronoi_call_mode(name, result=True, args=args, kwargs=kwargs)
         rmin, rmax = result.aminmax()
         fuzz = max(abs(rmin.item()), abs(rmax.item())) * fuzz
         result += (
@@ -1648,7 +1777,37 @@ class VoronoiNoiseGenerator(NoiseGenerator):
         )
         return utils.normalize_to_scale(result, rmin.item(), rmax.item(), dim=(-2, -1))
 
-    def voronoi_result(self, d: torch.Tensor, octave: int) -> torch.Tensor:
+    def voronoi_distance(self, d: torch.Tensor, octave: int) -> torch.Tensor:
+        modes = self.get_distance_mode(octave).split("+")
+        result_scale_base = 1.0 / len(modes)
+        result = None
+        for mode in modes:
+            if ":" in mode:
+                mode_name, *mode_rest = mode.split(":")
+                mode_kwargs = dict(
+                    tuple(val.strip() for val in di.split("=", 1)) for di in mode_rest
+                )
+                result_scale = result_scale_base * float(mode_kwargs.pop("dscale", 1.0))
+            else:
+                mode_name = mode
+                mode_kwargs = {}
+                result_scale = result_scale_base
+            curr_result = self.voronoi_call_mode(
+                mode_name,
+                result=False,
+                args=(d,),
+                kwargs=mode_kwargs,
+            ).mul_(result_scale)
+            result = curr_result if result is None else result.add_(curr_result)
+        return result
+
+    def voronoi_result(
+        self,
+        d: torch.Tensor,
+        d_orig: torch.Tensor,
+        *,
+        octave: int,
+    ) -> torch.Tensor:
         modes = self.get_result_mode(octave).split("+")
         result_scale_base = 1.0 / len(modes)
         result = None
@@ -1661,6 +1820,10 @@ class VoronoiNoiseGenerator(NoiseGenerator):
             d_sorted = d.sort(dim=-1).values
             return d_sorted
 
+        base_kwargs = {
+            "d_orig": d_orig,
+            "get_sorted": get_sorted,
+        }
         for mode in modes:
             if ":" in mode:
                 mode_name, *mode_rest = mode.split(":")
@@ -1672,14 +1835,11 @@ class VoronoiNoiseGenerator(NoiseGenerator):
                 result_scale = result_scale_base
                 mode_name = mode
                 mode_kwargs = {}
-            if mode_name not in self.voronoi_result_modes:
-                errstr = f"Bad result mode {mode}"
-                raise ValueError(errstr)
-            handler = getattr(self, f"_voronoi_result_{mode_name}")
-            curr_result = handler(
-                d,
-                get_sorted=get_sorted,
-                **mode_kwargs,
+            curr_result = self.voronoi_call_mode(
+                mode_name,
+                result=True,
+                args=(d,),
+                kwargs=mode_kwargs | base_kwargs,
             ).mul_(result_scale)
             result = curr_result if result is None else result.add_(curr_result)
         return result
@@ -1704,10 +1864,9 @@ class VoronoiNoiseGenerator(NoiseGenerator):
         fp = (fp * scale) % 1.0
 
         # Toroidal wrapped difference
-        d = (grid_3d - fp + 0.5) % 1.0 - 0.5  # Wrap to [-0.5, 0.5)
-
-        d = self.voronoi_distance(d, octave=octave)
-        return self.voronoi_result(d, octave=octave)
+        d_orig = d = (grid_3d - fp + 0.5) % 1.0 - 0.5  # Wrap to [-0.5, 0.5)
+        d = self.voronoi_distance(d.clone(), octave=octave)
+        return self.voronoi_result(d, d_orig, octave=octave)
 
     def generate(self, *args):
         if self.grid_xyz is None or self.feature_points is None or self.z_max == 0:

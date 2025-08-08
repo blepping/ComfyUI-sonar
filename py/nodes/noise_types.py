@@ -404,11 +404,11 @@ class SonarAdvancedDistroNoiseNode(SonarCustomNoiseNodeBase):
                 "FLOAT",
                 {
                     "default": 0.85,
-                    "min": 0.0,
+                    "min": -1.0,
                     "max": 1.0,
                     "step": 0.001,
                     "round": False,
-                    "tooltip": "When enabled, will normalize generated noise to this quantile (i.e. 0.75 means outliers >75% will be clipped). Set to 1.0 or 0.0 to disable quantile normalization. A value like 0.75 or 0.85 should be reasonable, it really depends on the distribution and how many of the values are extreme.",
+                    "tooltip": "When enabled, will normalize generated noise to this quantile (i.e. 0.75 means outliers >75% will be clipped). Set to 1.0 or 0.0 to disable quantile normalization. A value like 0.75 or 0.85 should be reasonable, it really depends on the distribution and how many of the values are extreme. (Experimental) You can use a negative quantile to consider the values closest to zero as extreme.",
                 },
             ),
             "quantile_norm_mode": (
@@ -657,9 +657,18 @@ class SonarAdvancedVoronoiNoiseNode(SonarCustomNoiseNodeBase):
             f"Possible result modes: {_pretty_result_modes}",
         )
         .req_field_octave_mode(
-            ("same_features", "new_features"),
+            (
+                "same_features",
+                "new_features",
+                "same_invert_odd",
+                "same_invert_even",
+                "same_roll_chan_up",
+                "same_roll_chan_down",
+                "same_roll_dir_up",
+                "same_roll_dir_down",
+            ),
             default="new_features",
-            tooltip="Only relevant when generating multiple octaves. Controls whether octaves share a set of feature points or if they are different for each octave (note that this is slower).",
+            tooltip="Only relevant when generating multiple octaves. Controls whether octaves share a set of feature points or if they are different for each octave (note that this is slower). Modes starting with 'same' will use the same feature points per octave but may transform them.",
         )
         .req_int_octaves(
             default=3,

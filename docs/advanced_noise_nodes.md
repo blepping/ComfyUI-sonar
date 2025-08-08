@@ -461,7 +461,7 @@ The node has many options for calculating the distance between the feature point
 * You can enter a `+` (plus symbol) separated list of modes. The modes will be calculated and the result will be the average. Distance modes all have the common parameter `dscale` which defaults to 1 and can be overridden. Result modes use `rscale`. See below for a description on passing parameters.
 * It's possible to pass parameters to distance and result modes. Example with a result mode: `diff:idx1=0:idx2=1:rscale=0.5`
 
-**Note**: Some modes act as wrappers for other modes. Unfortunately, there isn't currently a good way to escape parameters. Modes ignore parameters they don't understand and the wrapper modes will pass through any parameters they don't use themselves so you _can_ pass parameters to the submodes as long as they don't conflict (and only up to one level).
+Some modes act as wrappers to other modes. All modes will just ignore parameters they don't understand. Each time a submode is called, one level of "_" at the beginning of parameter names is stripped off. It's not user-friendly but this does allow passing parameters to submodes. Since unknown parameters are ignored, you only need to bother with this if the mode that's calling the submode will use that parameter. Dumb example: `gradient_magnitude:name1=diff:name2=gradient_magnitude:_name1=f4:_name2=f4`. `gradient_magnitude` takes two submodes that it calls (specified with `name1` and `name2`). The top-level `gradient_magnitude` will consume the `name1` and `name2` parameters, strip one level of underscores off the parameter names and call the submodes.
 
 #### Distance Modes
 
@@ -475,7 +475,9 @@ Modes listed with the defaults for parameters they support. These modes also sup
 * `angle:idx=2` - idxs here range from 0 to 2.
 * `angle_tanh:idx=2` - Same as `angle` but scales the result with tanh.
 * `angle_sigmoid:idx=2` - Same as `angle` but scales the result with the sigmoid function.
-* `fuzz:name=euclidean:fuzz=0.25` - Acts as a wrapper for another result mode (specified with `name`). Will perturb the result by `fuzz` percent of the absolute maximum value. Or more simply, randomizes values by +/- `fuzz` percentage so if you set `fuzz=1` you will essentially get pure noise.
+* `fuzz:name=euclidean:fuzz=0.25` - Acts as a wrapper for another mode (specified with `name`). Will perturb the result by `fuzz` percent of the absolute maximum value. Or more simply, randomizes values by +/- `fuzz` percentage so if you set `fuzz=1` you will essentially get pure noise.
+* `fractal_norm:scale=0.1:multiplier=10.0:mode=sin:name=euclidean` - This acts as a wrapper for another mode. `mode` may be one of `sin`, `cos`. It will adjust the input to the mode it wraps by `scale * sin(input * multiplier)` (assuming `mode=sin`).
+* `weight:h=1.0:w=1.0:z=0.25:name=euclidean` - This acts as a wrapper for another mode and allows you to scale height/width/z (depth) before calling it.
 
 #### Result Modes
 
@@ -491,6 +493,10 @@ Modes listed with the defaults for parameters they support. These modes also sup
 * `cellid` - Returns a discrete value for the area of each cell (diffusion models hate this). You will need to dilute the Voronoi noise a lot to actually use this. It could also possibly be used for masking.
 * `median_distance`
 * `fuzz:name=f1:fuzz=0.25` - Works the same as `fuzz` in distance modes. See the description there.
+* `fractal_norm:scale=0.1:multiplier=10.0:mode=sin:name=diff` - This acts as a wrapper for another mode. `mode` may be one of `sin`, `cos`. It will adjust the input to the mode it wraps by `scale * sin(input * multiplier)` (assuming `mode=sin`).
+* `ridge:name=diff:exp=-1.0` - Wraps another mode and may enhance cell borders (doesn't seem super useful).
+* `softmin:temperature=50.0` - Passes the result through softmin and can be used to smooth the output from distance modes like `angle` that may experience abrupt changes as you move through `z`. It also supports a `use_sorted` parameter that will apply this adjustment to the sorted values as well if it's present and set to anything. Higher temperatures will result in less of a smoothing effect.
+* `gradient_magnitude:name1=f4:name2=f4:padding_mode=replicate` - Wraps two other modes. Seems pretty nice for adding detail when using low numbers of feature points. `padding_mode` can be set to modes that PyTorch's `pad` function supports.
 
 #### Depth
 
