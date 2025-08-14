@@ -1904,6 +1904,278 @@ class VoronoiNoiseGenerator(NoiseGenerator):
         return result
 
 
+class SimulationNoiseGenerator(NoiseGenerator):
+    name = "simulation"
+    MIN_DIMS = 4
+    MAX_DIMS = 4
+
+    @classmethod
+    def ng_params(cls, *, no_super: bool = False):
+        result = {
+            "spectral_mode": "multi_octave",
+            # curl, projection, basis
+            "field_mode": "curl",
+            "depth_mode": "reset",
+            "channel_mode": "stacked",
+            "band_shape": "log_gaussian",
+            "depth": 64,
+            "initial_depth": 0,
+            "max_depth": -1,
+            # reset, wrap, bounce
+            "octaves": 5,
+            "lacunarity": 2.0,
+            "gain": 0.5,
+            # log_gaussian, raised_cosine
+            "log_gaussian_sigma": 0.3,
+            # None or (float, float, float)
+            "anisotropy": None,
+            "normalized": False,
+            "noise_sampler_factory_h": None,
+            "noise_sampler_factory_w": None,
+            "noise_sampler_factory_z": None,
+        }
+        return result if no_super else super().ng_params() | result
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.noise_chunk = None
+        cm = self.channel_mode
+        self.depth_increment = 1
+        if cm in {"over_depth", "over_depth_alt"}:
+            self.depth_increment = math.ceil(self.channels / 3)
+        elif cm.startswith("over_depth_"):
+            self.depth_increment = self.channels
+        else:
+            self.depth_increment = 1
+        if self.initial_depth < 0:
+            self.initial_depth = self.depth + self.initial_depth
+        if self.initial_depth < 0:
+            raise ValueError("Initial depth out of range")
+        self.initial_depth = min(self.depth - 1, self.initial_depth)
+        if self.max_depth < 0:
+            self.max_depth = self.depth + self.max_depth
+        if self.max_depth < 0:
+            raise ValueError("Max depth out of range")
+        self.max_depth = min(self.depth - 1, self.max_depth)
+        self.current_depth = self.initial_depth
+        self.direction = 1
+        self.cdtype = (
+            torch.complex128 if self.dtype == torch.float64 else torch.complex64
+        )
+        self.eff_batch = (
+            self.batch if cm != "stacked" else self.batch * math.ceil(self.channels / 3)
+        )
+        ns_shape = torch.Size((
+            self.eff_batch,
+            self.depth * self.depth_increment,
+            self.height,
+            self.width,
+        ))
+
+        def gaussian_noise_sampler(*_args: list) -> torch.Tensor:
+            return torch.randn(ns_shape, dtype=self.cdtype, device=self.gen_device).to(
+                device=self.device,
+            )
+
+        self.noise_samplers = tuple(
+            factory.make_noise_sampler(
+                torch.zeros(ns_shape, device=self.gen_device, dtype=self.dtype),
+                cpu=self.cpu,
+                normalized=False,
+            )
+            if factory is not None
+            else gaussian_noise_sampler
+            for factory in (
+                self.noise_sampler_factory_h,
+                self.noise_sampler_factory_w,
+                self.noise_sampler_factory_z,
+            )
+        )
+
+    @staticmethod
+    def _k_grids_3d(shape: tuple, device: str, dtype: torch.dtype) -> tuple:
+        """Creates 3D k-space grids."""
+        d, h, w = shape[-3:]
+        kx = torch.fft.fftfreq(w, d=1.0, device=device, dtype=dtype)
+        ky = torch.fft.fftfreq(h, d=1.0, device=device, dtype=dtype)
+        kz = torch.fft.fftfreq(d, d=1.0, device=device, dtype=dtype)
+        kz, ky, kx = torch.meshgrid(kz, ky, kx, indexing="ij")
+        return kx, ky, kz
+
+    @staticmethod
+    def _radial_k(kx, ky, kz) -> torch.Tensor:
+        """Calculates the radial distance in k-space."""
+        return torch.sqrt(kx**2 + ky**2 + kz**2)
+
+    @staticmethod
+    def _raised_cosine_band(k, k_lo, k_hi) -> torch.Tensor:
+        """A raised cosine spectral band filter."""
+        kc = 0.5 * (k_lo + k_hi)
+        hw = 0.5 * (k_hi - k_lo) + 1e-12
+        t = (k - kc) / hw
+        return torch.where(
+            t.abs() <= 1.0,
+            0.5 * (1.0 + torch.cos(math.pi * t)),
+            torch.zeros_like(k),
+        )
+
+    @staticmethod
+    def _log_gaussian_band(k, k_lo, k_hi, sigma=0.25) -> torch.Tensor:
+        """A log-Gaussian spectral band filter."""
+        k_center = math.sqrt(k_lo * k_hi)
+        log_k = torch.log(torch.clamp(k, min=1e-12))
+        log_center = math.log(k_center)
+        return torch.exp(-0.5 * ((log_k - log_center) / sigma) ** 2)
+
+    def generate_octaves(
+        self,
+        batch: int,
+        height: int,
+        width: int,
+        *,
+        ns_args: tuple | list,
+    ) -> torch.Tensor:
+        depth = self.depth * self.depth_increment
+        eff_shape = torch.Size((batch, 3, depth, height, width))
+
+        # 1. Create the UN SCALED k-grids for the projection operator.
+        kx_proj, ky_proj, kz_proj = self._k_grids_3d(eff_shape, self.device, self.dtype)
+
+        # 2. Create a separate set of k-grids for spectral shaping.
+        # These can be scaled by the anisotropy factors.
+        if self.anisotropy and not all(v in {0, 1} for v in self.anisotropy):
+            n_anisotropy = len(self.anisotropy)
+            ax, ay, az = (
+                1.0 if idx >= n_anisotropy else self.anisotropy[idx] for idx in range(3)
+            )
+            kx_spec = kx_proj / (ax if ax != 0 else 1.0)
+            ky_spec = ky_proj / (ay if ay != 0 else 1.0)
+            kz_spec = kz_proj / (az if az != 0 else 1.0)
+        else:
+            # If no anisotropy, the spectral grids are the same as the projection grids.
+            kx_spec, ky_spec, kz_spec = kx_proj, ky_proj, kz_proj
+
+        # 3. Calculate radial k for the spectral envelope using the SCALED grids.
+        k_rad = self._radial_k(kx_spec, ky_spec, kz_spec)
+
+        # Build the multi-octave spectral envelope (Wk) using the anisotropic k_rad
+        base_k = 2 * math.pi / min(depth, height, width)
+        wk = torch.zeros_like(k_rad)
+        for o in range(self.octaves):
+            k_lo = base_k * (self.lacunarity**o)
+            k_hi = base_k * (self.lacunarity ** (o + 1))
+            if self.band_shape == "raised_cosine":
+                band = self._raised_cosine_band(k_rad, k_lo, k_hi)
+            else:
+                band = self._log_gaussian_band(
+                    k_rad,
+                    k_lo,
+                    k_hi,
+                    sigma=self.log_gaussian_sigma,
+                )
+            wk += (self.gain**o) * band
+
+        wk[k_rad == 0] = 0.0
+
+        # Create a random vector field in Fourier space and apply the spectral envelope
+        fx_f, fy_f, fz_f = (
+            ns(*ns_args).to(device=self.device).mul_(wk) for ns in self.noise_samplers
+        )
+
+        # --- Perform the Helmholtz projection using the UN SCALED grids ---
+        k_dot_f = kx_proj * fx_f + ky_proj * fy_f + kz_proj * fz_f
+        k_sq_proj = self._radial_k(kx_proj, ky_proj, kz_proj) ** 2
+        inv_k_sq = torch.where(k_sq_proj == 0, 0.0, 1.0 / k_sq_proj)
+
+        k_proj_scale = k_dot_f * inv_k_sq
+        fx_f_proj = fx_f - kx_proj * k_proj_scale
+        fy_f_proj = fy_f - ky_proj * k_proj_scale
+        fz_f_proj = fz_f - kz_proj * k_proj_scale
+
+        # Inverse FFT to transform the field back to the spatial domain
+        field = torch.stack(
+            tuple(
+                torch.fft.ifftn(f_proj, dim=(-3, -2, -1)).real
+                for f_proj in (fx_f_proj, fy_f_proj, fz_f_proj)
+            ),
+            dim=1,
+        )
+
+        rms = torch.sqrt(torch.mean(field**2))
+        if rms > 1e-9:
+            field /= rms
+
+        return field
+
+    def generate(self, *args) -> torch.Tensor:
+        cm = self.channel_mode
+        if self.noise_chunk is None:
+            self.noise_chunk = self.generate_octaves(
+                self.eff_batch,
+                self.height,
+                self.width,
+                ns_args=args,
+            ).to(dtype=self.dtype)
+            self.current_depth = self.initial_depth
+        depth_from = self.current_depth * self.depth_increment
+        depth_to = depth_from + self.depth_increment
+        if cm == "stacked":
+            noise = self.noise_chunk[:, :, self.current_depth]
+            noise = torch.cat(
+                tuple(
+                    noise[bidx * self.batch : bidx * self.batch + self.batch]
+                    for bidx in range(noise.shape[0] // self.batch)
+                ),
+                dim=2,
+            )
+        elif cm in {"over_depth", "over_depth_alt"}:
+            noise = self.noise_chunk[:, :, depth_from:depth_to]
+            if cm == "over_depth":
+                noise = noise.movedim(2, 1)
+        elif cm == "over_depth_avg":
+            noise = self.noise_chunk[:, :, depth_from:depth_to].mean(dim=1)
+        elif cm.startswith("over_depth_"):
+            channel_lookup = {"h": 0, "w": 1, "z": 2}
+            mathop = cm[-5:-2]
+            if mathop in {"add", "sub", "mul", "div"}:
+                chan1, chan2 = channel_lookup[cm[-7]], channel_lookup[cm[-1]]
+                noise1 = self.noise_chunk[:, chan1 : chan1 + 1, depth_from:depth_to]
+                noise2 = self.noise_chunk[:, chan2 : chan2 + 1, depth_from:depth_to]
+                if mathop == "sub":
+                    noise = noise1 - noise2
+                elif mathop == "add":
+                    noise = noise1 + noise2
+                elif mathop == "mul":
+                    noise = noise1 * noise2
+                elif mathop == "div":
+                    noise = noise1 / (noise2 + 1e-07)
+            else:
+                chan = channel_lookup[cm[-1]]
+                noise = self.noise_chunk[:, chan : chan + 1, depth_from:depth_to]
+        else:
+            raise ValueError("Bad channel mode")
+        self.current_depth += 1 * self.direction
+        if self.current_depth > self.max_depth or self.current_depth < 0:
+            dm = self.depth_mode
+            if dm == "reset":
+                self.noise_chunk = None
+            elif dm == "wrap":
+                self.current_depth = self.initial_depth
+            elif dm == "bounce":
+                if self.depth < 2:
+                    raise ValueError("Bounce depth mode requires depth of at least 2")
+                self.direction = -self.direction
+                self.current_depth += 2 * self.direction
+        return (
+            noise.reshape(self.batch, -1, self.height, self.width)[
+                :,
+                : self.channels,
+            ]
+            .clone()
+            .contiguous()
+        )
+
+
 # Idea from https://github.com/ClownsharkBatwing/RES4LYF/ (wave and mode defaults also from that source)
 class WaveletFilteredNoiseGenerator(FramesToChannelsNoiseGenerator):
     name = "waveletfilter"
@@ -2634,6 +2906,7 @@ __all__ = (
     "PyramidNoiseGenerator",
     "PyramidOldNoiseGenerator",
     "ScatternetFilteredNoiseGenerator",
+    "SimulationNoiseGenerator",
     "StudentTNoiseGenerator",
     "UniformNoiseGenerator",
     "VoronoiNoiseGenerator",

@@ -467,6 +467,35 @@ class AdvancedVoronoiNoise(AdvancedNoiseBase):
         )
 
 
+class AdvancedSimulationNoise(AdvancedNoiseBase):
+    ns_factory_arg_keys = tuple(SimulationNoiseGenerator.ng_params(no_super=True))
+
+    @property
+    def ns_factory(self):
+        return SimulationNoiseGenerator
+
+    def clone_key(self, k):
+        if (
+            k in {"custom_noise_h", "custom_noise_w", "custom_noise_z"}
+            and getattr(self, k) is not None
+        ):
+            return getattr(self, k).clone()
+        return super().clone_key(k)
+
+    def make_noise_sampler(self, x, *args, normalized=True, **kwargs):
+        if x.ndim != 4:
+            raise ValueError("Can only handle 4+ dimensional latents")
+        return super().make_noise_sampler(
+            x,
+            *args,
+            normalized=normalized,
+            noise_sampler_factory_h=self.custom_noise_h,
+            noise_sampler_factory_w=self.custom_noise_w,
+            noise_sampler_factory_z=self.custom_noise_z,
+            **kwargs,
+        )
+
+
 class CompositeNoise(CustomNoiseItemBase):
     def __init__(
         self,

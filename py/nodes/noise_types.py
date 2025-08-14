@@ -737,12 +737,160 @@ class SonarAdvancedVoronoiNoiseNode(SonarCustomNoiseNodeBase):
         )
 
 
+class SonarAdvancedSimulationNoiseNode(SonarCustomNoiseNodeBase):
+    DESCRIPTION = "TBD"
+
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: NoiseChainInputTypes()
+        .req_int_depth(default=16)
+        .req_int_initial_depth(
+            default=0,
+            min=0,
+            tooltip="TBD",
+        )
+        .req_int_max_depth(
+            default=-1,
+            tooltip="TBD",
+        )
+        .req_field_depth_mode(
+            ("reset", "wrap", "bounce"),
+            default="reset",
+            tooltip="TBD",
+        )
+        .req_int_octaves(
+            default=3,
+            min=1,
+            tooltip="Number of octaves of noise to generate.",
+        )
+        .req_float_lacunarity(default=2.0)
+        .req_float_gain(default=0.75)
+        .req_field_channel_mode(
+            (
+                "stacked",
+                "over_depth",
+                "over_depth_alt",
+                "over_depth_avg",
+                "over_depth_h",
+                "over_depth_w",
+                "over_depth_z",
+                "over_depth_h_sub_w",
+                "over_depth_h_sub_z",
+                "over_depth_w_sub_h",
+                "over_depth_w_sub_z",
+                "over_depth_z_sub_h",
+                "over_depth_z_sub_w",
+                "over_depth_h_add_w",
+                "over_depth_h_add_z",
+                "over_depth_w_add_h",
+                "over_depth_w_add_z",
+                "over_depth_z_add_h",
+                "over_depth_z_add_w",
+                "over_depth_h_mul_w",
+                "over_depth_h_mul_z",
+                "over_depth_w_mul_h",
+                "over_depth_w_mul_z",
+                "over_depth_z_mul_h",
+                "over_depth_z_mul_w",
+                "over_depth_h_div_w",
+                "over_depth_h_div_z",
+                "over_depth_w_div_h",
+                "over_depth_w_div_z",
+                "over_depth_z_div_h",
+                "over_depth_z_div_w",
+            ),
+            default="over_depth",
+            tooltip="TBD",
+        )
+        .req_field_band_shape(
+            ("log_gaussian", "raised_cosine"),
+            default="log_gaussian",
+            tooltip="TBD",
+        )
+        .req_float_log_gaussian_sigma(default=0.3)
+        .req_string_anisotropy(
+            default="",
+            tooltip="TBD",
+        )
+        .req_normalizetristate_normalize()
+        .opt_customnoise_custom_noise_h(
+            tooltip="TBD",
+        )
+        .opt_customnoise_custom_noise_w(
+            tooltip="TBD",
+        )
+        .opt_customnoise_custom_noise_z(
+            tooltip="TBD",
+        ),
+    )
+
+    @classmethod
+    def get_item_class(cls):
+        return noise.AdvancedSimulationNoise
+
+    def go(
+        self,
+        *,
+        factor: float,
+        rescale: float,
+        depth: int,
+        initial_depth: int,
+        max_depth: int,
+        depth_mode: str,
+        octaves: int,
+        gain: float,
+        lacunarity: float,
+        channel_mode: str,
+        band_shape: str,
+        log_gaussian_sigma: float,
+        anisotropy: str,
+        normalize: str,
+        sonar_custom_noise_opt=None,
+        custom_noise_h=None,
+        custom_noise_w=None,
+        custom_noise_z=None,
+    ):
+        anisotropy = anisotropy.strip()
+        anisotropy = (
+            None
+            if not anisotropy
+            else tuple(float(v) if v.strip() else 1.0 for v in anisotropy.split(","))
+        )
+
+        return super().go(
+            factor,
+            rescale=rescale,
+            sonar_custom_noise_opt=sonar_custom_noise_opt,
+            depth=depth,
+            initial_depth=initial_depth,
+            max_depth=max_depth,
+            depth_mode=depth_mode,
+            octaves=octaves,
+            gain=gain,
+            lacunarity=lacunarity,
+            channel_mode=channel_mode,
+            band_shape=band_shape,
+            log_gaussian_sigma=log_gaussian_sigma,
+            anisotropy=anisotropy,
+            normalize=normalize,
+            custom_noise_h=custom_noise_h.clone()
+            if custom_noise_h is not None
+            else None,
+            custom_noise_w=custom_noise_w.clone()
+            if custom_noise_w is not None
+            else None,
+            custom_noise_z=custom_noise_z.clone()
+            if custom_noise_z is not None
+            else None,
+        )
+
+
 NODE_CLASS_MAPPINGS = {
-    "SonarAdvancedPyramidNoise": SonarAdvancedPyramidNoiseNode,
     "SonarAdvanced1fNoise": SonarAdvanced1fNoiseNode,
-    "SonarAdvancedPowerLawNoise": SonarAdvancedPowerLawNoiseNode,
     "SonarAdvancedCollatzNoise": SonarAdvancedCollatzNoiseNode,
     "SonarAdvancedDistroNoise": SonarAdvancedDistroNoiseNode,
+    "SonarAdvancedPowerLawNoise": SonarAdvancedPowerLawNoiseNode,
+    "SonarAdvancedPyramidNoise": SonarAdvancedPyramidNoiseNode,
+    "SonarAdvancedSimulationNoise": SonarAdvancedSimulationNoiseNode,
     "SonarAdvancedVoronoiNoise": SonarAdvancedVoronoiNoiseNode,
     "SonarWaveletNoise": SonarWaveletNoiseNode,
 }
