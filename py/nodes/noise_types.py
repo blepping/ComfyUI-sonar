@@ -742,28 +742,21 @@ class SonarAdvancedSimulationNoiseNode(SonarCustomNoiseNodeBase):
 
     INPUT_TYPES = SonarLazyInputTypes(
         lambda: NoiseChainInputTypes()
-        .req_int_depth(default=16)
-        .req_int_initial_depth(
-            default=0,
-            min=0,
+        .req_field_spectral_mode(
+            ("multi_octave", "power_law", "band_pass"),
+            default="multi_octave",
             tooltip="TBD",
         )
-        .req_int_max_depth(
-            default=-1,
+        .req_field_field_mode(
+            ("basis", "curl", "projection", "curl_ndim", "basis_ndim"),
+            default="basis",
             tooltip="TBD",
         )
-        .req_field_depth_mode(
-            ("reset", "wrap", "bounce"),
-            default="reset",
+        .req_field_band_shape(
+            ("log_gaussian", "raised_cosine"),
+            default="log_gaussian",
             tooltip="TBD",
         )
-        .req_int_octaves(
-            default=3,
-            min=1,
-            tooltip="Number of octaves of noise to generate.",
-        )
-        .req_float_lacunarity(default=2.0)
-        .req_float_gain(default=0.75)
         .req_field_channel_mode(
             (
                 "stacked",
@@ -801,17 +794,41 @@ class SonarAdvancedSimulationNoiseNode(SonarCustomNoiseNodeBase):
             default="over_depth",
             tooltip="TBD",
         )
-        .req_field_band_shape(
-            ("log_gaussian", "raised_cosine"),
-            default="log_gaussian",
+        .req_int_depth(default=16)
+        .req_int_initial_depth(
+            default=0,
+            min=0,
             tooltip="TBD",
         )
+        .req_int_max_depth(
+            default=-1,
+            tooltip="TBD",
+        )
+        .req_field_depth_mode(
+            ("reset", "wrap", "bounce"),
+            default="reset",
+            tooltip="TBD",
+        )
+        .req_int_octaves(
+            default=3,
+            min=1,
+            tooltip="Number of octaves of noise to generate. Only has an effect in multi_octave spectral mode.",
+        )
+        .req_float_lacunarity(default=2.0)
+        .req_float_gain(default=0.75)
         .req_float_log_gaussian_sigma(default=0.3)
         .req_string_anisotropy(
             default="",
             tooltip="TBD",
         )
         .req_normalizetristate_normalize()
+        .req_float_base_k(default=0.0)
+        .req_float_power_law_beta(
+            default=0.25,
+            tooltip="Beta used for power_law spectral mode, no effect otherwise. Higher beta will result in colorful low frequency noise, low (or negative) will emphasize high frequencies.",
+        )
+        .req_float_band_pass_low(default=0.0001, min=1e-06)
+        .req_float_band_pass_high(default=1.0, min=1e-06)
         .opt_customnoise_custom_noise_h(
             tooltip="TBD",
         )
@@ -844,6 +861,12 @@ class SonarAdvancedSimulationNoiseNode(SonarCustomNoiseNodeBase):
         log_gaussian_sigma: float,
         anisotropy: str,
         normalize: str,
+        spectral_mode: str,
+        field_mode: str,
+        base_k: float,
+        power_law_beta: float,
+        band_pass_low: float,
+        band_pass_high: float,
         sonar_custom_noise_opt=None,
         custom_noise_h=None,
         custom_noise_w=None,
@@ -871,6 +894,12 @@ class SonarAdvancedSimulationNoiseNode(SonarCustomNoiseNodeBase):
             band_shape=band_shape,
             log_gaussian_sigma=log_gaussian_sigma,
             anisotropy=anisotropy,
+            spectral_mode=spectral_mode,
+            field_mode=field_mode,
+            base_k=base_k,
+            power_law_beta=power_law_beta,
+            band_pass_low=band_pass_low,
+            band_pass_high=band_pass_high,
             normalize=normalize,
             custom_noise_h=custom_noise_h.clone()
             if custom_noise_h is not None
