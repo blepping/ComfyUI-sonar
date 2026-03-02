@@ -64,6 +64,7 @@ class SonarLatentOperationAdvanced(SonarLatentOperation):
         *,
         blend_mode: str,
         blend_strength: float,
+        blend_strategy: str,
         input_multiplier: float,
         output_multiplier: float,
         difference_multiplier: float,
@@ -74,6 +75,7 @@ class SonarLatentOperationAdvanced(SonarLatentOperation):
         super().__init__(**kwargs)
         self.blend_function = utils.BLENDING_MODES[blend_mode]
         self.blend_strength = blend_strength
+        self.blend_strategy = blend_strategy
         self.input_multiplier = input_multiplier
         self.output_multiplier = output_multiplier
         self.difference_multiplier = difference_multiplier
@@ -103,7 +105,11 @@ class SonarLatentOperationAdvanced(SonarLatentOperation):
         ) - t
         if self.difference_multiplier != 1.0:
             diff *= self.difference_multiplier
-        return self.blend_function(t, diff, self.blend_strength)
+        if self.blend_strategy == "difference":
+            return self.blend_function(t, diff, self.blend_strength)
+        if self.blend_strategy == "result":
+            return self.blend_function(t, t + diff, self.blend_strength)
+        raise ValueError(f"Unknown blend strategy: {self.blend_strategy}")
 
 
 class SonarLatentOperationNoise(SonarLatentOperation):

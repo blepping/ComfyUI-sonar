@@ -10,6 +10,7 @@ import comfy
 import torch
 import yaml
 from comfy.k_diffusion import sampling
+from comfy.model_management import throw_exception_if_processing_interrupted
 from torch import Tensor
 
 from . import external, utils
@@ -64,7 +65,16 @@ class CustomNoiseItemBase(abc.ABC):
 
     def get_normalize(self, k, default=None):
         val = getattr(self, k, None)
-        return default if val is None else val
+        if val in {None, "default"}:
+            return default
+        if val == "disabled":
+            return False
+        if val == "forced":
+            return True
+        return default
+        # if isinstance(val, bool):
+        #     return val
+        # return default if val is None else val
 
     @abc.abstractmethod
     def make_noise_sampler(
@@ -1691,6 +1701,62 @@ class ScatternetFilteredNoise(CustomNoiseItemBase):
         return noise_sampler
 
 
+class NoveltyFilteredNoise(CustomNoiseItemBase):
+    def clone_key(self, k):
+        if k == "noise" and self.noise is not None:
+            return self.noise.clone()
+        return super().clone_key(k)
+
+    def make_noise_sampler(
+        self,
+        x,
+        sigma_min,
+        sigma_max,
+        *args,
+        normalized=True,
+        **kwargs,
+    ):
+        factor = self.factor
+        normalize = self.get_normalize("normalize", normalized)
+        if self.noise is not None:
+            internal_ns = self.noise.make_noise_sampler(
+                x,
+                *args,
+                sigma_min=sigma_min,
+                sigma_max=sigma_max,
+                normalized=self.normalize_noise,
+                **kwargs,
+            )
+        else:
+            internal_ns = None
+        ns_kwargs = getattr(self, "ns_kwargs", {}).copy()
+        kwargs |= ns_kwargs
+        ns = NoveltyFilteredNoiseGenerator(
+            x,
+            *args,
+            sigma_min=sigma_min,
+            sigma_max=sigma_max,
+            normalized=False,
+            noise_sampler=internal_ns,
+            skip_initial=self.skip_initial,
+            iters_per_call=self.iters_per_call,
+            blend_ratio=self.blend_ratio,
+            blend_function=utils.BLENDING_MODES[self.blend_mode],
+            update_blend_ratio=self.update_blend_ratio,
+            update_blend_function=utils.BLENDING_MODES[self.update_blend_mode],
+            **kwargs,
+        )
+
+        def noise_sampler(sigma, sigma_next):
+            return scale_noise(
+                ns(sigma, sigma_next),
+                factor,
+                normalized=normalize,
+            )
+
+        return noise_sampler
+
+
 class LatentOperationFilteredNoise(CustomNoiseItemBase):
     def clone_key(self, k):
         if k == "noise" and self.noise is not None:
@@ -1895,29 +1961,32 @@ class PerDimNoise(CustomNoiseItemBase):
             slice(-dim_size, None) if d == dim else slice(None, None)
             for d in range(x.ndim)
         )
+        n_chunks = math.ceil(dim_size / chunk_size)
+
         if self.shrink_dim:
 
             def noise_sampler(sigma, sigma_next) -> torch.Tensor:
-                noise = torch.cat(
-                    tuple(ns(sigma, sigma_next) for _ in range(dim_size)),
-                    dim=dim,
-                )[trim_slice]
+                chunks = []
+                for _ in range(n_chunks):
+                    throw_exception_if_processing_interrupted()
+                    chunks.append(ns(sigma, sigma_next))
+                noise = torch.cat(chunks, dim=dim)[trim_slice]
                 return scale_noise(noise, factor, normalized=normalize)
 
-        else:
-            select_dim = [slice(None, None) for d in range(x.ndim)]
-            n_chunks = math.ceil(dim_size / chunk_size)
-            temp_shape = list(x.shape)
-            temp_shape[dim] = int(n_chunks * chunk_size)
+            return noise_sampler
 
-            def noise_sampler(sigma, sigma_next) -> torch.Tensor:
-                nonlocal select_dim
-                result = x.new_zeros(temp_shape)
-                # result = torch.zeros_like(x)
-                for idx in range(0, dim_size, chunk_size):
-                    select_dim[dim] = slice(idx, idx + chunk_size)
-                    result[select_dim] = ns(sigma, sigma_next)[select_dim]
-                return scale_noise(result[trim_slice], factor, normalized=normalize)
+        select_dim = [slice(None, None) for d in range(x.ndim)]
+        temp_shape = list(x.shape)
+        temp_shape[dim] = int(n_chunks * chunk_size)
+
+        def noise_sampler(sigma, sigma_next) -> torch.Tensor:
+            nonlocal select_dim
+            result = x.new_zeros(temp_shape)
+            for idx in range(0, dim_size, chunk_size):
+                throw_exception_if_processing_interrupted()
+                select_dim[dim] = slice(idx, idx + chunk_size)
+                result[select_dim] = ns(sigma, sigma_next)[select_dim]
+            return scale_noise(result[trim_slice], factor, normalized=normalize)
 
         return noise_sampler
 
@@ -2123,6 +2192,9 @@ class CustomNoiseParametersNoise(CustomNoiseItemBase):
     ):
         factor = self.factor
         normalize = self.get_normalize("normalize", normalized)
+        print(
+            f"\n****** NS: normalized={normalized}, normalize={normalize}, self.normalize={self.normalize}"
+        )
         orig_shape = x.shape
         orig_dtype = x.dtype
         orig_device = x.device

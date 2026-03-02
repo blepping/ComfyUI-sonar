@@ -1,6 +1,7 @@
 from .base import MixedNoiseGenerator, NoiseError, NoiseType
 from .collatz_noise_generator import CollatzNoiseGenerator
 from .distro_noise_generator import DistroNoiseGenerator
+from .novelty_filtered_noise import NoveltyFilteredNoiseGenerator
 from .scatternet_filtered_noise_generator import ScatternetFilteredNoiseGenerator
 from .simple_noise_generators import (
     BrownianNoiseGenerator,
@@ -34,6 +35,7 @@ __all__ = (
     "MixedNoiseGenerator",
     "NoiseError",
     "NoiseType",
+    "NoveltyFilteredNoiseGenerator",
     "OneFNoiseGenerator",
     "PerlinOldNoiseGenerator",
     "PinkOldNoiseGenerator",

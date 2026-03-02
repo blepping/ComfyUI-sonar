@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import itertools
 import math
+from typing import Any
 
 import torch
 
@@ -76,16 +77,20 @@ class SimulationNoiseGenerator(NoiseGenerator):
             torch.complex128 if self.dtype == torch.float64 else torch.complex64
         )
         self.eff_batch = (
-            self.batch if cm != "stacked" else self.batch * math.ceil(self.channels / 3)
+            self.batch
+            if cm not in {"stacked", "flat"}
+            else self.batch * math.ceil(self.channels / 3)
         )
-        ns_shape = torch.Size((
-            self.eff_batch,
-            self.depth * self.depth_increment,
-            self.height,
-            self.width,
-        ))
+        ns_shape = torch.Size(
+            (
+                self.eff_batch,
+                self.depth * self.depth_increment,
+                self.height,
+                self.width,
+            )
+        )
 
-        def gaussian_noise_sampler(*_args: list) -> torch.Tensor:
+        def gaussian_noise_sampler(*_args: Any) -> torch.Tensor:
             return torch.randn(ns_shape, dtype=self.cdtype, device=self.gen_device).to(
                 device=self.device,
             )
@@ -121,7 +126,7 @@ class SimulationNoiseGenerator(NoiseGenerator):
         )
 
     @staticmethod
-    def _radial_k(*ks: list) -> torch.Tensor:
+    def _radial_k(*ks: torch.Tensor) -> torch.Tensor:
         """Calculates the radial distance in k-space."""
         return sum(kt**2 for kt in ks).sqrt_()
 
@@ -187,6 +192,9 @@ class SimulationNoiseGenerator(NoiseGenerator):
             return wk_out(
                 self._handle_band_shape(k_rad, self.band_pass_low, self.band_pass_high),
             )
+        if self.octaves == 0:
+            # Ones where k_rad is non-zero, otherwise zero.
+            return (k_rad != 0).to(k_rad)
         base_k = 2 * math.pi / max(1, min(sizes)) if self.base_k == 0 else self.base_k
         wk = torch.zeros_like(k_rad)
         for o in range(self.octaves):
@@ -205,9 +213,17 @@ class SimulationNoiseGenerator(NoiseGenerator):
         ns_args: tuple | list,
         **_kwargs,
     ):
+        n_dims = len(k_grids_orig)
+        n_samplers = len(self.noise_samplers)
         f_fs = tuple(
-            ns(*ns_args).to(device=self.device).mul_(wk) for ns in self.noise_samplers
+            self.noise_samplers[ns_idx % n_samplers](*ns_args)
+            .to(
+                device=self.device,
+            )
+            .mul_(wk)
+            for ns_idx in range(n_dims)
         )
+
         # --- Perform the Helmholtz projection using the UN SCALED grids ---
         k_sq_proj = self._radial_k(*k_grids_orig) ** 2
         k_dot_f = sum(k_p * f_f for k_p, f_f in zip(k_grids_orig, f_fs))
@@ -217,35 +233,6 @@ class SimulationNoiseGenerator(NoiseGenerator):
         return tuple(
             f_f - k_grid * k_grid_scale for f_f, k_grid in zip(f_fs, k_grids_orig)
         )
-
-    # def _handle_field_curl(
-    #     self,
-    #     *,
-    #     k_rad: torch.Tensor,
-    #     k_grids_orig: tuple,
-    #     wk: torch.Tensor,
-    #     ns_args: tuple | list,
-    #     **_kwargs,
-    # ):
-    #     if len(k_grids_orig) != 3:
-    #         raise ValueError("Can only handle 3 dimensions currently")
-    #     # inv_k_rad = torch.where(k_rad == 0, 0.0, 1.0 / k_rad)
-    #     # wk_potential = wk * inv_k_rad
-    #     wk_potential = wk / k_rad
-    #     f_fs = tuple(
-    #         ns(*ns_args).to(device=self.device).mul_(wk_potential)
-    #         for ns in self.noise_samplers
-    #     )
-    #     i_k_grids = tuple(
-    #         (1j * k_grid).to(dtype=self.cdtype) for k_grid in k_grids_orig
-    #     )
-    #     fz, fy, fx = f_fs
-    #     ikz, iky, ikx = i_k_grids
-    #     return (
-    #         ikx * fy - iky * fx,  # z
-    #         ikz * fx - ikx * fz,  # y
-    #         iky * fz - ikz * fy,  # x
-    #     )
 
     def _handle_field_curl(
         self,
@@ -324,70 +311,6 @@ class SimulationNoiseGenerator(NoiseGenerator):
 
     _handle_field_curl_ndim = _handle_field_curl
 
-    def _handle_field_basis_orig(
-        self,
-        *,
-        k_rad: torch.Tensor,
-        k_grids_orig: tuple,
-        wk: torch.Tensor,
-        ns_args: tuple | list,
-        **_kwargs,
-    ) -> tuple:
-        if len(k_grids_orig) != 3:
-            raise ValueError("Can only handle 3 dimensions currently")
-        k_norm_z, k_norm_y, k_norm_x = (
-            torch.where(k_rad == 0, 0.0, k / k_rad) for k in k_grids_orig
-        )
-
-        # Pick a fixed vector `ez` to take a cross product with.
-        # Handle the singularity where k is parallel to ez.
-        ez = torch.tensor((0.0, 0.0, 1.0), device=self.device, dtype=self.dtype)
-        is_parallel = (k_norm_x.abs() < 1e-6) & (k_norm_y.abs() < 1e-6)
-
-        # First basis vector u = k x ez (or k x ey for the singularity)
-        ux = torch.where(
-            is_parallel,
-            k_norm_y * 0 - k_norm_z * 1,
-            k_norm_y * ez[2] - k_norm_z * ez[1],
-        )
-        uy = torch.where(
-            is_parallel,
-            k_norm_z * 0 - k_norm_x * 0,
-            k_norm_z * ez[0] - k_norm_x * ez[2],
-        )
-        uz = torch.where(
-            is_parallel,
-            k_norm_x * 1 - k_norm_y * 0,
-            k_norm_x * ez[1] - k_norm_y * ez[0],
-        )
-
-        u_mag = torch.sqrt(sum((ux**2, uy**2, uz**2)))
-        inv_u_mag = torch.where(u_mag == 0, 0.0, 1.0 / u_mag)
-        ux *= inv_u_mag
-        uy *= inv_u_mag
-        uz *= inv_u_mag
-        ux[k_rad == 0], uy[k_rad == 0], uz[k_rad == 0] = 0, 0, 0
-
-        # Second basis vector v = k x u
-        vx = k_norm_y * uz - k_norm_z * uy
-        vy = k_norm_z * ux - k_norm_x * uz
-        vz = k_norm_x * uy - k_norm_y * ux
-
-        # 3. Generate two independent random complex scalar fields
-        a_f = self.noise_samplers[0](*ns_args).to(device=self.device)
-        b_f = self.noise_samplers[1](*ns_args).to(device=self.device)
-
-        # 4. Modulate the random fields by the spectral envelope
-        a_f *= wk
-        b_f *= wk
-
-        # 5. Project the random fields onto the basis vectors to form the final field
-        return (
-            a_f * uz + b_f * vz,  # z
-            a_f * uy + b_f * vy,  # y
-            a_f * ux + b_f * vx,  # x
-        )
-
     def _handle_field_basis(
         self,
         *,
@@ -407,9 +330,6 @@ class SimulationNoiseGenerator(NoiseGenerator):
 
         # --- Case 1: 2D (simple and fast) ---
         if n_dims * nd_fixup == 2:
-            if len(self.noise_samplers) < 1:
-                raise ValueError("2D basis mode requires at least 1 noise sampler.")
-
             # The basis is a single vector perpendicular to k: u = (-ky, kx)
             kn_y, kn_x = k_norm_components
             basis_vectors = [
@@ -420,6 +340,8 @@ class SimulationNoiseGenerator(NoiseGenerator):
 
         # --- Case 2: 3D (fast cross-product method) ---
         elif n_dims * nd_fixup == 3:
+            num_random_fields = 2
+
             kn_z, kn_y, kn_x = k_norm_components
             ez = torch.tensor([0.0, 0.0, 1.0], device=self.device, dtype=self.dtype)
             is_parallel = (kn_x.abs() < 1e-6) & (kn_y.abs() < 1e-6)
@@ -441,7 +363,6 @@ class SimulationNoiseGenerator(NoiseGenerator):
             v = (vz, vy, vx)
 
             basis_vectors = [u, v]
-            num_random_fields = 2
 
         # --- Case 3: N-D (General Gram-Schmidt process) ---
         else:
@@ -505,7 +426,7 @@ class SimulationNoiseGenerator(NoiseGenerator):
 
     _handle_field_basis_ndim = _handle_field_basis
 
-    def generate_octaves(
+    def generate_field(
         self,
         batch: int,
         height: int,
@@ -567,7 +488,7 @@ class SimulationNoiseGenerator(NoiseGenerator):
     def generate(self, *args) -> torch.Tensor:
         cm = self.channel_mode
         if self.noise_chunk is None:
-            self.noise_chunk = self.generate_octaves(
+            self.noise_chunk = self.generate_field(
                 self.eff_batch,
                 self.height,
                 self.width,
@@ -585,6 +506,9 @@ class SimulationNoiseGenerator(NoiseGenerator):
                 ),
                 dim=2,
             )
+        elif cm == "flat":
+            noise = self.noise_chunk[:, :, self.current_depth]
+            noise = noise.flatten()[: math.prod(self.shape)]
         elif cm in {"over_depth", "over_depth_alt"}:
             noise = self.noise_chunk[:, :, depth_from:depth_to]
             if cm == "over_depth":

@@ -361,10 +361,6 @@ class SonarLatentOperationAdvancedNode(metaclass=IntegratedNode):
 
     INPUT_TYPES = SonarLazyInputTypes(
         lambda: SonarInputTypes()
-        .req_field_operation(
-            "LATENT_OPERATION",
-            tooltip="Latent operation to apply.",
-        )
         .req_float_start_sigma(
             default=-1.0,
             min=-1.0,
@@ -395,6 +391,15 @@ class SonarLatentOperationAdvancedNode(metaclass=IntegratedNode):
             default=0.5,
             tooltip="Strength of the blend.",
         )
+        .req_field_blend_strategy(
+            ("difference", "result"),
+            default="difference",
+            tooltip="Controls whether blending occurs with the difference or changed result after the latent operation.",
+        )
+        .opt_field_operation(
+            "LATENT_OPERATION",
+            tooltip="Latent operation to apply.",
+        )
         .opt_field_operation_alt(
             "LATENT_OPERATION",
             tooltip="Optional alternative operation that will be used when the primary one isn't enabled. May be useful in a case when you want one operation between sigma 1.0 and 0.5 and then a difference operation for lower sigmas which is kind of annoying to specify manually (you'd need to do something like configure another operation to start at 0.499999 or something).",
@@ -421,7 +426,6 @@ class SonarLatentOperationAdvancedNode(metaclass=IntegratedNode):
     def go(
         cls,
         *,
-        operation,
         start_sigma: float,
         end_sigma: float,
         input_multiplier: float,
@@ -429,6 +433,8 @@ class SonarLatentOperationAdvancedNode(metaclass=IntegratedNode):
         difference_multiplier: float,
         blend_mode: str,
         blend_strength: float,
+        blend_strategy: str,
+        operation=None,
         operation_alt=None,
         operation_2=None,
         operation_3=None,
@@ -456,6 +462,7 @@ class SonarLatentOperationAdvancedNode(metaclass=IntegratedNode):
                 difference_multiplier=difference_multiplier,
                 blend_mode=blend_mode,
                 blend_strength=blend_strength,
+                blend_strategy=blend_strategy,
             ),
         )
 

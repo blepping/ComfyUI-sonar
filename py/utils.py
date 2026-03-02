@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import math
 import random
-from functools import partial
-from typing import TYPE_CHECKING, Callable
+from enum import Enum, auto
+from functools import lru_cache, partial
+from typing import TYPE_CHECKING, NamedTuple
 
 import torch
 from comfy.model_management import device_supports_non_blocking, get_torch_device
@@ -12,12 +13,15 @@ from comfy.utils import common_upscale
 from .external import MODULES as EXT
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
+
+F = torch.nn.functional
 
 BLENDING_MODES = {
     "lerp": torch.lerp,
     "inject": lambda a, b, t: (b * t).add_(a),
     "subtract_b": lambda a, b, t: a - b * t,
+    "weighted_average": lambda a, b, t: (b * t).add_(a) / (1.0 + abs(t)),
 }
 UPSCALE_METHODS = (
     "bilinear",
@@ -95,7 +99,7 @@ def scale_noise(
         return noise.mul_(factor) if factor != 1 else noise
     if normalize_dims is not None:
         std = noise.std(dim=normalize_dims, keepdim=True)
-        noise = noise / std  # noqa: PLR6104
+        noise = (noise / std).nan_to_num_()
         return noise.sub_(noise.mean(dim=normalize_dims, keepdim=True)).mul_(factor)
     mean, std = noise.mean().item(), noise.std().item()
     threshold = threshold_std_devs / math.sqrt(numel)
@@ -119,6 +123,47 @@ def tensor_to(
         non_blocking = device_supports_non_blocking(device)
         CAN_NONBLOCK[device] = non_blocking
     return tensor.to(dest, non_blocking=non_blocking)
+
+
+def range_wrap(
+    x: torch.Tensor,
+    min_val: float | torch.Tensor,
+    max_val: float | torch.Tensor,
+) -> torch.Tensor:
+    return min_val + (x - min_val).remainder_(max_val - min_val)
+
+
+def softplus_soft_clamp(
+    t: torch.Tensor,
+    min_val: torch.Tensor | float = 0.0,
+    max_val: torch.Tensor | float = 1.0,
+    *,
+    # We define stiffness as a multiplier (beta) for the softplus function.
+    # Higher stiffness = sharper transition.
+    stiffness: float = 1.0,
+    safe: bool = True,
+) -> torch.Tensor:
+    if isinstance(min_val, (float, int)):
+        min_val = t.new_tensor(min_val)
+    if isinstance(max_val, (float, int)):
+        max_val = t.new_tensor(max_val)
+
+    if stiffness < 1e-04:
+        return t.clamp(min_val, max_val)
+
+    # Calculate how much we are exceeding the Max
+    # softplus(beta * x) / beta
+    upper_overshoot = F.softplus((t - max_val).mul_(stiffness)).div_(-stiffness)
+
+    # Calculate how much we are falling short of the Min
+    lower_undershoot = F.softplus((min_val - t).mul_(stiffness)).div_(stiffness)
+
+    # Apply corrections:
+    # Original - (Amount over max) + (Amount under min)
+    t = upper_overshoot.add_(t).add_(lower_undershoot)
+    if safe:
+        t = t.clamp(min_val, max_val)
+    return t
 
 
 def _quantile_norm_scaledown(
@@ -360,11 +405,285 @@ quantile_handlers = {
         count_flipping=True,
         avoid_sign=True,
     ),
+    "wrap": lambda noise, nq, **_kwargs: range_wrap(noise, -nq, nq),
+    "wrap_keepsign": lambda noise, nq, **_kwargs: torch.where(
+        noise.abs() > nq,
+        range_wrap(noise, -nq, nq).copysign_(noise),
+        noise,
+    ),
+    "wrap_avoidsign": lambda noise, nq, **_kwargs: torch.where(
+        noise.abs() > nq,
+        range_wrap(noise, -nq, nq).copysign_(noise.neg()),
+        noise,
+    ),
+    "softplus_clamp_s01": lambda noise, nq, **_kwargs: softplus_soft_clamp(
+        noise,
+        -nq,
+        nq,
+        stiffness=0.1,
+    ),
+    "softplus_clamp_s05": lambda noise, nq, **_kwargs: softplus_soft_clamp(
+        noise,
+        -nq,
+        nq,
+        stiffness=0.5,
+    ),
+    "softplus_clamp_s1": lambda noise, nq, **_kwargs: softplus_soft_clamp(
+        noise,
+        -nq,
+        nq,
+        stiffness=1.0,
+    ),
+    "softplus_clamp_s2": lambda noise, nq, **_kwargs: softplus_soft_clamp(
+        noise,
+        -nq,
+        nq,
+        stiffness=1.0,
+    ),
+    "softplus_clamp_s5": lambda noise, nq, **_kwargs: softplus_soft_clamp(
+        noise,
+        -nq,
+        nq,
+        stiffness=5.0,
+    ),
 }
 
 
-# Initial version based on Studentt distribution normalizatino from https://github.com/Clybius/ComfyUI-Extra-Samplers/
+# Initial version based on StudentT distribution normalization from https://github.com/Clybius/ComfyUI-Extra-Samplers/
 def quantile_normalize(
+    noise: torch.Tensor,
+    *,
+    quantile: float | tuple | list = 0.75,
+    dim: int | None = 1,
+    flatten: bool = True,
+    nq_fac: float = 1.0,
+    pow_fac: float = 0.5,
+    strategy: str = "clamp",
+    strategy_handler=None,
+    eps=1e-08,
+) -> torch.Tensor:
+    if noise.numel() == 0:
+        return noise
+    if isinstance(quantile, (tuple, list)):
+        for q in quantile:
+            noise = quantile_normalize(
+                noise=noise,
+                quantile=q,
+                dim=dim,
+                flatten=flatten,
+                nq_fac=nq_fac,
+                pow_fac=pow_fac,
+                strategy=strategy,
+                strategy_handler=strategy_handler,
+            )
+        return noise
+    if quantile is None or quantile >= 1 or quantile <= -1:
+        return noise
+    centered = quantile < 0
+    absquantile = abs(quantile)
+    orig_shape = noise.shape
+    if noise.ndim > 1 and flatten:
+        flatnoise = noise.flatten(start_dim=dim)
+    else:
+        flatten = False
+        flatnoise = noise
+    handler = (
+        quantile_handlers.get(strategy)
+        if strategy_handler is None
+        else strategy_handler
+    )
+    if handler is None:
+        raise ValueError("Unknown strategy")
+    if not centered:
+        nq = torch.quantile(
+            flatnoise.abs(),
+            quantile,
+            dim=-1 if flatten else dim,
+            keepdim=True,
+        )
+        nq = nq.mul_(nq_fac).add_(eps)
+        # print(f"\nNQ: {nq}")
+        noise = handler(
+            flatnoise,
+            nq,
+            orig_noise=noise,
+            dim=dim,
+            flatten=flatten,
+        )
+    else:
+        absnoise = flatnoise.abs()
+        maxabs = absnoise.amax(dim=-1 if flatten else dim, keepdim=True)
+        proxy = flatnoise.sign().mul_(maxabs - absnoise)
+        nq_proxy = torch.quantile(
+            proxy.abs(),
+            absquantile,
+            dim=-1 if flatten else dim,
+            keepdim=True,
+        )
+        nq_proxy = nq_proxy.mul_(nq_fac).add_(eps)
+        # print(f"\nNQ proxy: {nq_proxy}")
+        out_proxy = handler(
+            proxy,
+            nq_proxy,
+            orig_noise=noise,
+            dim=dim,
+            flatten=flatten,
+        )
+        noise = out_proxy.sign().mul_(maxabs - out_proxy.abs())
+    if pow_fac not in {0.0, 1.0}:
+        noise = noise.abs().pow_(pow_fac).copysign(noise)
+    return noise if noise.shape == orig_shape else noise.reshape(orig_shape)
+
+
+# class QuantileNormMode(Enum):
+#     # Quantile is applied to absolute values.
+#     SYMMETRIC = auto()
+#     # Quantile is applied to signed values.
+#     SEPERATE = auto()
+
+
+class QuantileNormQuantileMode(Enum):
+    QUANTILE = auto()
+    # User supplied value to use as the quantile value.
+    USER_HIGH = auto()
+    # Like setting a negative quantile.
+    USER_LOW = auto()
+
+
+class QuantileNormSignMode(Enum):
+    DEFAULT = auto()
+    KEEP = auto()
+    AVOID = auto()
+
+
+class QuantileNormTargetMode(Enum):
+    BOTH = auto()
+    POSITIVE = auto()
+    NEGATIVE = auto()
+
+
+class QuantileNorm(NamedTuple):
+    # mode: QuantileNormMode = QuantileNormMode.SYMMETRIC
+    quantile_mode: QuantileNormQuantileMode = QuantileNormQuantileMode.QUANTILE
+    sign_mode: QuantileNormSignMode = QuantileNormSignMode.DEFAULT
+    target_mode: QuantileNormTargetMode = QuantileNormTargetMode.BOTH
+    strategy: str = "clamp"
+    # Overrides strategy.
+    strategy_handler: Callable | None = None
+    start_end_dim: tuple[int, int] | None = (1, -1)
+    dims: tuple[int, ...] = ()
+    quantile: float | torch.Tensor = 0.75
+    # If none, we use absmax when quantile is negative, otherwise
+    # abs value at this quantile.
+    low_extreme_quantile: float | None = 0.99
+    nq_scale: float = 1.0
+    power: float = 0.0
+    use_abs_quantile: bool = True
+    # When setting a target other than BOTH, apply the mask to the quantile calculation as well.
+    use_quantile_mask: bool = True
+    use_float64: bool = True
+    fix_invalid: bool = True
+
+    @staticmethod
+    def fix_dim(dim: int, ndim: int) -> int | None:
+        if dim < 0:
+            dim = ndim + dim
+        return dim if 0 <= dim < ndim else None
+
+    @classmethod
+    def fix_dims(cls, dims: tuple[int, ...], ndim: int) -> tuple[int, ...]:
+        dims = tuple(d for d in (cls.fix_dim(d_, ndim) for d_ in dims) if d is not None)
+        return tuple({dims})
+
+    def get_dims(self, ndim: int) -> tuple[int, ...]:
+        dims = self.fix_dims(self.dims)
+        if self.start_end_dim is None:
+            return dims
+        start_end_dim = self.fix_dims(*self.start_end_dim, ndim)
+        if len(start_end_dim) != 2:
+            return dims
+        sd, ed = start_end_dim
+        if sd > ed:
+            sd, ed = ed, sd
+        return tuple({range(sd, ed + 1), *dims})
+
+    @classmethod
+    @lru_cache(maxsize=128)
+    def get_perms(
+        cls,
+        # Must be deduped and sanitized.
+        dims: tuple[int, ...],
+        ndim: int,
+    ) -> tuple[tuple[int, ...], tuple[int, ...]]:
+        other_dims = tuple(d for d in range(ndim) if d not in dims)
+        perms = (*other_dims, *dims)
+        inv_perms_t = torch.nn.utils.rnn.invert_permutation(
+            torch.tensor(perms, device="cpu"),
+        )
+        if inv_perms_t is None:
+            errstr = f"torch.nn.utils.rnn.invert_permutation returned None for input {perms}!"
+            raise RuntimeError(errstr)
+        inv_perms = tuple(inv_perms_t.tolist())
+        return (perms, inv_perms)
+
+    def __call__(self, t: torch.Tensor) -> torch.Tensor:
+        ndim = t.ndim
+        dims = self.get_dims(ndim)
+        handler = (
+            quantile_handlers.get(self.strategy)
+            if self.strategy_handler is None
+            else self.strategy_handler
+        )
+        if handler is None:
+            raise ValueError("No strategy handler")
+        if not dims or self.quantile == 0 or t.numel() < 2:
+            return t
+        orig_dtype = t.dtype
+        orig_t = t
+        eff_dtype = torch.float64 if self.use_float64 else torch.float32
+        dlen = len(dims)
+        olen = ndim - dlen
+        perms, inv_perms = self.get_perms(dims, ndim)
+        t = t.to(dtype=eff_dtype)
+        # Move the dims we're working with to the end.
+        t = t.permute(perms)
+        permuted_shape = t.shape
+        # And flatten them.
+        t = t.flatten(start_dim=olen)
+        use_low_extreme = (
+            isinstance(self.quantile, float) and self.quantile < 0
+        ) or self.quantile_mode == QuantileNormQuantileMode.USER_LOW
+        if use_low_extreme:
+            raise RuntimeError("NYI")
+        if self.target_mode == QuantileNormTargetMode.NEGATIVE:
+            mask = t.sign() < 0
+        elif self.target_mode == QuantileNormTargetMode.POSITIVE:
+            mask = t.sign() > 0
+        else:
+            mask = None
+        masked_quantile = self.use_quantile_mask and mask is not None
+        if self.quantile_mode == QuantileNormQuantileMode.QUANTILE:
+            nq_input = t.abs() if self.use_abs_quantile else t
+            if masked_quantile:
+                nq_input = nq_input[mask]
+            if not torch.any(nq_input):
+                return orig_t
+            nq = torch.quantile(nq_input, dim=-1, keepdim=True)
+        else:
+            raise RuntimeError("NYI")
+        if self.nq_scale != 1.0:
+            nq *= self.nq_scale
+        # ...
+        if self.power not in {0.0, 1.0}:
+            t = t.abs().pow_(self.power).copysign_(t)
+        if self.fix_invalid:
+            t = t.nan_to_num_()
+        t = t.to(dtype=orig_dtype)
+        # Back to the original shape.
+        return t.reshape(permuted_shape).permute(inv_perms).contiguous()
+
+
+def quantile_normalize_adv(
     noise: torch.Tensor,
     *,
     quantile: float | tuple | list = 0.75,

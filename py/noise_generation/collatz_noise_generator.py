@@ -20,8 +20,6 @@ F = torch.nn.functional
 class CollatzNoiseGenerator(NoiseGenerator):
     name = "collatz"
 
-    chain_cache: ClassVar[dict] = {}
-
     @classmethod
     def ng_params(cls):
         return super().ng_params() | {
@@ -54,10 +52,10 @@ class CollatzNoiseGenerator(NoiseGenerator):
         }
 
     @staticmethod
-    def _get_iter_slices(n_dims, dim, idx, stride) -> list:
+    def _get_iter_slices(n_dims, dim, idx, stride) -> tuple:
         result = [slice(None)] * n_dims
         result[dim] = slice(idx, None, stride)
-        return result
+        return tuple(result)
 
     def _generate_iteration(
         self,

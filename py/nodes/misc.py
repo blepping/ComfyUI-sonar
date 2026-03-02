@@ -4,12 +4,13 @@ import functools
 import inspect
 import math
 import random
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
 import yaml
 from comfy import model_management, samplers
+from comfy import utils as comfy_utils
 from tqdm import tqdm
 
 from .. import noise, utils
@@ -23,6 +24,14 @@ from .base import (
     SonarLazyInputTypes,
     SonarNormalizeNoiseNodeMixin,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+try:
+    from comfy import nested_tensor
+except (ModuleNotFoundError, ImportError):
+    nested_tensor = None
 
 
 class NoisyLatentLikeNode(metaclass=IntegratedNode):
@@ -390,10 +399,29 @@ class CustomNOISE:
                 return result.to_sparse()
             errstr = f"Cannot handle latent layout {type(latent_image.layout).__name__}"
             raise NotImplementedError(errstr)
-        return result if self.multiplier == 1.0 else result.mul_(self.multiplier)
+        if self.multiplier != 1.0:
+            result *= self.multiplier
+        return result
 
     def generate_noise(self, input_latent):
-        latent_image = input_latent["samples"]
+        latent_image = orig_latent_image = input_latent["samples"]
+        orig_type = type(latent_image)
+        if nested_tensor is not None and latent_image.is_nested:
+            latent_image, latent_shapes = comfy_utils.pack_latents(
+                latent_image.unbind(),
+            )
+        else:
+            latent_shapes = None
+
+        def result_out(result, latent_shapes):
+            if latent_shapes is None:
+                return result
+            tensors = comfy_utils.unpack_latents(result, latent_shapes)
+            if isinstance(orig_type, torch.Tensor):
+                # Should be an actual PyTorch nested tensor, not ComfyUI's custom class
+                return orig_type(tensors, layout=orig_latent_image.layout)
+            return orig_type(tensors)
+        # TODO: Test this stuff.
         batch_inds = input_latent.get("batch_index")
         torch.manual_seed(self.seed)
         random.seed(self.seed)
@@ -405,18 +433,33 @@ class CustomNOISE:
                 device="cpu",
             )
         if batch_inds is None:
-            return self._sample_noise(latent_image, self.seed)
-        unique_inds, inverse_inds = np.unique(batch_inds, return_inverse=True)
-        result = []
-        batch_size = latent_image.shape[0]
-        for idx in range(unique_inds[-1] + 1):
-            noise = self._sample_noise(
-                latent_image[idx % batch_size].unsqueeze(0),
-                self.seed + idx,
+            return result_out(
+                self._sample_noise(latent_image, self.seed),
+                latent_shapes,
             )
-            if idx in unique_inds:
-                result.append(noise)
-        return torch.cat(tuple(result[i] for i in inverse_inds), axis=0)
+        batch_size = latent_image.shape[0]
+        unique_inds, inverse_inds = np.unique(batch_inds, return_inverse=True)
+        use_idxs = {
+            out_idx: idx % batch_size for out_idx, idx in enumerate(unique_inds)
+        }
+        use_idxs = (idx for idx in range(unique_inds[-1] + 1) if idx in unique_inds)
+        use_idxs = {idx: inverse_inds[uidx] for uidx, idx in enumerate(use_idxs)}
+        result = torch.empty(
+            (len(use_idxs), *latent_image.shape[1:]),
+            dtype=latent_image.dtype,
+            device=latent_image.device,
+        )
+        for idx in range(unique_inds[-1] + 1):
+            sample_idx = idx % batch_size
+            sample = latent_image[sample_idx].unsqueeze(0)
+            print(
+                f"\nNOISE: idx {idx}, sample_idx {sample_idx}, shape {latent_image[sample_idx].shape}, nested={sample.is_nested}",
+            )
+            noise = self._sample_noise(sample, self.seed + idx)
+            batch_out_idx = use_idxs.get(idx)
+            if batch_out_idx is not None:
+                result[batch_out_idx : batch_out_idx + 1] = noise[:1]
+        return result_out(result, latent_shapes)
 
 
 class SonarToComfyNOISENode(metaclass=IntegratedNode):

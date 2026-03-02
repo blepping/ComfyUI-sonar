@@ -755,12 +755,13 @@ class SonarAdvancedSimulationNoiseNode(SonarCustomNoiseNodeBase):
         .req_field_band_shape(
             ("log_gaussian", "raised_cosine"),
             default="log_gaussian",
-            tooltip="TBD",
+            tooltip="No effect in power_law spectral mode or in multi_octave spectral mode when octaves is set to 0.",
         )
         .req_field_channel_mode(
             (
                 "stacked",
                 "over_depth",
+                "flat",
                 "over_depth_alt",
                 "over_depth_avg",
                 "over_depth_h",
@@ -811,8 +812,8 @@ class SonarAdvancedSimulationNoiseNode(SonarCustomNoiseNodeBase):
         )
         .req_int_octaves(
             default=3,
-            min=1,
-            tooltip="Number of octaves of noise to generate. Only has an effect in multi_octave spectral mode.",
+            min=0,
+            tooltip="Number of octaves of noise to generate. Only has an effect in multi_octave spectral mode. You can also set octaves to 0 to disable octaves.",
         )
         .req_float_lacunarity(default=2.0)
         .req_float_gain(default=0.75)
