@@ -18,30 +18,32 @@ class SonarAdvancedPyramidNoiseNode(SonarCustomNoiseNodeBase):
     )
 
     INPUT_TYPES = SonarLazyInputTypes(
-        lambda: NoiseChainInputTypes()
-        .req_field_variant(
-            (
-                "highres_pyramid",
-                "pyramid",
-                "pyramid_old",
-            ),
-            default="highres_pyramid",
-            tooltip="Sets the Pyramid noise variant to generate.",
-        )
-        .req_int_iterations(
-            default=-1,
-            min=-1,
-            max=8,
-            tooltip="When set to -1 will use the variant default.",
-        )
-        .req_float_discount(
-            default=0.0,
-            tooltip="When set to 0 will use the variant default.",
-        )
-        .req_selectscalemode_upscale_mode(
-            insert_modes=("default",),
-            default="default",
-            tooltip="Allows setting the scaling mode for Pyramid noise. Leave on default to use the variant default.",
+        lambda: (
+            NoiseChainInputTypes()
+            .req_field_variant(
+                (
+                    "highres_pyramid",
+                    "pyramid",
+                    "pyramid_old",
+                ),
+                default="highres_pyramid",
+                tooltip="Sets the Pyramid noise variant to generate.",
+            )
+            .req_int_iterations(
+                default=-1,
+                min=-1,
+                max=8,
+                tooltip="When set to -1 will use the variant default.",
+            )
+            .req_float_discount(
+                default=0.0,
+                tooltip="When set to 0 will use the variant default.",
+            )
+            .req_selectscalemode_upscale_mode(
+                insert_modes=("default",),
+                default="default",
+                tooltip="Allows setting the scaling mode for Pyramid noise. Leave on default to use the variant default.",
+            )
         ),
     )
 
@@ -75,26 +77,28 @@ class SonarAdvanced1fNoiseNode(SonarCustomNoiseNodeBase):
     DESCRIPTION = "Custom noise type that allows specifying parameters for 1f (pink, green, etc) variants."
 
     INPUT_TYPES = SonarLazyInputTypes(
-        lambda: NoiseChainInputTypes()
-        .req_float_alpha(
-            default=0.25,
-            tooltip="Similar to the advanced power noise node, positive values increase low frequencies (with colorful effects), negative values increase high frequencies.",
-        )
-        .req_float_k(
-            default=1.0,
-            tooltip="Currently no description of exactly what it does, it's just another knob you can try turning for a different effect.",
-        )
-        .req_float_vertical_factor(
-            default=1.0,
-            tooltip="Vertical frequency scaling factor.",
-        )
-        .req_float_horizontal_factor(
-            default=1.0,
-            tooltip="Horizontal frequency scaling factor.",
-        )
-        .req_bool_use_sqrt(
-            default=True,
-            tooltip="Controls whether to sqrt when dividing the FFT. Negative hfac/wfac won't work when enabled. Turning it off seems to make the parameters have a much stronger effect.",
+        lambda: (
+            NoiseChainInputTypes()
+            .req_float_alpha(
+                default=0.25,
+                tooltip="Similar to the advanced power noise node, positive values increase low frequencies (with colorful effects), negative values increase high frequencies.",
+            )
+            .req_float_k(
+                default=1.0,
+                tooltip="Currently no description of exactly what it does, it's just another knob you can try turning for a different effect.",
+            )
+            .req_float_vertical_factor(
+                default=1.0,
+                tooltip="Vertical frequency scaling factor.",
+            )
+            .req_float_horizontal_factor(
+                default=1.0,
+                tooltip="Horizontal frequency scaling factor.",
+            )
+            .req_bool_use_sqrt(
+                default=True,
+                tooltip="Controls whether to sqrt when dividing the FFT. Negative hfac/wfac won't work when enabled. Turning it off seems to make the parameters have a much stronger effect.",
+            )
         ),
     )
 
@@ -130,31 +134,33 @@ class SonarAdvancedPowerLawNoiseNode(SonarCustomNoiseNodeBase):
     DESCRIPTION = "Custom noise type that allows specifying parameters for power law (grey, violet, etc) variants."
 
     INPUT_TYPES = SonarLazyInputTypes(
-        lambda: NoiseChainInputTypes()
-        .req_float_alpha(
-            default=0.5,
-            tooltip="Similar to the advanced power noise node, positive values increase low frequencies (with colorful effects), negative values increase high frequencies.",
-        )
-        .req_field_div_max_dims(
-            (
-                "none",
-                "non-batch",
-                "spatial",
-                "all",
-                "batch",
-                "channel",
-                "height",
-                "width",
-            ),
-            default="non-batch",
-            tooltip="If non-none, the noise gets divide by the maximum over this dimension.",
-        )
-        .req_bool_use_div_max_abs(
-            default=True,
-            tooltip="Only has an effect when div_max_dims is not none. Controls whether maximization is done with the absolute values or raw values.",
-        )
-        .req_bool_use_sign(
-            tooltip="When set, only the sign of the initial noise is used, so -0.5, -0.2 all turn into -1, 0.5, 2, etc all turn into 1.",
+        lambda: (
+            NoiseChainInputTypes()
+            .req_float_alpha(
+                default=0.5,
+                tooltip="Similar to the advanced power noise node, positive values increase low frequencies (with colorful effects), negative values increase high frequencies.",
+            )
+            .req_field_div_max_dims(
+                (
+                    "none",
+                    "non-batch",
+                    "spatial",
+                    "all",
+                    "batch",
+                    "channel",
+                    "height",
+                    "width",
+                ),
+                default="non-batch",
+                tooltip="If non-none, the noise gets divide by the maximum over this dimension.",
+            )
+            .req_bool_use_div_max_abs(
+                default=True,
+                tooltip="Only has an effect when div_max_dims is not none. Controls whether maximization is done with the absolute values or raw values.",
+            )
+            .req_bool_use_sign(
+                tooltip="When set, only the sign of the initial noise is used, so -0.5, -0.2 all turn into -1, 0.5, 2, etc all turn into 1.",
+            )
         ),
     )
 
@@ -199,114 +205,116 @@ class SonarAdvancedCollatzNoiseNode(SonarCustomNoiseNodeBase):
     DESCRIPTION = "Custom noise type that allows specifying parameters for Collatz noise. Very experimental, also very slow. It might just about work as initial noise with non-ancestral sampling but if you get weird results I recommend mixing it with other noise types or possibly using ancestral/SDE sampling."
 
     INPUT_TYPES = SonarLazyInputTypes(
-        lambda: NoiseChainInputTypes()
-        .req_bool_adjust_scale(
-            default=False,
-            tooltip="When enabled, the output will be normalized to values between -1 and 1 using the last two dimensions (if there are four or more), otherwise dimensions after the first.",
-        )
-        .req_string_chain_length(
-            default="1, 1, 2, 2, 3, 3",
-            tooltip="Comma-separated list of chain lengths. Cannot be empty. Iterations will cycle through the list and wrap. Controls the length of Collatz chains. Note: Using a high chain length may be very slow, especially if combined with many iterations.",
-        )
-        .req_int_chain_offset(
-            default=5,
-            min=0,
-            max=10000,
-            tooltip="Uses values starting at the specified offset. Note: This entails generating chains of length chain_length + chain_offset, which may be quite slow if you use high values.",
-        )
-        .req_int_iterations(
-            default=10,
-            min=1,
-            max=10000,
-            tooltip="Number of iterations to run. Warning: Collatz noise (my implementation, anyway) is EXTREMELY slow.",
-        )
-        .req_bool_iteration_sign_flipping(
-            default=True,
-            tooltip="Controls whether we cycle between flipping the sign on the output from each iteration. May average out weirdness... Or make stuff weirder.",
-        )
-        .req_float_rmin(
-            default=-8000.0,
-            tooltip="Minimum value a chain can start with. Going as low as -9500 should be safe with float32.",
-        )
-        .req_float_rmax(
-            default=8000.0,
-            tooltip="Maximum value a chain can start with. I don't recommend going over 9500 if you are using the float32 dtype here as that is where the Collatz chain starts to reach values that can't be accurately represented.",
-        )
-        .req_string_dims(
-            default="-1, -1, -2, -2",
-            tooltip="Comma-separated list of dimensions. Cannot be empty. May be negative to count from the end of the list. Iterations will cycle through the list and wrap.",
-        )
-        .req_bool_flatten(
-            tooltip="Controls whether dimensions past the current one selected from the dims parameter will get flattened.",
-        )
-        .req_field_output_mode(
-            (
-                "values",
-                "ratios",
-                "mults",
-                "adds",
-                "seed_x_mults",
-                "seed_x_adds",
-                "noise_x_ratios",
-                "noise_x_mults",
-                "noise_x_adds",
-            ),
-            default="values",
-        )
-        .req_float_quantile(
-            default=0.5,
-            min=0.0,
-            max=1.0,
-            tooltip="The initial output of each iteration will be run through quantile normalization. Setting the parameter to 0 or 1 will disable quantile normalization.",
-        )
-        .req_field_quantile_strategy(
-            tuple(utils.quantile_handlers.keys()),
-            default="clamp",
-            tooltip="Determines how to treat outliers. zero and reverse_zero modes are only useful if you're going to do something like add the result to some other noise. zero will return zero for anything outside the quantile range, reverse_zero only _keeps_ the outliers and zeros everything else.",
-        )
-        .req_field_noise_dtype(
-            ("float32", "float64", "float16", "bfloat16"),
-            default="float32",
-            tooltip="Generally should be left at the default. Only float32 and float64 will work if you have quantile normalization enabled.",
-        )
-        .req_float_even_multiplier(
-            default=0.5,
-            tooltip="Multiplier to use when the previous link in the chain is even. Collatz uses 0.5 (divides by two) here.",
-        )
-        .req_float_even_addition(
-            default=0.0,
-            tooltip="Value to add when the previous link in the chain is even. Collatz uses 0 here.",
-        )
-        .req_float_odd_multiplier(
-            default=3.0,
-            tooltip="Multiplier to use when the previous link in the chain is odd. Collatz uses 3 here.",
-        )
-        .req_float_odd_addition(
-            default=1.0,
-            tooltip="Value to add when the previous link in the chain is odd. Collatz uses 1 here.",
-        )
-        .req_bool_integer_math(
-            default=True,
-            tooltip="Controls whether the results during chain generation get truncated to an integer value or not. Should be enabled if you actually want to generate accurate Collatz chains.",
-        )
-        .req_bool_add_preserves_sign(
-            default=True,
-            tooltip="Controls whether additions use the same sign as the item they're being added to.",
-        )
-        .req_bool_break_loops(
-            default=True,
-            tooltip="Controls whether the chain resets back to the seed value once it reaches 1 or 0. Generally should be left enabled, otherwise the chain will oscillate between only a few values for the rest of the length (at least with the Collatz rules).",
-        )
-        .req_field_seed_mode(
-            ("default", "force_odd", "force_even"),
-            default="default",
-            tooltip="Default mode just uses whatever the original seed value was. force_odd/force_even will force it to the specified parity by adding one if it doesn't match. Starting from odd seeds might result in longer chains. Enabling the force modes may cause the initial seeds to exceed rmax by one.",
-        )
-        .opt_customnoise_seed_custom_noise(
-            tooltip="Optional custom noise to use for initial values for Collatz chains. May be slow as it will generate noise according to the original input size and then crop it. Does this noise type have enough warnings about it being slow? Yeah. Connecting something here will probably make it even slower!",
-        )
-        .opt_customnoise_mix_custom_noise(
-            tooltip="Optional custom noise to use with the output modes starting with 'noise'.",
+        lambda: (
+            NoiseChainInputTypes()
+            .req_bool_adjust_scale(
+                default=False,
+                tooltip="When enabled, the output will be normalized to values between -1 and 1 using the last two dimensions (if there are four or more), otherwise dimensions after the first.",
+            )
+            .req_string_chain_length(
+                default="1, 1, 2, 2, 3, 3",
+                tooltip="Comma-separated list of chain lengths. Cannot be empty. Iterations will cycle through the list and wrap. Controls the length of Collatz chains. Note: Using a high chain length may be very slow, especially if combined with many iterations.",
+            )
+            .req_int_chain_offset(
+                default=5,
+                min=0,
+                max=10000,
+                tooltip="Uses values starting at the specified offset. Note: This entails generating chains of length chain_length + chain_offset, which may be quite slow if you use high values.",
+            )
+            .req_int_iterations(
+                default=10,
+                min=1,
+                max=10000,
+                tooltip="Number of iterations to run. Warning: Collatz noise (my implementation, anyway) is EXTREMELY slow.",
+            )
+            .req_bool_iteration_sign_flipping(
+                default=True,
+                tooltip="Controls whether we cycle between flipping the sign on the output from each iteration. May average out weirdness... Or make stuff weirder.",
+            )
+            .req_float_rmin(
+                default=-8000.0,
+                tooltip="Minimum value a chain can start with. Going as low as -9500 should be safe with float32.",
+            )
+            .req_float_rmax(
+                default=8000.0,
+                tooltip="Maximum value a chain can start with. I don't recommend going over 9500 if you are using the float32 dtype here as that is where the Collatz chain starts to reach values that can't be accurately represented.",
+            )
+            .req_string_dims(
+                default="-1, -1, -2, -2",
+                tooltip="Comma-separated list of dimensions. Cannot be empty. May be negative to count from the end of the list. Iterations will cycle through the list and wrap.",
+            )
+            .req_bool_flatten(
+                tooltip="Controls whether dimensions past the current one selected from the dims parameter will get flattened.",
+            )
+            .req_field_output_mode(
+                (
+                    "values",
+                    "ratios",
+                    "mults",
+                    "adds",
+                    "seed_x_mults",
+                    "seed_x_adds",
+                    "noise_x_ratios",
+                    "noise_x_mults",
+                    "noise_x_adds",
+                ),
+                default="values",
+            )
+            .req_float_quantile(
+                default=0.5,
+                min=0.0,
+                max=1.0,
+                tooltip="The initial output of each iteration will be run through quantile normalization. Setting the parameter to 0 or 1 will disable quantile normalization.",
+            )
+            .req_field_quantile_strategy(
+                tuple(utils.quantile_handlers.keys()),
+                default="clamp",
+                tooltip="Determines how to treat outliers. zero and reverse_zero modes are only useful if you're going to do something like add the result to some other noise. zero will return zero for anything outside the quantile range, reverse_zero only _keeps_ the outliers and zeros everything else.",
+            )
+            .req_field_noise_dtype(
+                ("float32", "float64", "float16", "bfloat16"),
+                default="float32",
+                tooltip="Generally should be left at the default. Only float32 and float64 will work if you have quantile normalization enabled.",
+            )
+            .req_float_even_multiplier(
+                default=0.5,
+                tooltip="Multiplier to use when the previous link in the chain is even. Collatz uses 0.5 (divides by two) here.",
+            )
+            .req_float_even_addition(
+                default=0.0,
+                tooltip="Value to add when the previous link in the chain is even. Collatz uses 0 here.",
+            )
+            .req_float_odd_multiplier(
+                default=3.0,
+                tooltip="Multiplier to use when the previous link in the chain is odd. Collatz uses 3 here.",
+            )
+            .req_float_odd_addition(
+                default=1.0,
+                tooltip="Value to add when the previous link in the chain is odd. Collatz uses 1 here.",
+            )
+            .req_bool_integer_math(
+                default=True,
+                tooltip="Controls whether the results during chain generation get truncated to an integer value or not. Should be enabled if you actually want to generate accurate Collatz chains.",
+            )
+            .req_bool_add_preserves_sign(
+                default=True,
+                tooltip="Controls whether additions use the same sign as the item they're being added to.",
+            )
+            .req_bool_break_loops(
+                default=True,
+                tooltip="Controls whether the chain resets back to the seed value once it reaches 1 or 0. Generally should be left enabled, otherwise the chain will oscillate between only a few values for the rest of the length (at least with the Collatz rules).",
+            )
+            .req_field_seed_mode(
+                ("default", "force_odd", "force_even"),
+                default="default",
+                tooltip="Default mode just uses whatever the original seed value was. force_odd/force_even will force it to the specified parity by adding one if it doesn't match. Starting from odd seeds might result in longer chains. Enabling the force modes may cause the initial seeds to exceed rmax by one.",
+            )
+            .opt_customnoise_seed_custom_noise(
+                tooltip="Optional custom noise to use for initial values for Collatz chains. May be slow as it will generate noise according to the original input size and then crop it. Does this noise type have enough warnings about it being slow? Yeah. Connecting something here will probably make it even slower!",
+            )
+            .opt_customnoise_mix_custom_noise(
+                tooltip="Optional custom noise to use with the output modes starting with 'noise'.",
+            )
         ),
     )
 
@@ -486,68 +494,70 @@ class SonarWaveletNoiseNode(
     DESCRIPTION = "Custom noise type that allows generating wavelet noise. Very simple explanation of how a single octave works:\n1) Generate some noise.\n2) Scale it down 50%.\n3) Scale it back up to the original size.\n4) Subtract the scaled noise from the original noise.\nScaling the noise down and then back up blurs it, so this is essentially sharpening the noise."
 
     INPUT_TYPES = SonarLazyInputTypes(
-        lambda: NoiseChainInputTypes()
-        .req_int_octaves(
-            default=4,
-            min=-100,
-            max=100,
-            tooltip="Number of octaves to generate. You can use a negative number here to run the octaves in reverse order though it may produce weird results/not work very well.",
-        )
-        .req_float_octave_height_factor(
-            default=0.5,
-            min=0.001,
-            tooltip="Wavelet noise works by scaling noise by this factor in each octave, then scaling it back up to the original size. After that, the scaled noise is subtracted from the original noise.",
-        )
-        .req_float_octave_width_factor(
-            default=0.5,
-            min=0.001,
-            tooltip="Wavelet noise works by scaling noise by this factor in each octave, then scaling it back up to the original size. After that, the scaled noise is subtracted from the original noise.",
-        )
-        .req_selectscalemode_octave_scale_mode(
-            default="adaptive_avg_pool2d",
-            tooltip="Scaling mode used within each octave to produce the scaled noise. By default this will be scaling down that octave's noise.",
-        )
-        .req_selectscalemode_octave_rescale_mode(
-            default="bilinear",
-            tooltip="Scaling mode used within each octave to scale the noise back up to that octave's original size.",
-        )
-        .req_selectscalemode_post_octave_rescale_mode(
-            default="bilinear",
-            tooltip="Scaling mode used to scale the output of an octave back up to the actual latent size.",
-        )
-        .req_float_initial_amplitude(
-            default=1.0,
-            tooltip="Basically the strength an octave gets added to the total. This will be scaled by persistance after each octave.",
-        )
-        .req_float_persistence(
-            default=0.5,
-            tooltip="Multiplier applied to amplitude after each octave. 0.5 means the first octave uses initial_amplitude, the second uses half of that and so on.",
-        )
-        .req_float_height_factor(
-            default=2.0,
-            min=0.001,
-            tooltip="Scaling factor for height, calculated after each octave. 2.0 means divide by two. Note: It's possible to use values below 1 here but be careful as it's very easy to reach absurd latent sizes with only a few octaves.",
-        )
-        .req_float_width_factor(
-            tooltip="Scaling factor for width, calculated after each octave. 2.0 means divide by two. Note: It's possible to use values below 1 here but be careful as it's very easy to reach absurd latent sizes with only a few octaves.",
-            default=2.0,
-            min=0.001,
-        )
-        .req_float_update_blend(
-            tooltip="Controls how original_noise - scaled_noise is blended with original_noise. The default is to use 100% original_noise - scaled_noise.",
-            default=1.0,
-        )
-        .req_selectblend_update_blend_mode(
-            insert_modes=("simple_add",),
-            default="lerp",
-            tooltip="Controls how the enhanced noise from each octave is blended with that octave's raw noise. With normal wavelet noise there's no blending and you use 100% enhanced noise.",
-        )
-        .req_bool_normalize_noise(
-            tooltip="Controls whether the noise source is normalized before wavelet filtering occurs.",
-        )
-        .req_normalizetristate_normalize()
-        .opt_customnoise_custom_noise(
-            tooltip="Optional: Custom noise input. If unconnected will default to Gaussian noise. Note: When connected, the noise for all octaves will be generated at the maximum scale and then cropped which may be slow.",
+        lambda: (
+            NoiseChainInputTypes()
+            .req_int_octaves(
+                default=4,
+                min=-100,
+                max=100,
+                tooltip="Number of octaves to generate. You can use a negative number here to run the octaves in reverse order though it may produce weird results/not work very well.",
+            )
+            .req_float_octave_height_factor(
+                default=0.5,
+                min=0.001,
+                tooltip="Wavelet noise works by scaling noise by this factor in each octave, then scaling it back up to the original size. After that, the scaled noise is subtracted from the original noise.",
+            )
+            .req_float_octave_width_factor(
+                default=0.5,
+                min=0.001,
+                tooltip="Wavelet noise works by scaling noise by this factor in each octave, then scaling it back up to the original size. After that, the scaled noise is subtracted from the original noise.",
+            )
+            .req_selectscalemode_octave_scale_mode(
+                default="adaptive_avg_pool2d",
+                tooltip="Scaling mode used within each octave to produce the scaled noise. By default this will be scaling down that octave's noise.",
+            )
+            .req_selectscalemode_octave_rescale_mode(
+                default="bilinear",
+                tooltip="Scaling mode used within each octave to scale the noise back up to that octave's original size.",
+            )
+            .req_selectscalemode_post_octave_rescale_mode(
+                default="bilinear",
+                tooltip="Scaling mode used to scale the output of an octave back up to the actual latent size.",
+            )
+            .req_float_initial_amplitude(
+                default=1.0,
+                tooltip="Basically the strength an octave gets added to the total. This will be scaled by persistance after each octave.",
+            )
+            .req_float_persistence(
+                default=0.5,
+                tooltip="Multiplier applied to amplitude after each octave. 0.5 means the first octave uses initial_amplitude, the second uses half of that and so on.",
+            )
+            .req_float_height_factor(
+                default=2.0,
+                min=0.001,
+                tooltip="Scaling factor for height, calculated after each octave. 2.0 means divide by two. Note: It's possible to use values below 1 here but be careful as it's very easy to reach absurd latent sizes with only a few octaves.",
+            )
+            .req_float_width_factor(
+                tooltip="Scaling factor for width, calculated after each octave. 2.0 means divide by two. Note: It's possible to use values below 1 here but be careful as it's very easy to reach absurd latent sizes with only a few octaves.",
+                default=2.0,
+                min=0.001,
+            )
+            .req_float_update_blend(
+                tooltip="Controls how original_noise - scaled_noise is blended with original_noise. The default is to use 100% original_noise - scaled_noise.",
+                default=1.0,
+            )
+            .req_selectblend_update_blend_mode(
+                insert_modes=("simple_add",),
+                default="lerp",
+                tooltip="Controls how the enhanced noise from each octave is blended with that octave's raw noise. With normal wavelet noise there's no blending and you use 100% enhanced noise.",
+            )
+            .req_bool_normalize_noise(
+                tooltip="Controls whether the noise source is normalized before wavelet filtering occurs.",
+            )
+            .req_normalizetristate_normalize()
+            .opt_customnoise_custom_noise(
+                tooltip="Optional: Custom noise input. If unconnected will default to Gaussian noise. Note: When connected, the noise for all octaves will be generated at the maximum scale and then cropped which may be slow.",
+            )
         ),
     )
 
@@ -612,77 +622,79 @@ class SonarAdvancedVoronoiNoiseNode(SonarCustomNoiseNodeBase):
         ),
         _pretty_result_modes=", ".join(  # noqa: B008
             sorted(VoronoiNoiseGenerator.voronoi_result_modes),  # noqa: B008
-        ): NoiseChainInputTypes()
-        .req_string_n_points(
-            default="256",
-            tooltip="Controls the number of features points in the generated noise. Higher generally results in more detail/better results but is slower. May be a comma separated list for each octave (only applicable when octave mode is set to new_features). 2 is the minimum value.",
-        )
-        .req_string_distance_mode(
-            default="euclidean",
-            placeholder=f"One of: {_pretty_distance_modes}",
-            tooltip="Distance modes. You can specify a comma-separated list of items which will be used for each octave.\n"
-            "You can specify an average of multiple distance modes by separating the names with +.\n"
-            "Some modes can take arguments. Example syntax: modename:argname=value:argname=value\n"
-            "All modes support scaling their output with dscale (which defaults to 1).\n"
-            f"Possible distance modes: {_pretty_distance_modes}",
-        )
-        .req_float_z_initial(
-            default=0.0,
-            tooltip="Initial value for z (depth).",
-        )
-        .req_float_z_increment(
-            default=1.0,
-            tooltip="Amount z (depth) is incremented when applicable.",
-        )
-        .req_float_z_max(
-            default=9999.0,
-            tooltip="Maximum difference from the intial value. At that point, z_max_mode will apply. When set to 0, z_increment has no effect and you will get different noise each time you call the noise sampler.",
-        )
-        .req_field_z_max_mode(
-            (
-                "reset",
-                "wrap",
-                "bounce",
-            ),
-            default="reset",
-            tooltip="Controls what happens when the z_max limit is hit (see tooltip for z_max). Reset will reset the feature points and z to the initial values. Wrap will reset z to the initial value. Bounce will flip the sign on the increment and do an increment.",
-        )
-        .req_string_result_mode(
-            default="diff2",
-            placeholder=f"One of: {_pretty_result_modes}",
-            tooltip="Result modes. You can specify a comma-separated list of items which will be used for each octave.\n"
-            "You can specify an average of multiple result modes by separating the names with +.\n"
-            "Some modes can take arguments. Example syntax: modename:argname=value:argname=value\n"
-            "All modes support scaling their output with rscale (which defaults to 1).\n"
-            f"Possible result modes: {_pretty_result_modes}",
-        )
-        .req_field_octave_mode(
-            (
-                "same_features",
-                "new_features",
-                "same_invert_odd",
-                "same_invert_even",
-                "same_roll_chan_up",
-                "same_roll_chan_down",
-                "same_roll_dir_up",
-                "same_roll_dir_down",
-            ),
-            default="new_features",
-            tooltip="Only relevant when generating multiple octaves. Controls whether octaves share a set of feature points or if they are different for each octave (note that this is slower). Modes starting with 'same' will use the same feature points per octave but may transform them.",
-        )
-        .req_int_octaves(
-            default=3,
-            min=1,
-            tooltip="Number of octaves of noise to generate.",
-        )
-        .req_float_gain(default=0.75)
-        .req_float_lacunarity(default=2.0)
-        .req_float_initial_amplitude(default=1.0)
-        .req_float_initial_scale(default=1.0)
-        .req_normalizetristate_normalize()
-        .opt_customnoise(
-            "custom_noise",
-            tooltip="Optional input if you want to use some other noise type for the initial feature points. Won't work well with noise types that care about the content of the latent (I think only spectral modulation) or manage their own seed (I believe this only applies to Brownian or if you're using the custom noise parameters node to override seeds/fork the RNG).",
+        ): (
+            NoiseChainInputTypes()
+            .req_string_n_points(
+                default="256",
+                tooltip="Controls the number of features points in the generated noise. Higher generally results in more detail/better results but is slower. May be a comma separated list for each octave (only applicable when octave mode is set to new_features). 2 is the minimum value.",
+            )
+            .req_string_distance_mode(
+                default="euclidean",
+                placeholder=f"One of: {_pretty_distance_modes}",
+                tooltip="Distance modes. You can specify a comma-separated list of items which will be used for each octave.\n"
+                "You can specify an average of multiple distance modes by separating the names with +.\n"
+                "Some modes can take arguments. Example syntax: modename:argname=value:argname=value\n"
+                "All modes support scaling their output with dscale (which defaults to 1).\n"
+                f"Possible distance modes: {_pretty_distance_modes}",
+            )
+            .req_float_z_initial(
+                default=0.0,
+                tooltip="Initial value for z (depth).",
+            )
+            .req_float_z_increment(
+                default=1.0,
+                tooltip="Amount z (depth) is incremented when applicable.",
+            )
+            .req_float_z_max(
+                default=9999.0,
+                tooltip="Maximum difference from the intial value. At that point, z_max_mode will apply. When set to 0, z_increment has no effect and you will get different noise each time you call the noise sampler.",
+            )
+            .req_field_z_max_mode(
+                (
+                    "reset",
+                    "wrap",
+                    "bounce",
+                ),
+                default="reset",
+                tooltip="Controls what happens when the z_max limit is hit (see tooltip for z_max). Reset will reset the feature points and z to the initial values. Wrap will reset z to the initial value. Bounce will flip the sign on the increment and do an increment.",
+            )
+            .req_string_result_mode(
+                default="diff2",
+                placeholder=f"One of: {_pretty_result_modes}",
+                tooltip="Result modes. You can specify a comma-separated list of items which will be used for each octave.\n"
+                "You can specify an average of multiple result modes by separating the names with +.\n"
+                "Some modes can take arguments. Example syntax: modename:argname=value:argname=value\n"
+                "All modes support scaling their output with rscale (which defaults to 1).\n"
+                f"Possible result modes: {_pretty_result_modes}",
+            )
+            .req_field_octave_mode(
+                (
+                    "same_features",
+                    "new_features",
+                    "same_invert_odd",
+                    "same_invert_even",
+                    "same_roll_chan_up",
+                    "same_roll_chan_down",
+                    "same_roll_dir_up",
+                    "same_roll_dir_down",
+                ),
+                default="new_features",
+                tooltip="Only relevant when generating multiple octaves. Controls whether octaves share a set of feature points or if they are different for each octave (note that this is slower). Modes starting with 'same' will use the same feature points per octave but may transform them.",
+            )
+            .req_int_octaves(
+                default=3,
+                min=1,
+                tooltip="Number of octaves of noise to generate.",
+            )
+            .req_float_gain(default=0.75)
+            .req_float_lacunarity(default=2.0)
+            .req_float_initial_amplitude(default=1.0)
+            .req_float_initial_scale(default=1.0)
+            .req_normalizetristate_normalize()
+            .opt_customnoise(
+                "custom_noise",
+                tooltip="Optional input if you want to use some other noise type for the initial feature points. Won't work well with noise types that care about the content of the latent (I think only spectral modulation) or manage their own seed (I believe this only applies to Brownian or if you're using the custom noise parameters node to override seeds/fork the RNG).",
+            )
         ),
     )
 
@@ -741,103 +753,105 @@ class SonarAdvancedSimulationNoiseNode(SonarCustomNoiseNodeBase):
     DESCRIPTION = "TBD"
 
     INPUT_TYPES = SonarLazyInputTypes(
-        lambda: NoiseChainInputTypes()
-        .req_field_spectral_mode(
-            ("multi_octave", "power_law", "band_pass"),
-            default="multi_octave",
-            tooltip="TBD",
-        )
-        .req_field_field_mode(
-            ("basis", "curl", "projection", "curl_ndim", "basis_ndim"),
-            default="basis",
-            tooltip="TBD",
-        )
-        .req_field_band_shape(
-            ("log_gaussian", "raised_cosine"),
-            default="log_gaussian",
-            tooltip="No effect in power_law spectral mode or in multi_octave spectral mode when octaves is set to 0.",
-        )
-        .req_field_channel_mode(
-            (
-                "stacked",
-                "over_depth",
-                "flat",
-                "over_depth_alt",
-                "over_depth_avg",
-                "over_depth_h",
-                "over_depth_w",
-                "over_depth_z",
-                "over_depth_h_sub_w",
-                "over_depth_h_sub_z",
-                "over_depth_w_sub_h",
-                "over_depth_w_sub_z",
-                "over_depth_z_sub_h",
-                "over_depth_z_sub_w",
-                "over_depth_h_add_w",
-                "over_depth_h_add_z",
-                "over_depth_w_add_h",
-                "over_depth_w_add_z",
-                "over_depth_z_add_h",
-                "over_depth_z_add_w",
-                "over_depth_h_mul_w",
-                "over_depth_h_mul_z",
-                "over_depth_w_mul_h",
-                "over_depth_w_mul_z",
-                "over_depth_z_mul_h",
-                "over_depth_z_mul_w",
-                "over_depth_h_div_w",
-                "over_depth_h_div_z",
-                "over_depth_w_div_h",
-                "over_depth_w_div_z",
-                "over_depth_z_div_h",
-                "over_depth_z_div_w",
-            ),
-            default="over_depth",
-            tooltip="TBD",
-        )
-        .req_int_depth(default=16)
-        .req_int_initial_depth(
-            default=0,
-            min=0,
-            tooltip="TBD",
-        )
-        .req_int_max_depth(
-            default=-1,
-            tooltip="TBD",
-        )
-        .req_field_depth_mode(
-            ("reset", "wrap", "bounce"),
-            default="reset",
-            tooltip="TBD",
-        )
-        .req_int_octaves(
-            default=3,
-            min=0,
-            tooltip="Number of octaves of noise to generate. Only has an effect in multi_octave spectral mode. You can also set octaves to 0 to disable octaves.",
-        )
-        .req_float_lacunarity(default=2.0)
-        .req_float_gain(default=0.75)
-        .req_float_log_gaussian_sigma(default=0.3)
-        .req_string_anisotropy(
-            default="",
-            tooltip="TBD",
-        )
-        .req_normalizetristate_normalize()
-        .req_float_base_k(default=0.0)
-        .req_float_power_law_beta(
-            default=0.25,
-            tooltip="Beta used for power_law spectral mode, no effect otherwise. Higher beta will result in colorful low frequency noise, low (or negative) will emphasize high frequencies.",
-        )
-        .req_float_band_pass_low(default=0.0001, min=1e-06)
-        .req_float_band_pass_high(default=1.0, min=1e-06)
-        .opt_customnoise_custom_noise_h(
-            tooltip="TBD",
-        )
-        .opt_customnoise_custom_noise_w(
-            tooltip="TBD",
-        )
-        .opt_customnoise_custom_noise_z(
-            tooltip="TBD",
+        lambda: (
+            NoiseChainInputTypes()
+            .req_field_spectral_mode(
+                ("multi_octave", "power_law", "band_pass"),
+                default="multi_octave",
+                tooltip="TBD",
+            )
+            .req_field_field_mode(
+                ("basis", "curl", "projection", "curl_ndim", "basis_ndim"),
+                default="basis",
+                tooltip="TBD",
+            )
+            .req_field_band_shape(
+                ("log_gaussian", "raised_cosine"),
+                default="log_gaussian",
+                tooltip="No effect in power_law spectral mode or in multi_octave spectral mode when octaves is set to 0.",
+            )
+            .req_field_channel_mode(
+                (
+                    "stacked",
+                    "over_depth",
+                    "flat",
+                    "over_depth_alt",
+                    "over_depth_avg",
+                    "over_depth_h",
+                    "over_depth_w",
+                    "over_depth_z",
+                    "over_depth_h_sub_w",
+                    "over_depth_h_sub_z",
+                    "over_depth_w_sub_h",
+                    "over_depth_w_sub_z",
+                    "over_depth_z_sub_h",
+                    "over_depth_z_sub_w",
+                    "over_depth_h_add_w",
+                    "over_depth_h_add_z",
+                    "over_depth_w_add_h",
+                    "over_depth_w_add_z",
+                    "over_depth_z_add_h",
+                    "over_depth_z_add_w",
+                    "over_depth_h_mul_w",
+                    "over_depth_h_mul_z",
+                    "over_depth_w_mul_h",
+                    "over_depth_w_mul_z",
+                    "over_depth_z_mul_h",
+                    "over_depth_z_mul_w",
+                    "over_depth_h_div_w",
+                    "over_depth_h_div_z",
+                    "over_depth_w_div_h",
+                    "over_depth_w_div_z",
+                    "over_depth_z_div_h",
+                    "over_depth_z_div_w",
+                ),
+                default="over_depth",
+                tooltip="TBD",
+            )
+            .req_int_depth(default=16)
+            .req_int_initial_depth(
+                default=0,
+                min=0,
+                tooltip="TBD",
+            )
+            .req_int_max_depth(
+                default=-1,
+                tooltip="TBD",
+            )
+            .req_field_depth_mode(
+                ("reset", "wrap", "bounce"),
+                default="reset",
+                tooltip="TBD",
+            )
+            .req_int_octaves(
+                default=3,
+                min=0,
+                tooltip="Number of octaves of noise to generate. Only has an effect in multi_octave spectral mode. You can also set octaves to 0 to disable octaves.",
+            )
+            .req_float_lacunarity(default=2.0)
+            .req_float_gain(default=0.75)
+            .req_float_log_gaussian_sigma(default=0.3)
+            .req_string_anisotropy(
+                default="",
+                tooltip="TBD",
+            )
+            .req_normalizetristate_normalize()
+            .req_float_base_k(default=0.0)
+            .req_float_power_law_beta(
+                default=0.25,
+                tooltip="Beta used for power_law spectral mode, no effect otherwise. Higher beta will result in colorful low frequency noise, low (or negative) will emphasize high frequencies.",
+            )
+            .req_float_band_pass_low(default=0.0001, min=1e-06)
+            .req_float_band_pass_high(default=1.0, min=1e-06)
+            .opt_customnoise_custom_noise_h(
+                tooltip="TBD",
+            )
+            .opt_customnoise_custom_noise_w(
+                tooltip="TBD",
+            )
+            .opt_customnoise_custom_noise_z(
+                tooltip="TBD",
+            )
         ),
     )
 
@@ -914,8 +928,87 @@ class SonarAdvancedSimulationNoiseNode(SonarCustomNoiseNodeBase):
         )
 
 
+class SonarAdvancedAutomataNoiseNode(SonarCustomNoiseNodeBase):
+    DESCRIPTION = "TBD"
+
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: (
+            NoiseChainInputTypes()
+            .req_int_num_seeds(
+                default=20,
+                min=1,
+                tooltip="Controls the initial number of seeds.",
+            )
+            .req_int_depth(
+                default=10,
+                min=0,
+                tooltip="Controls the depth. Set to 0 to disable 3D noise generation. Note: The whole 3D chunk has to be generated at once which may be memory intensive.",
+            )
+            .req_int_steps(
+                default=20,
+                min=0,
+                tooltip="Controls the initial number of seeds.",
+            )
+            .req_int_spread_substeps(
+                default=2,
+                min=0,
+                tooltip="TBD",
+            )
+            .req_field_evolution_mode(
+                ("collatz",),
+                default="collatz",
+                tooltip="Contols the main noise evolution function.",
+            )
+            .req_field_spread_mode(
+                ("blur",),
+                default="blur",
+                tooltip="Controls how the values spread each noise step. Blur uses convolution.",
+            )
+            .req_normalizetristate_normalize()
+            .opt_customnoise(
+                "custom_noise",
+                tooltip="Optional input if you want to use some other noise type for the initial feature points. Won't work well with noise types that care about the content of the latent (I think only spectral modulation) or manage their own seed (I believe this only applies to Brownian or if you're using the custom noise parameters node to override seeds/fork the RNG).",
+            )
+        ),
+    )
+
+    @classmethod
+    def get_item_class(cls):
+        return noise.AdvancedAutomataNoise
+
+    def go(
+        self,
+        *,
+        factor: float,
+        rescale: float,
+        num_seeds: int,
+        depth: int,
+        steps: int,
+        spread_substeps: int,
+        evolution_mode: str,
+        spread_mode: str,
+        normalize: str,
+        custom_noise=None,
+        sonar_custom_noise_opt=None,
+    ):  # ty:ignore[invalid-method-override]
+        return super().go(
+            factor,
+            rescale=rescale,
+            sonar_custom_noise_opt=sonar_custom_noise_opt,
+            num_seeds=num_seeds,
+            depth=depth,
+            steps=steps,
+            spread_substeps=spread_substeps,
+            evolution_mode=evolution_mode,
+            spread_mode=spread_mode,
+            custom_noise=custom_noise,
+            normalize=normalize,
+        )
+
+
 NODE_CLASS_MAPPINGS = {
     "SonarAdvanced1fNoise": SonarAdvanced1fNoiseNode,
+    "SonarAdvancedAutomataNoise": SonarAdvancedAutomataNoiseNode,
     "SonarAdvancedCollatzNoise": SonarAdvancedCollatzNoiseNode,
     "SonarAdvancedDistroNoise": SonarAdvancedDistroNoiseNode,
     "SonarAdvancedPowerLawNoise": SonarAdvancedPowerLawNoiseNode,

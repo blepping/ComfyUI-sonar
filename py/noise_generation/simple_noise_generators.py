@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import operator
 from typing import Callable
 
 import torch
@@ -9,7 +10,7 @@ from torch import FloatTensor, Generator, Tensor
 from torch.distributions import Laplace, StudentT
 
 from .. import utils
-from ..utils import tensor_to
+from ..utils import safe_pow, tensor_to
 
 # ruff: noqa: D413, D417, D212, ANN002, ANN003
 from .base import FramesToChannelsNoiseGenerator, NoiseError, NoiseGenerator
@@ -381,19 +382,62 @@ class PyramidNoiseGenerator(FramesToChannelsNoiseGenerator):
             "discount": 0.7,
             "upscale_mode": "bilinear",
             "iterations": 10,
+            "iteration_offset": 0,
+            "iteration_step": 1,
+            "reverse_scale": False,
+            "reverse_size_h": False,
+            "reverse_size_w": False,
+            "base_h": 2.0,
+            "multiplier_h": 2.0,
+            "base_w": 2.0,
+            "multiplier_w": 2.0,
+            "legacy_r": False,
+            "size_min": 1,
+            "size_max_pct": 2.0,
+            "include_size_limit": False,
+            "high_res_mode": False,
         }
 
-    # Modified from https://wandb.ai/johnowhitaker/multires_noise/reports/Multi-Resolution-Noise-for-Diffusion-Model-Training--VmlldzozNjYyOTU2
+    # Original implementatino modified from https://wandb.ai/johnowhitaker/multires_noise/reports/Multi-Resolution-Noise-for-Diffusion-Model-Training--VmlldzozNjYyOTU2
     def generate(self, *_args):
         noise = self.rand_like()
         b, c, h, w = noise.shape
         orig_w, orig_h = w, h
+        size_min = max(1, self.size_min)
+        max_h = max(1, int(orig_h * self.size_max_pct))
+        max_w = max(1, int(orig_w * self.size_max_pct))
+        eps = 1e-02
+        op = operator.mul if self.high_res_mode else operator.truediv
 
-        for i in range(self.iterations):
-            r = (
-                torch.rand(1, generator=self.generator).cpu().item() * 2 + 2
-            )  # Rather than always going 2x,
-            w, h = max(1, int(w / (r**i))), max(1, int(h / (r**i)))
+        if self.legacy_r:
+
+            def get_r(_i: int) -> float:
+                return torch.rand(1, generator=self.generator).cpu().item()
+        else:
+            rs = torch.rand(self.iterations, generator=self.generator).cpu().tolist()
+
+            def get_r(i: int) -> float:
+                return rs[i]
+
+        for i in range(
+            self.iteration_offset,
+            self.iterations + self.iteration_offset,
+            self.iteration_step,
+        ):
+            rev_i = self.iterations - i - 1
+            r = get_r(i)
+            rh = r * self.multiplier_h + self.base_h
+            rw = r * self.multiplier_w + self.base_w
+            ih = rev_i if self.reverse_size_h else i
+            iw = rev_i if self.reverse_size_w else i
+            h = max(1, min(max_h, int(op(h, max(eps, rh**ih)))))
+            w = max(1, min(max_w, int(op(w, max(eps, rw**iw)))))
+            size_limit = h <= size_min or w <= size_min or h >= max_h or w >= max_w
+            if not self.include_size_limit and size_limit:
+                break
+            scale = self.discount ** (rev_i if self.reverse_scale else i)
+            if scale == 0:
+                continue
             noise += utils.scale_samples(
                 torch.randn(
                     b,
@@ -407,11 +451,9 @@ class PyramidNoiseGenerator(FramesToChannelsNoiseGenerator):
                 orig_w,
                 orig_h,
                 mode=self.upscale_mode,
-            ).mul_(
-                self.discount**i,
-            )
-            if w == 1 or h == 1:
-                break  # Lowest resolution is 1x1
+            ).mul_(scale)
+            if size_limit:
+                break
         return self.fix_output_frames(noise)
 
 
@@ -432,15 +474,15 @@ class StudentTNoiseGenerator(NoiseGenerator):
 
     def generate(self, *_args):
         noise = StudentT(loc=self.loc, scale=self.scale, df=self.df).rsample(self.shape)
-        nq: FloatTensor = torch.quantile(
+        nq = torch.quantile(
             noise.flatten(start_dim=1).abs(),
             self.quantile_fac,
             dim=-1,
         )
         nq_shape = tuple(nq.shape) + (1,) * (noise.ndim - nq.ndim)
         nq = nq.mul_(self.nq_fac).reshape(*nq_shape)
-        noise = noise.clamp(-nq, nq)
-        return torch.copysign(torch.pow(torch.abs(noise), self.pow_fac), noise)
+        noise = noise.clamp_(-nq, nq)
+        return noise.abs().pow_(self.pow_fac).copysign_(noise)
 
 
 class GreenTestNoiseGenerator(FramesToChannelsNoiseGenerator):
@@ -452,22 +494,46 @@ class GreenTestNoiseGenerator(FramesToChannelsNoiseGenerator):
     def ng_params(cls):
         return super().ng_params() | {
             "scale_fac": 1.0,
-            "x_pow": 2,
-            "y_pow": 2,
-            "power_base": 1,
+            "x_pow": 2.0,
+            "y_pow": 2.0,
+            "x_multiplier": 1.0,
+            "y_multiplier": 1.0,
+            "power_base": 1.0,
+            "inv_power": 0.5,
+            "restore_sign_power": False,
+            "restore_sign_x": False,
+            "restore_sign_y": False,
         }
 
     def generate(self, *_args):
         noise = self.rand_like()
-        scale = self.scale_fac / (self.width * self.height)
-        fy = torch.fft.fftfreq(self.height, device=noise.device)[:, None] ** self.y_pow
-        fx = torch.fft.fftfreq(self.width, device=noise.device) ** self.x_pow
-        f = fy + fx
-        power = torch.sqrt(f)
-        power[0, 0] = self.power_base
-        noise = torch.fft.ifft2(torch.fft.fft2(noise) / torch.sqrt(power))
-        noise *= scale / noise.std()
-        return self.fix_output_frames(torch.real(noise))
+        scale = self.scale_fac / max(1, self.width * self.height)
+        fy, fx = (
+            torch.fft.fftfreq(sz, device=noise.device, dtype=noise.dtype)
+            for sz in (self.height, self.width)
+        )
+        fx = safe_pow(fx, self.x_pow, restore_sign=self.restore_sign_x, in_place=True)
+        fy = safe_pow(fy, self.y_pow, restore_sign=self.restore_sign_y, in_place=True)
+        if self.x_multiplier != 1:
+            fx *= self.x_multiplier
+        if self.y_multiplier != 1:
+            fy *= self.y_multiplier
+        power = fy[:, None] + fx
+        inv_power = self.inv_power * self.inv_power
+        power = safe_pow(
+            power,
+            inv_power,
+            restore_sign=self.restore_sign_power,
+            in_place=True,
+        )
+        coord_0 = self.power_base**self.inv_power
+        if coord_0 == 0 or not math.isfinite(coord_0):
+            coord_0 = 1.0
+        power = power.masked_fill_((power == 0) | (~power.isfinite()), coord_0)
+        power[0, 0] = coord_0
+        noise *= scale
+        noise = torch.fft.ifft2(torch.fft.fft2(noise).div_(power))
+        return self.fix_output_frames(noise.real)
 
 
 class PinkOldNoiseGenerator(NoiseGenerator):
@@ -481,6 +547,28 @@ class PinkOldNoiseGenerator(NoiseGenerator):
     def generate(self, *_args):
         spectral_density = self.k / self.freq**self.alpha
         return self.rand_like() * spectral_density
+
+
+def frequency_scaled_noise(
+    x: torch.Tensor,
+    *,
+    x_is_noise: bool = False,
+    base_power: float = 0.5,
+    alpha: float,
+) -> torch.Tensor:
+    h, w = x.shape[-2:]
+    fh = torch.fft.fftfreq(h, device=x.device).unsqueeze(-1)
+    fw = torch.fft.fftfreq(w, device=x.device).unsqueeze(0)
+    p = (fh**2 + fw**2).pow_(base_power * alpha)
+    p[0, 0] = 1.0**alpha
+    noise = x if x_is_noise else torch.randn_like(x)
+    noise_fft = torch.fft.fftn(noise, dim=(-2, -1))
+    p = p.to(noise_fft.dtype).expand(*((1,) * (x.ndim - 2)), h, w)
+    noise_fft /= p
+    noise_fft[..., 0, 0] = 0.0
+    noise = torch.fft.ifftn(noise_fft, dim=(-2, -1)).real.to(x.dtype)
+    noise /= noise.std(dim=tuple(range(1, x.ndim)), keepdim=True).clamp_min_(1e-06)
+    return noise
 
 
 class OneFNoiseGenerator(FramesToChannelsNoiseGenerator):
@@ -497,32 +585,43 @@ class OneFNoiseGenerator(FramesToChannelsNoiseGenerator):
             "wfac": 1.0,
             "base_power": 1.0,
             "use_sqrt": True,
+            # None or or float, alternative to use_sqrt with custom power.
+            "power": None,
+            "x_pow": 2.0,
+            "y_pow": 2.0,
         }
 
-    # Referenced from: https://github.com/WASasquatch/PowerNoiseSuite
+    # Original implementation referenced from: https://github.com/WASasquatch/PowerNoiseSuite
     def generate(self, *_args):
-        # batch, _channels, height, width = self.shape
-
         noise = self.rand_like()
 
-        freq_x = tensor_to(torch.fft.fftfreq(self.height, self.hfac), noise)
-        freq_y = tensor_to(torch.fft.fftfreq(self.width, self.wfac), noise)
-        fx, fy = torch.meshgrid(freq_x, freq_y, indexing="ij")
-
-        power = (fx**2 + fy**2) ** (-self.alpha / 2.0)
-        if self.k != 0:
-            power = self.k / power
-        power[0, 0] = self.base_power
-        power = power.unsqueeze(0).expand(self.batch, 1, self.height, self.width)
-
-        noise_fft = torch.fft.fftn(noise)
-        noise_fft /= (
-            torch.sqrt(power.to(noise_fft.dtype))
-            if self.use_sqrt
-            else power.to(noise_fft.dtype)
+        freq_x, freq_y = (
+            torch.fft.fftfreq(sz, fac, device=noise.device, dtype=noise.dtype)
+            for sz, fac in ((self.height, self.hfac), (self.width, self.wfac))
         )
-
-        return self.fix_output_frames(torch.fft.ifftn(noise_fft).real)
+        freq_x **= self.x_pow
+        freq_y **= self.y_pow
+        fx, fy = torch.meshgrid(freq_x, freq_y, indexing="ij")
+        power = fx + fy
+        power **= self.alpha / -2.0
+        if self.k not in {0, 1}:
+            power *= 1 / self.k
+        noise_fft = torch.fft.fftn(noise)
+        user_power = 0.5 if self.use_sqrt else self.power
+        if isinstance(user_power, float):
+            power **= user_power
+        coord_0 = self.base_power
+        if coord_0 == 0 or not math.isfinite(coord_0):
+            coord_0 = 1.0
+        power = power.masked_fill_((power == 0) | (~power.isfinite()), coord_0)
+        power = (
+            power.to(dtype=noise_fft.dtype)
+            .unsqueeze(0)
+            .expand(self.batch, 1, self.height, self.width)
+        )
+        noise_fft /= power
+        noise = torch.fft.ifftn(noise_fft).real
+        return self.fix_output_frames(noise)
 
 
 class PowerLawNoiseGenerator(NoiseGenerator):

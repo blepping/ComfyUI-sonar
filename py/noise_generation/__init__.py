@@ -1,3 +1,4 @@
+from .automata_noise_generator import AutomataNoiseGenerator
 from .base import MixedNoiseGenerator, NoiseError, NoiseType
 from .collatz_noise_generator import CollatzNoiseGenerator
 from .distro_noise_generator import DistroNoiseGenerator
@@ -25,6 +26,7 @@ from .wavelet_filtered_noise_generator import WaveletFilteredNoiseGenerator
 from .wavelet_noise_generator import WaveletNoiseGenerator
 
 __all__ = (
+    "AutomataNoiseGenerator",
     "BrownianNoiseGenerator",
     "CollatzNoiseGenerator",
     "DistroNoiseGenerator",

@@ -6,6 +6,7 @@ import math
 from typing import Any
 
 import torch
+from tqdm import tqdm
 
 from .base import NoiseGenerator
 
@@ -74,7 +75,9 @@ class SimulationNoiseGenerator(NoiseGenerator):
         self.current_depth = self.initial_depth
         self.direction = 1
         self.cdtype = (
-            torch.complex128 if self.dtype == torch.float64 else torch.complex64
+            (torch.complex128 if self.dtype == torch.float64 else torch.complex64)
+            if not self.dtype.is_complex
+            else self.dtype
         )
         self.eff_batch = (
             self.batch
@@ -97,7 +100,7 @@ class SimulationNoiseGenerator(NoiseGenerator):
 
         self.noise_samplers = tuple(
             factory.make_noise_sampler(
-                torch.zeros(ns_shape, device=self.gen_device, dtype=self.dtype),
+                torch.zeros(ns_shape, device=self.gen_device, dtype=self.cdtype),
                 cpu=self.cpu,
                 normalized=False,
             )
@@ -118,8 +121,8 @@ class SimulationNoiseGenerator(NoiseGenerator):
                     shape[dim],
                     d=1.0,
                     device=self.device,
-                    dtype=self.dtype,
-                )
+                    dtype=self.dtype if not self.dtype.is_complex else torch.float64,
+                ).to(dtype=self.dtype)
                 for dim in dims
             ),
             indexing="ij",
@@ -304,8 +307,10 @@ class SimulationNoiseGenerator(NoiseGenerator):
 
             # Perform a 2D-like curl on the (G1, G2) plane
             # This is a bit abstract, but we are creating rotation in the 1-2 plane.
+            # f_f_outputs[idx1] = ik2 * g1_f - ik1 * g2_f
+            # f_f_outputs[idx2] = ik1 * g2_f - ik2 * g1_f
             f_f_outputs[idx1] = ik2 * g1_f - ik1 * g2_f
-            f_f_outputs[idx2] = ik1 * g2_f - ik2 * g1_f
+            f_f_outputs[idx2] = -ik1 * g1_f - ik2 * g2_f
 
         return tuple(f_f_outputs)
 
@@ -354,7 +359,8 @@ class SimulationNoiseGenerator(NoiseGenerator):
             inv_u_mag = torch.where(u_mag == 0, 0.0, 1.0 / u_mag)
             ux, uy, uz = ux * inv_u_mag, uy * inv_u_mag, uz * inv_u_mag
 
-            u = (uz, uy, ux)
+            # u = (uz, uy, ux)
+            u = (ux, uy, uz)
 
             vx = kn_y * u[2] - kn_z * u[1]
             vy = kn_z * u[0] - kn_x * u[2]
@@ -426,6 +432,41 @@ class SimulationNoiseGenerator(NoiseGenerator):
 
     _handle_field_basis_ndim = _handle_field_basis
 
+    def calculate_spectral_divergence_3d(
+        self,
+        field: torch.Tensor,
+        *,
+        debug: bool = False,
+    ) -> torch.Tensor:
+        if field.ndim != 5:
+            errstr = f"Field must be 5d, got shape {field.shape}"
+            raise ValueError(errstr)
+        C = field.shape[1]
+        if C != 3:
+            errstr = f"Field must have 3 channels, but has {C}"
+            raise ValueError(errstr)
+        cdtype = torch.complex128 if field.dtype == torch.float64 else torch.complex64
+        KX, KY, KZ = (t.to(field) for t in self._k_grids(shape=field.shape))
+        fx_f = torch.fft.fftn(field[:, 0, ...], dim=(-3, -2, -1))
+        fy_f = torch.fft.fftn(field[:, 1, ...], dim=(-3, -2, -1))
+        fz_f = torch.fft.fftn(field[:, 2, ...], dim=(-3, -2, -1))
+        div_f = (
+            (1j * KX.to(cdtype)) * fx_f
+            + (1j * KY.to(cdtype)) * fy_f
+            + (1j * KZ.to(cdtype)) * fz_f
+        )
+        result = torch.fft.ifftn(div_f, dim=(-3, -2, -1)).real
+        divergences = result.abs_().mean(dim=tuple(range(1, result.ndim)))
+        if not debug:
+            return divergences
+        prettydivs = ", ".join(
+            f"{dm:.5f}" for dm in divergences.detach().cpu().tolist()
+        )
+        tqdm.write(
+            f"Simulation noise: Input shape: {field.shape}, Mean Absolute Divergences (per batch): {prettydivs}",
+        )
+        return divergences
+
     def generate_field(
         self,
         batch: int,
@@ -471,13 +512,12 @@ class SimulationNoiseGenerator(NoiseGenerator):
         )
 
         # Inverse FFT to transform the field back to the spatial domain
-        field = torch.stack(
-            tuple(
-                torch.fft.ifftn(f_proj, dim=(-3, -2, -1)).real
-                for f_proj in reversed(f_f_outputs)
-            ),
-            dim=1,
+        fields = tuple(
+            torch.fft.ifftn(f_proj, dim=(-3, -2, -1)).real
+            for f_proj in reversed(f_f_outputs)
         )
+        field = torch.stack(fields, dim=1)
+        self.calculate_spectral_divergence_3d(field, debug=True)
 
         rms = torch.sqrt(torch.mean(field**2))
         if rms > 1e-9:

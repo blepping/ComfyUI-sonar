@@ -214,8 +214,9 @@ class CollatzNoiseGenerator(NoiseGenerator):
         if co < 1:
             return t
         chunks = t.split(chain_length, dim)
-        slices = [slice(None)] * t.ndim
-        slices[dim] = slice(co, None)
+        slices = tuple(
+            slice(None) if i != dim else slice(co, None) for i in range(t.ndim)
+        )
         return torch.cat(
             tuple(chunk[slices] for chunk in chunks),
             dim=dim,

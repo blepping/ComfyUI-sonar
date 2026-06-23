@@ -104,12 +104,15 @@ class NoiseGenerator:
 
     def update_x(self, x):
         self.shape = x.shape
-        if x.ndim in {4, 5}:
+        self.batch = self.channels = self.frames = self.height = self.width = None
+        if x.ndim >= 2:
             self.batch, self.channels = x.shape[:2]
-            self.height, self.width = x.shape[-2:]
-            self.frames = x.shape[-3] if x.ndim == 5 else None
-        else:
-            self.batch = self.channels = self.frames = self.height = self.width = None
+        if x.ndim > 2:
+            self.width = x.shape[-1]
+        if x.ndim > 3:
+            self.height = x.shape[-2]
+        if x.ndim == 5:
+            self.frames = x.shape[-3]
         self.device = x.device
         self.gen_device = torch.device("cpu") if self.cpu else self.device
         self.layout = x.layout

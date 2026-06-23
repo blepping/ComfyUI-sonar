@@ -235,11 +235,9 @@ def _quantile_norm_replace(
     n_candidates = candidates.numel()
     idxs = torch.arange(noise.numel()) % n_candidates
     cresult = candidates[idxs]
-    if count < 2:
-        candidates = cresult
-    else:
+    if count > 1:
         multiplier = 1.0 / count
-        cresult = cresult * multiplier  # noqa: PLR6104
+        cresult = cresult * multiplier
         for i in range(1, count):
             cresult += (
                 candidates[
@@ -266,12 +264,12 @@ quantile_handlers = {
         noise.tanh().mul_(nq.abs()),
         noise,
     ),
-    "sigmoid_keepsign": lambda noise, nq, **_kwargs: noise.sigmoid()
-    .mul_(nq.abs())
-    .copysign(noise),
-    "sigmoid": lambda noise, nq, **_kwargs: noise.sigmoid()
-    .mul_(nq.abs() * 2)
-    .sub_(nq.abs()),
+    "sigmoid_keepsign": lambda noise, nq, **_kwargs: (
+        noise.sigmoid().mul_(nq.abs()).copysign(noise)
+    ),
+    "sigmoid": lambda noise, nq, **_kwargs: (
+        noise.sigmoid().mul_(nq.abs() * 2).sub_(nq.abs())
+    ),
     "sigmoid_outliers": lambda noise, nq, **_kwargs: torch.where(
         noise.abs() > nq,
         noise.sigmoid().mul_(nq.abs()).copysign(noise),
@@ -453,40 +451,86 @@ quantile_handlers = {
 def quantile_normalize(
     noise: torch.Tensor,
     *,
+    noise_reference: torch.Tensor | None = None,
     quantile: float | tuple | list = 0.75,
     dim: int | None = 1,
     flatten: bool = True,
     nq_fac: float = 1.0,
     pow_fac: float = 0.5,
+    pow_fac_in: float = 0.0,
     strategy: str = "clamp",
     strategy_handler=None,
+    # None, keep, avoid
+    sign_mode: str | None = None,
+    only_outliers: bool = False,
+    abs_quantiles: bool = True,
+    nq_lo: float | None = None,
+    nq_hi: float | None = None,
     eps=1e-08,
 ) -> torch.Tensor:
     if noise.numel() == 0:
         return noise
-    if isinstance(quantile, (tuple, list)):
-        for q in quantile:
-            noise = quantile_normalize(
-                noise=noise,
-                quantile=q,
-                dim=dim,
-                flatten=flatten,
-                nq_fac=nq_fac,
-                pow_fac=pow_fac,
-                strategy=strategy,
-                strategy_handler=strategy_handler,
-            )
-        return noise
-    if quantile is None or quantile >= 1 or quantile <= -1:
-        return noise
-    centered = quantile < 0
-    absquantile = abs(quantile)
+    while len(stratparts := strategy.rsplit("_", 1)) == 2 and stratparts[-1] in {
+        "keepsign",
+        "avoidsign",
+        "outliers",
+    }:
+        strategy, stratadjust = stratparts
+        if stratadjust == "outliers":
+            only_outliers = True
+        else:
+            sign_mode = "keep" if stratadjust == "keepsign" else "avoid"
+    if nq_lo is None:
+        if isinstance(quantile, (tuple, list)):
+            for q in quantile:
+                noise = quantile_normalize(
+                    noise=noise,
+                    noise_reference=noise_reference,
+                    quantile=q,
+                    dim=dim,
+                    flatten=flatten,
+                    nq_fac=nq_fac,
+                    pow_fac=pow_fac,
+                    strategy=strategy,
+                    strategy_handler=strategy_handler,
+                    sign_mode=sign_mode,
+                    only_outliers=only_outliers,
+                    abs_quantiles=abs_quantiles,
+                    eps=eps,
+                )
+            return noise
+        if quantile is None or quantile >= 1 or quantile <= -1 or quantile == 0:
+            return noise
+        centered = quantile < 0
+        absquantile = abs(quantile)
+        nq_pos = nq_neg = None
     orig_shape = noise.shape
     if noise.ndim > 1 and flatten:
         flatnoise = noise.flatten(start_dim=dim)
     else:
         flatten = False
         flatnoise = noise
+    if nq_lo is not None:
+        centered = False
+        nq_neg = noise.new_tensor(max(eps, abs(nq_lo))).reshape((1,) * flatnoise.ndim)
+        nq_pos = (
+            nq_neg
+            if nq_hi is None
+            else noise.new_tensor(max(eps, abs(nq_hi))).reshape(nq_neg.shape)
+        )
+    orig_noise_flat = flatnoise
+    if noise_reference is None:
+        noise_reference = flatnoise
+    elif noise_reference.numel() != flatnoise.numel():
+        raise ValueError(
+            "noise_reference must have the same number of elements as noise",
+        )
+    else:
+        noise_reference = noise_reference.to(flatnoise).reshape(flatnoise.shape)
+    if pow_fac_in not in {0, 1}:
+        noise_reference = (
+            noise_reference.abs().pow_(pow_fac_in).copysign_(noise_reference)
+        )
     handler = (
         quantile_handlers.get(strategy)
         if strategy_handler is None
@@ -494,26 +538,65 @@ def quantile_normalize(
     )
     if handler is None:
         raise ValueError("Unknown strategy")
+    handler = partial(handler, orig_noise=noise, dim=dim, flatten=flatten)
+    need_outliers = only_outliers or sign_mode is not None
+    outliers_mask = None
     if not centered:
-        nq = torch.quantile(
-            flatnoise.abs(),
-            quantile,
-            dim=-1 if flatten else dim,
-            keepdim=True,
-        )
-        nq = nq.mul_(nq_fac).add_(eps)
-        # print(f"\nNQ: {nq}")
-        noise = handler(
-            flatnoise,
-            nq,
-            orig_noise=noise,
-            dim=dim,
-            flatten=flatten,
-        )
+        if abs_quantiles:
+            if nq_pos is None:
+                nq = torch.quantile(
+                    noise_reference.abs(),
+                    quantile,
+                    dim=-1 if flatten else dim,
+                    keepdim=True,
+                )
+                nq = nq.mul_(nq_fac).add_(eps)
+            else:
+                nq = nq_pos
+            if need_outliers:
+                outliers_mask = (flatnoise < -nq) | (flatnoise > nq)
+            noise = handler(
+                flatnoise,
+                nq,
+                orig_noise=noise,
+                dim=dim,
+                flatten=flatten,
+            )
+        else:
+            noise_signs = noise_reference.signbit()
+            if nq_pos is None or nq_neg is None:
+                nq_pos = (
+                    torch.nanquantile(
+                        torch.where(noise_signs, torch.nan, noise_reference),
+                        quantile,
+                        dim=-1 if flatten else dim,
+                        keepdim=True,
+                    )
+                    .mul_(nq_fac)
+                    .add_(eps)
+                )
+                nq_neg = (
+                    torch.nanquantile(
+                        torch.where(noise_signs, noise_reference.abs(), torch.nan),
+                        quantile,
+                        dim=-1 if flatten else dim,
+                        keepdim=True,
+                    )
+                    .mul_(nq_fac)
+                    .add_(eps)
+                )
+            noise = torch.where(
+                noise_signs,
+                handler(flatnoise.neg(), nq_neg).neg_(),
+                handler(flatnoise, nq_pos),
+            )
+            if need_outliers:
+                outliers_mask = (flatnoise < -nq_neg) | (flatnoise > nq_pos)
+
     else:
-        absnoise = flatnoise.abs()
+        absnoise = noise_reference.abs()
         maxabs = absnoise.amax(dim=-1 if flatten else dim, keepdim=True)
-        proxy = flatnoise.sign().mul_(maxabs - absnoise)
+        proxy = noise_reference.sign().mul_(maxabs - absnoise)
         nq_proxy = torch.quantile(
             proxy.abs(),
             absquantile,
@@ -521,6 +604,8 @@ def quantile_normalize(
             keepdim=True,
         )
         nq_proxy = nq_proxy.mul_(nq_fac).add_(eps)
+        if need_outliers:
+            outliers_mask = proxy > nq_proxy
         # print(f"\nNQ proxy: {nq_proxy}")
         out_proxy = handler(
             proxy,
@@ -532,6 +617,17 @@ def quantile_normalize(
         noise = out_proxy.sign().mul_(maxabs - out_proxy.abs())
     if pow_fac not in {0.0, 1.0}:
         noise = noise.abs().pow_(pow_fac).copysign(noise)
+    if outliers_mask is not None:
+        if sign_mode in {"keep", "avoid"}:
+            noise[outliers_mask].copysign_(
+                (orig_noise_flat if sign_mode == "keep" else orig_noise_flat.neg())[
+                    outliers_mask
+                ],
+            )
+        if only_outliers:
+            inv_outliers_mask = ~outliers_mask
+            noise[inv_outliers_mask] = orig_noise_flat[inv_outliers_mask]
+
     return noise if noise.shape == orig_shape else noise.reshape(orig_shape)
 
 
@@ -899,17 +995,32 @@ def pattern_break(
     detail_level=0.0,
     restore_scale=True,
     blend_function=torch.lerp,
+    high_precision: bool = True,
 ):
     orig_dtype = noise.dtype
+    if high_precision:
+        noise = noise.to(
+            dtype=torch.complex128 if noise.is_complex() else torch.float64,
+        )
     if restore_scale:
         orig_min, orig_max = noise.min().item(), noise.max().item()
-    noise_normed = normalize_to_scale(noise.to(dtype=torch.float32), -1.0, 1.0, dim=())
-    result = torch.remainder(torch.abs(noise_normed) * 1000000, 11) / 11
+    noise_normed = normalize_to_scale(
+        noise,
+        -1.0,
+        1.0,
+        dim=tuple(range(1, noise.ndim)),
+    )
     result = (
-        ((1 + detail_level / 10) * torch.erfinv(2 * result - 1) * (2**0.5))
-        .mul_(0.2)
+        noise_normed.abs_()
+        .mul_(1000000)
+        .remainder_(11)
+        .div_(11 / 2)
+        .sub_(1)
+        .erfinv_()
+        .mul_((1 + detail_level / 10) * (2**0.5) * 0.2)
         .clamp_(-1, 1)
     )
+
     if restore_scale:
         result = normalize_to_scale(result, orig_min, orig_max, dim=())
     return blend_function(noise, result, percentage).to(dtype=orig_dtype)
@@ -1108,3 +1219,158 @@ class RNGStates:
                 tm.set_rng_state(v)
         if update:
             self.rng_states = new_states
+
+
+def robust_normalize(
+    t: torch.Tensor,
+    *,
+    start_dim: int = 1,
+    eps: float = 1e-8,
+) -> torch.Tensor:
+    orig_shape = t.shape
+    t_flat = t.flatten(start_dim=start_dim)
+
+    # Calculate along the flattened spatial/channel dimensions
+    median = t_flat.median(dim=-1, keepdim=True).values
+    mad = (t_flat - median).abs_().median(dim=-1, keepdim=True).values
+
+    robust_std = mad.mul_(1.4826).clamp_min_(eps)
+    return (t_flat - median).div_(robust_std).reshape(orig_shape)
+
+
+def force_gaussian_distribution(
+    t: torch.Tensor,
+    *,
+    start_dim: int = 1,
+    end_dim: int = -1,
+    # Invert the argsorts, option for crazy people. Not recommended.
+    invert1: bool = False,
+    invert2: bool = False,
+    eps: float = 1e-08,
+) -> torch.Tensor:
+    if start_dim < 0:
+        start_dim = t.ndim + start_dim
+    orig_shape = t.shape
+    t_flat = t.flatten(start_dim=start_dim, end_dim=end_dim).movedim(start_dim, -1)
+
+    # Get the rank of each element (0 to N-1)
+    # Double argsort safely returns the rank of the original elements
+    ranks = (
+        t_flat.argsort(dim=-1, descending=invert1)
+        .argsort(dim=-1, descending=invert2)
+        .to(t)
+    )
+
+    # Map ranks to a uniform distribution (0.0 to 1.0 exclusive)
+    # then to a Gaussian curve.
+    factor = max(eps, t_flat.shape[-1] / 2)
+    gaussian = ranks.div_(factor).add_(0.5 / factor - 1).erfinv_().mul_(2**0.5)
+
+    return gaussian.movedim(-1, start_dim).reshape(orig_shape)
+
+
+# Forces source to the distribution of reference.
+def match_distribution(
+    source: torch.Tensor,
+    *,
+    reference: torch.Tensor,
+    start_dim: int = 1,
+    end_dim: int = -1,
+    # Invert the sorts, option for crazy people. Not recommended.
+    invert1: bool = False,
+    invert2: bool = False,
+    invert3: bool = False,
+) -> torch.Tensor:
+    if source is reference:
+        return source.clone()
+    if start_dim < 0:
+        start_dim = source.ndim + start_dim
+    orig_shape = source.shape
+    s_flat = source.flatten(
+        start_dim=start_dim,
+        end_dim=end_dim,
+    ).movedim(start_dim, -1)
+    r_flat = reference.flatten(
+        start_dim=start_dim,
+        end_dim=end_dim,
+    ).movedim(start_dim, -1)
+
+    r_sorted = r_flat.sort(dim=-1, descending=invert1).values
+    s_ranks = s_flat.argsort(
+        dim=-1,
+        descending=invert2,
+    ).argsort(dim=-1, descending=invert3)
+
+    # 4. Give the source elements the values from the reference.
+    return (
+        r_sorted.gather(dim=-1, index=s_ranks)
+        .movedim(-1, start_dim)
+        .reshape(orig_shape)
+    )
+
+
+# Scales the source tensor to match the median and variance of the reference.
+def robust_scale_match(
+    source: torch.Tensor,
+    *,
+    reference: torch.Tensor | None = None,
+    # Default MAD if the reference is not passed. Targets the Gaussian distribution.
+    mad: float = 0.6745,
+    start_dim: int = 1,
+    end_dim: int = -1,
+    eps: float = 1e-8,
+) -> torch.Tensor:
+    if start_dim < 0:
+        start_dim = source.ndim + start_dim
+    orig_shape = source.shape
+    source = source.flatten(start_dim=start_dim, end_dim=end_dim).movedim(start_dim, -1)
+    # Find the median and spread (MAD) of the source
+    src_sub_median = source - source.median(dim=-1, keepdim=True).values
+    s_mad = (
+        src_sub_median.abs()
+        .median(
+            dim=-1,
+            keepdim=True,
+        )
+        .values.clamp_min_(eps)
+    )
+
+    # If no reference, target a Standard Gaussian scale.
+    # (A standard Gaussian has a median of 0 and a MAD of ~0.6745)
+    if reference is None:
+        mad = min(-eps, mad) if mad < 0 else max(eps, mad)
+        return (
+            src_sub_median.mul_(s_mad.reciprocal_().mul_(mad))
+            .movedim(-1, start_dim)
+            .reshape(orig_shape)
+        )
+    reference = reference.flatten(
+        start_dim=start_dim,
+        end_dim=end_dim,
+    ).movedim(start_dim, -1)
+
+    # Find the reference median and spread
+    r_median = reference.median(dim=-1, keepdim=True).values
+    r_mad = (reference - r_median).abs_().median(dim=-1, keepdim=True).values
+
+    # Stretch the source to match the reference
+    return (
+        src_sub_median.mul_(r_mad.div_(s_mad))
+        .add_(r_median)
+        .movedim(-1, start_dim)
+        .reshape(orig_shape)
+    )
+
+
+def safe_pow(
+    t: torch.Tensor,
+    power: torch.Tensor | float,
+    *,
+    use_abs: bool = True,
+    restore_sign: bool = True,
+    in_place: bool = False,
+) -> torch.Tensor:
+    if not use_abs:
+        return t.pow_(power) if in_place else t**power
+    t_abs = t.abs().pow_(power)
+    return t_abs if not restore_sign else t_abs.copysign_(t)
