@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 
 try:
     from comfy import nested_tensor
+    from comfy.utils import pack_latents, unpack_latents
 except (ModuleNotFoundError, ImportError):
     nested_tensor = None
 
@@ -386,17 +387,25 @@ class CustomNOISE:
         self.normalize = normalize
         self.multiplier = multiplier
 
-    def _sample_noise(self, latent_image, seed):
-        result = self.custom_noise.make_noise_sampler(
-            latent_image,
-            None,
-            None,
-            seed=seed,
-            cpu=self.cpu_noise,
-            normalized=self.normalize,
-        )(None, None).to(
-            device="cpu",
-            dtype=latent_image.dtype,
+    def _sample_noise(self, latent_image, seed, sampler_idx: int = 0):
+        if self.multiplier == 0.0:
+            return torch.zeros_like(latent_image)
+        n_samplers = len(self.custom_noise)
+        sampler_idx = sampler_idx % n_samplers
+        result = (
+            self.custom_noise[sampler_idx]
+            .make_noise_sampler(
+                latent_image,
+                None,
+                None,
+                seed=seed,
+                cpu=self.cpu_noise,
+                normalized=self.normalize,
+            )(None, None)
+            .to(
+                device="cpu",
+                dtype=latent_image.dtype,
+            )
         )
         if result.layout != latent_image.layout:
             if latent_image.layout == torch.sparse_coo:
@@ -408,63 +417,64 @@ class CustomNOISE:
         return result
 
     def generate_noise(self, input_latent):
-        latent_image = orig_latent_image = input_latent["samples"]
+        latent_image = input_latent["samples"]
         orig_type = type(latent_image)
+        # print(f"\nNEST? {latent_image.is_nested}, have={nested_tensor is not None}")
         if nested_tensor is not None and latent_image.is_nested:
-            latent_image, latent_shapes = comfy_utils.pack_latents(
-                latent_image.unbind(),
-            )
+            nested = True
+            nested_parts = latent_image.unbind()
+            # print(f"NEST: {tuple(p.shape for p in nested_parts)}")
         else:
-            latent_shapes = None
+            nested = False
+            nested_parts = (latent_image,)
 
-        def result_out(result, latent_shapes):
-            if latent_shapes is None:
-                return result
-            tensors = comfy_utils.unpack_latents(result, latent_shapes)
-            if isinstance(orig_type, torch.Tensor):
-                # Should be an actual PyTorch nested tensor, not ComfyUI's custom class
-                return orig_type(tensors, layout=orig_latent_image.layout)
-            return orig_type(tensors)
-
-        # TODO: Test this stuff.
         batch_inds = input_latent.get("batch_index")
         torch.manual_seed(self.seed)
         random.seed(self.seed)
-        if self.multiplier == 0.0:
-            return torch.zeros(
-                latent_image.shape,
-                dtype=latent_image.dtype,
-                layout=latent_image.layout,
-                device="cpu",
-            )
         if batch_inds is None:
-            return result_out(
-                self._sample_noise(latent_image, self.seed),
-                latent_shapes,
+            noise_parts = tuple(
+                self._sample_noise(nested_parts[i], self.seed, sampler_idx=i)
+                for i in range(len(nested_parts))
             )
+            return (
+                orig_type(comfy_utils.pack_latents(noise_parts)[0])
+                if nested
+                else noise_parts[0]
+            )
+
         batch_size = latent_image.shape[0]
         unique_inds, inverse_inds = np.unique(batch_inds, return_inverse=True)
-        use_idxs = {
-            out_idx: idx % batch_size for out_idx, idx in enumerate(unique_inds)
-        }
+        # use_idxs = {
+        #     out_idx: idx % batch_size for out_idx, idx in enumerate(unique_inds)
+        # }
         use_idxs = (idx for idx in range(unique_inds[-1] + 1) if idx in unique_inds)
         use_idxs = {idx: inverse_inds[uidx] for uidx, idx in enumerate(use_idxs)}
-        result = torch.empty(
-            (len(use_idxs), *latent_image.shape[1:]),
-            dtype=latent_image.dtype,
-            device=latent_image.device,
+        n_use_idxs = len(use_idxs)
+        result_parts = tuple(
+            torch.empty(
+                (n_use_idxs, *np.shape[1:]),
+                dtype=latent_image.dtype,
+                device=latent_image.device,
+            )
+            for np in nested_parts
         )
         for idx in range(unique_inds[-1] + 1):
             sample_idx = idx % batch_size
-            sample = latent_image[sample_idx].unsqueeze(0)
-            print(
-                f"\nNOISE: idx {idx}, sample_idx {sample_idx}, shape {latent_image[sample_idx].shape}, nested={sample.is_nested}",
-            )
-            noise = self._sample_noise(sample, self.seed + idx)
-            batch_out_idx = use_idxs.get(idx)
-            if batch_out_idx is not None:
-                result[batch_out_idx : batch_out_idx + 1] = noise[:1]
-        return result_out(result, latent_shapes)
+            for nidx in range(len(nested_parts)):
+                sample = nested_parts[nidx][sample_idx].unsqueeze(0)
+                # print(
+                #     f"\nNOISE: idx {idx}.{nidx}, sample_idx {sample_idx}, shape {latent_image[sample_idx].shape}, nested={sample.is_nested}",
+                # )
+                noise = self._sample_noise(sample, self.seed + idx, sampler_idx=nidx)
+                batch_out_idx = use_idxs.get(idx)
+                if batch_out_idx is not None:
+                    result = result_parts[nidx]
+                    result[batch_out_idx : batch_out_idx + 1] = noise[:1]
+        return (
+            orig_type(comfy_utils.pack_latents(result_parts)[0])
+            if nested
+            else result_parts[0]
+        )
 
 
 class SonarToComfyNOISENode(metaclass=IntegratedNode):
@@ -481,7 +491,7 @@ class SonarToComfyNOISENode(metaclass=IntegratedNode):
             )
             .req_seed(tooltip="Seed to use for generated noise.")
             .req_bool_cpu_noise(
-                default=True,
+                default=False,
                 tooltip="Controls whether noise is generated on CPU or GPU.",
             )
             .req_bool_normalize(
@@ -499,7 +509,7 @@ class SonarToComfyNOISENode(metaclass=IntegratedNode):
     def go(cls, *, custom_noise, seed, cpu_noise=True, normalize=True, multiplier=1.0):
         return (
             CustomNOISE(
-                custom_noise,
+                (custom_noise,),
                 seed,
                 cpu_noise=cpu_noise,
                 normalize=normalize,
@@ -621,11 +631,11 @@ class SamplerNodeConfigOverride(metaclass=IntegratedNode):
         model,
         x,
         sigmas,
-        *args: list[Any],
+        *args: Any,
         override_sampler_cfg: dict[str, Any] | None = None,
         noise_sampler: Callable | None = None,
         extra_args: dict[str, Any] | None = None,
-        **kwargs: dict[str, Any],
+        **kwargs: Any,
     ) -> torch.Tensor:
         if not override_sampler_cfg:
             raise ValueError("Override sampler config missing!")
