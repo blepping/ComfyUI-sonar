@@ -255,6 +255,55 @@ def _quantile_norm_replace(
     return torch.where(mask, noise, candidates)
 
 
+def _quantile_norm_redistribute(
+    noise: torch.Tensor,
+    nq: torch.Tensor,
+    *,
+    headroom_multiplier: float = 1.0,
+    headroom_multiplier_neg: float | None = None,
+    eps: float | None = None,
+) -> torch.Tensor:
+    if eps is None:
+        eps = torch.finfo(noise.dtype).eps * 1.25
+    nq_neg = -nq
+
+    t_clamped = torch.clamp(noise, nq_neg, nq)
+
+    t_signs = noise.signbit()
+    excess = noise - t_clamped
+    headroom = torch.where(
+        t_signs,
+        nq_neg - t_clamped,
+        nq - t_clamped,
+    ).masked_fill_(excess != 0, 0.0)
+
+    total_headroom_pos = (
+        headroom.clamp_min(0)
+        .sum(dim=-1, keepdim=True)
+        .mul_(headroom_multiplier)
+        .clamp_min_(eps)
+    )
+    total_headroom_neg = (
+        headroom.clamp_max(0)
+        .sum(dim=-1, keepdim=True)
+        .mul_(
+            headroom_multiplier_neg
+            if headroom_multiplier_neg is not None
+            else headroom_multiplier,
+        )
+        .clamp_max_(-eps)
+    )
+    factor_pos = (
+        excess.clamp_min(0.0).sum(dim=-1, keepdim=True).div_(total_headroom_pos)
+    )
+    factor_neg = (
+        excess.clamp_max_(0.0).sum(dim=-1, keepdim=True).div_(total_headroom_neg)
+    )
+    t_clamped += torch.where(t_signs, headroom * factor_neg, headroom * factor_pos)
+
+    return t_clamped
+
+
 quantile_handlers = {
     "clamp": lambda noise, nq, **_kwargs: noise.clamp(-nq, nq),
     "scale_down": _quantile_norm_scaledown,
@@ -444,11 +493,287 @@ quantile_handlers = {
         nq,
         stiffness=5.0,
     ),
+    "redistribute": lambda noise, nq, **_kwargs: _quantile_norm_redistribute(noise, nq),
+    "redistribute_hr075": lambda noise, nq, **_kwargs: _quantile_norm_redistribute(
+        noise,
+        nq,
+        headroom_multiplier=0.75,
+    ),
+    "redistribute_hr150": lambda noise, nq, **_kwargs: _quantile_norm_redistribute(
+        noise,
+        nq,
+        headroom_multiplier=1.5,
+    ),
 }
+
+
+def flip_tensor_range(
+    x: torch.Tensor,
+    *,
+    min_neg: torch.Tensor | None = None,
+    max_pos: torch.Tensor | None = None,
+    return_ranges: bool = False,
+    dim: int = -1,
+    eps: float | None = None,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    if eps is None:
+        eps = torch.finfo(x.dtype).eps * 1.25
+    # 1. Use the provided maximum positive values, or calculate them dynamically
+    if max_pos is None:
+        max_pos = (
+            torch.clamp_min(x, 0.0).max(dim=dim, keepdim=True).values.clamp_min_(eps)
+        )
+
+    # 2. Use the provided minimum negative values, or calculate them dynamically
+    if min_neg is None:
+        min_neg = (
+            torch.clamp_max(x, 0.0).min(dim=dim, keepdim=True).values.clamp_max_(-eps)
+        )
+
+    # 3. Separate positive and negative elements
+    is_pos = x >= 0
+
+    # 4. Flip positive side: [0, max_pos] -> [eps, max_pos + eps]
+    x_pos = x.clamp_min(eps)
+    flipped_pos = (max_pos + eps) - x_pos
+
+    # 5. Flip negative side: [min_neg, 0] -> [min_neg - eps, -eps]
+    x_neg = x.clamp_max(-eps)
+    flipped_neg = (min_neg - eps) - x_neg
+
+    # 6. Recombine the domains
+    result = torch.where(is_pos, flipped_pos, flipped_neg)
+    return (result, max_pos, min_neg) if return_ranges else result
 
 
 # Initial version based on StudentT distribution normalization from https://github.com/Clybius/ComfyUI-Extra-Samplers/
 def quantile_normalize(
+    noise: torch.Tensor,
+    *,
+    noise_reference: torch.Tensor | None = None,
+    quantile: float | tuple | list = 0.75,
+    dim: int | None = 1,
+    flatten: bool = True,
+    nq_fac: float = 1.0,
+    pow_fac: float = 0.5,
+    pow_fac_in: float = 0.0,
+    strategy: str = "clamp",
+    strategy_handler=None,
+    # None, keep, avoid
+    sign_mode: str | None = None,
+    only_outliers: bool = False,
+    abs_quantiles: bool = True,
+    nq_lo: float | None = None,
+    nq_hi: float | None = None,
+    zero_mean_scale: float = 0.0,
+    restore_mean_scale: float | None = None,
+    zero_result_mean_scale: float | None = None,
+    eps: float | None = None,
+) -> torch.Tensor:
+    if zero_result_mean_scale is None:
+        zero_result_mean_scale = zero_mean_scale
+    if restore_mean_scale is None:
+        restore_mean_scale = zero_mean_scale
+    if noise.numel() == 0:
+        return noise
+    if dim is not None and dim < 0:
+        dim = noise.ndim + dim
+    eff_dim = dim if dim is not None else 0
+    if eps is None:
+        eps = torch.finfo(noise.dtype).eps * 1.25
+    while len(stratparts := strategy.rsplit("_", 1)) == 2 and stratparts[-1] in {
+        "keepsign",
+        "avoidsign",
+        "outliers",
+    }:
+        strategy, stratadjust = stratparts
+        if stratadjust == "outliers":
+            only_outliers = True
+        elif stratadjust in {"keepsign", "avoidsign"}:
+            sign_mode = "keep" if stratadjust == "keepsign" else "avoid"
+    if nq_lo is None:
+        if isinstance(quantile, (tuple, list)):
+            for q in quantile:
+                noise = quantile_normalize(
+                    noise=noise,
+                    noise_reference=noise_reference,
+                    quantile=q,
+                    dim=dim,
+                    flatten=flatten,
+                    nq_fac=nq_fac,
+                    pow_fac=pow_fac,
+                    strategy=strategy,
+                    strategy_handler=strategy_handler,
+                    sign_mode=sign_mode,
+                    only_outliers=only_outliers,
+                    abs_quantiles=abs_quantiles,
+                    eps=eps,
+                )
+            return noise
+        if quantile is None or quantile >= 1 or quantile <= -1 or quantile == 0:
+            return noise
+        inverted = quantile < 0
+        nq_pos = nq_neg = None
+    absquantile = abs(quantile)
+    orig_shape = noise.shape
+    if noise.ndim > 1 and flatten:
+        flatnoise = noise.flatten(start_dim=eff_dim)
+        eff_dim = -1
+    else:
+        flatten = False
+        flatnoise = noise
+    if nq_lo is not None:
+        inverted = False
+        nq_neg = noise.new_tensor(max(eps, abs(nq_lo))).reshape((1,) * flatnoise.ndim)
+        nq_pos = (
+            nq_neg
+            if nq_hi is None
+            else noise.new_tensor(max(eps, abs(nq_hi))).reshape(nq_neg.shape)
+        )
+
+    if zero_mean_scale or restore_mean_scale:
+        saved_mean = flatnoise.mean(dim=eff_dim, keepdim=True)
+        if zero_mean_scale:
+            flatnoise = flatnoise - (
+                saved_mean * zero_mean_scale if zero_mean_scale != 1 else saved_mean
+            )
+        if restore_mean_scale == 0:
+            saved_mean = None
+        elif restore_mean_scale != 1:
+            saved_mean *= restore_mean_scale
+    else:
+        saved_mean = None
+    orig_noise_flat = flatnoise
+    if inverted:
+        flatnoise, max_pos, min_neg = flip_tensor_range(
+            flatnoise,
+            dim=eff_dim,
+            return_ranges=True,
+        )
+
+    if noise_reference is None:
+        noise_reference = flatnoise
+    elif noise_reference.numel() != flatnoise.numel():
+        raise ValueError(
+            "noise_reference must have the same number of elements as noise",
+        )
+    else:
+        noise_reference = noise_reference.to(flatnoise).reshape(flatnoise.shape)
+        if zero_mean_scale:
+            noise_reference = noise_reference - noise_reference.mean(
+                dim=eff_dim,
+                keepdim=True,
+            ).mul_(zero_mean_scale)
+        if inverted:
+            noise_reference: torch.Tensor = flip_tensor_range(
+                noise_reference,
+                dim=eff_dim,
+                return_ranges=False,
+            )
+    if pow_fac_in not in {0, 1}:
+        noise_reference = (
+            noise_reference.abs().pow_(pow_fac_in).copysign_(noise_reference)
+        )
+    handler = (
+        quantile_handlers.get(strategy)
+        if strategy_handler is None
+        else strategy_handler
+    )
+    if handler is None:
+        raise ValueError("Unknown strategy")
+    handler = partial(handler, orig_noise=noise, dim=dim, flatten=flatten)
+    need_outliers = only_outliers or sign_mode is not None
+    outliers_mask = None
+    if abs_quantiles:
+        if nq_pos is None:
+            nq = torch.quantile(
+                noise_reference.abs(),
+                absquantile,
+                dim=eff_dim,
+                keepdim=True,
+            )
+            nq = nq.mul_(nq_fac).add_(eps)
+        else:
+            nq = nq_pos
+        if need_outliers:
+            outliers_mask = flatnoise < -nq
+            outliers_mask |= flatnoise > nq
+        noise = handler(
+            flatnoise,
+            nq,
+            orig_noise=noise,
+            dim=dim,
+            flatten=flatten,
+        )
+    else:
+        noise_signs = noise_reference.signbit()
+        if nq_pos is None or nq_neg is None:
+            nq_pos = (
+                torch.nanquantile(
+                    torch.where(noise_signs, torch.nan, noise_reference),
+                    absquantile,
+                    dim=eff_dim,
+                    keepdim=True,
+                )
+                .mul_(nq_fac)
+                .add_(eps)
+            )
+            nq_neg = (
+                torch.nanquantile(
+                    torch.where(noise_signs, noise_reference.abs(), torch.nan),
+                    absquantile,
+                    dim=eff_dim,
+                    keepdim=True,
+                )
+                .mul_(nq_fac)
+                .add_(eps)
+            )
+        noise = torch.where(
+            noise_signs,
+            handler(flatnoise.neg(), nq_neg).neg_(),
+            handler(flatnoise, nq_pos),
+        )
+        if need_outliers:
+            outliers_mask = flatnoise < -nq_neg
+            outliers_mask |= flatnoise > nq_pos
+
+    if pow_fac not in {0.0, 1.0}:
+        noise = noise.abs().pow_(pow_fac).copysign(noise)
+    if inverted:
+        noise = flip_tensor_range(
+            noise,
+            dim=eff_dim,
+            min_neg=min_neg,
+            max_pos=max_pos,
+        )
+    if outliers_mask is not None:
+        noutliers = noise[outliers_mask].clone() if sign_mode else None
+        if sign_mode in {"keep", "avoid"}:
+            noutliers = noutliers.copysign_(
+                (orig_noise_flat if sign_mode == "keep" else orig_noise_flat.neg())[
+                    outliers_mask
+                ],
+            )
+        elif sign_mode == "flip":
+            noutliers = noutliers.neg_()
+        elif sign_mode in {"pos", "neg"}:
+            noutliers = noutliers.abs_()
+            if sign_mode == "neg":
+                noutliers = noutliers.neg_()
+        if noutliers is not None:
+            noise[outliers_mask] = noutliers
+        if only_outliers:
+            inv_outliers_mask = ~outliers_mask
+            noise[inv_outliers_mask] = orig_noise_flat[inv_outliers_mask]
+    if zero_result_mean_scale:
+        noise_mean = noise.mean(dim=eff_dim, keepdim=True).mul_(-zero_result_mean_scale)
+        saved_mean = noise_mean if saved_mean is None else saved_mean.add_(noise_mean)
+    if saved_mean is not None:
+        noise += saved_mean
+    return noise if noise.shape == orig_shape else noise.reshape(orig_shape)
+
+
+def quantile_normalize_old(
     noise: torch.Tensor,
     *,
     noise_reference: torch.Tensor | None = None,
@@ -506,7 +831,7 @@ def quantile_normalize(
         nq_pos = nq_neg = None
     orig_shape = noise.shape
     if noise.ndim > 1 and flatten:
-        flatnoise = noise.flatten(start_dim=dim)
+        flatnoise = noise.flatten(start_dim=dim or 0)
     else:
         flatten = False
         flatnoise = noise
@@ -629,13 +954,6 @@ def quantile_normalize(
             noise[inv_outliers_mask] = orig_noise_flat[inv_outliers_mask]
 
     return noise if noise.shape == orig_shape else noise.reshape(orig_shape)
-
-
-# class QuantileNormMode(Enum):
-#     # Quantile is applied to absolute values.
-#     SYMMETRIC = auto()
-#     # Quantile is applied to signed values.
-#     SEPERATE = auto()
 
 
 class QuantileNormQuantileMode(Enum):

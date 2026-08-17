@@ -1,7 +1,14 @@
 from __future__ import annotations
 
+import math
+
 import torch
 from comfy import model_management
+
+try:
+    from comfy import nested_tensor
+except (ModuleNotFoundError, ImportError):
+    nested_tensor = None
 
 from .. import noise, utils
 from ..latent_ops import SonarLatentOperation
@@ -737,7 +744,7 @@ class SonarQuantileFilteredNoiseNode(SonarCustomNoiseNodeBase):
                 tooltip="Multiplier on the input noise just before it is clipped to the quantile min/max. Generally should be left at the default.",
             )
             .req_float_norm_power(
-                default=0.5,
+                default=0.0,
                 min=-10000.0,
                 max=10000.0,
                 step=0.001,
@@ -764,9 +771,9 @@ class SonarQuantileFilteredNoiseNode(SonarCustomNoiseNodeBase):
                 tooltip="Same as norm_power, except this is applied before the quantile is calculated. For example, you could set this to 2.0 and norm_power to 0.5 to do quantile normalization on squared noise then return the square root as the result.",
             )
             .req_field_sign_mode(
-                ("default", "keep", "avoid"),
+                ("default", "keep", "avoid", "flip", "pos", "neg"),
                 default="default",
-                tooltip="This setting will be overridden by strategies that end with keepsign or avoidsign. Controls whether outliers will keep or avoid the sign of the original noise input. If set to default then it depends on whether the strategy affects the sign.",
+                tooltip="This setting will be overridden by strategies that end with keepsign or avoidsign. Controls whether outliers will keep or avoid the sign of the original noise input. If set to default then it depends on whether the strategy affects the sign. You can also set this to flip, pos or neg to flip or force the sign on outliers without regard for the original value.",
             )
             .req_bool_abs_quantiles(
                 default=True,
@@ -779,6 +786,10 @@ class SonarQuantileFilteredNoiseNode(SonarCustomNoiseNodeBase):
             .req_string_manual_quantiles(
                 default="",
                 tooltip="One or two comma separated float values. Can be used to manually define the quantile *values* (not percentages). When specified, the quantile parameter and noise reference parameters are ignored. The sign is always ignored. When abs_quantiles is enabled, only the first value will be used otherwise the first value defines the negative boundary and the second defines the positive. Example with abs_quantiles enabled: You enter '3.0', the range will be -3.0 to 3.0. Example with abs_quantiles disabled: You enter '2.0, 3.0', the range will be -2.0 to 3.0. As a reference for ranges to set, out of 100,000,000 items of Gaussian noise, about 100,000 will be above 2.6 so using limits between 2.5-3.5 will be roughly in the range of Gaussian noise.",
+            )
+            .req_string_zero_mean_scale(
+                default="0.0",
+                tooltip="Up to three comma separated float values. The first controls subtracting the mean from the input (and reference if provided), the second controls restoring the mean, the third controls subtracting mean from the quantile-normalized result. This will operate over the same dimensions as quantile normalization. For example, '1, 1, 0' would mean subtract the mean, then restore it, but _don't_ zero the mean before restoration. When not provided, the second two values will use the same parameter as the first. Leaving the field empty is the same as setting it to 0.",
             )
             .opt_customnoise_reference_noise_opt(
                 tooltip="If connected then noise from this generator will be used to calculate the quantiles but normalization will be applied to the custom_noise input. This probably won't work correctly for negative quantiles. When used, the reference will be generated first so, for example, you could use the SonarCustomNoiseParameters in forked RNG node to have both generate noise with the same seed/state. Ignored when specifying manual quantiles.",
@@ -807,6 +818,19 @@ class SonarQuantileFilteredNoiseNode(SonarCustomNoiseNodeBase):
         nq_hi = split_quantiles[0 if len(split_quantiles) < 2 else 1]
         return nq_lo, nq_hi
 
+    @staticmethod
+    def _parse_mean_scales(zero_mean_scale: str) -> tuple[float, float, float]:
+        zero_mean_scales = tuple(
+            0.0 if not s.strip() else float(s)
+            for s in zero_mean_scale.strip().split(",")
+        )
+        zmlen = len(zero_mean_scales)
+        if zmlen > 3:
+            raise ValueError(
+                "Too many values provided for zero mean scales. Must be between 0 and 3.",
+            )
+        return tuple(zero_mean_scales[idx if idx < zmlen else 0] for idx in range(3))
+
     def go(
         self,
         *,
@@ -825,8 +849,10 @@ class SonarQuantileFilteredNoiseNode(SonarCustomNoiseNodeBase):
         abs_quantiles: bool,
         only_outliers: bool,
         manual_quantiles: str,
+        zero_mean_scale: str,
         reference_noise_opt: object | None = None,
     ) -> tuple:
+        zms, rms, zrs = self._parse_mean_scales(zero_mean_scale)
         nq_lo, nq_hi = self._parse_manual_quantiles(manual_quantiles)
         return super().go(
             factor,
@@ -846,6 +872,9 @@ class SonarQuantileFilteredNoiseNode(SonarCustomNoiseNodeBase):
             only_outliers=only_outliers,
             nq_lo=nq_lo,
             nq_hi=nq_hi,
+            zero_mean_scale=zms,
+            restore_mean_scale=rms,
+            zero_result_mean_scale=zrs,
         )
 
 
@@ -1728,6 +1757,62 @@ class SonarCustomNoiseParametersNode(
         )
 
 
+class SonarNestedNoiseNode(SonarCustomNoiseNodeBase):
+    DESCRIPTION = "Custom noise helper that allows working with nested tensors which are generally only used by audio/video models like MiniMax H3, LTX, etc. Those models use order video then audio. The custom noise inputs are optional but at least one must be attached and will be used in order. You may supply less custom noise inputs than nested parts, in which case the noise used will wrap. In other words, if there were three nested components and you attach two custom noise inputs, the third component will use the first custom noise item. Note: Aside from batch, the number of elements in the latent reference you supply and the latent you use for sampling must match."
+
+    INPUT_TYPES = SonarLazyInputTypes(
+        lambda: (
+            NoiseNoChainInputTypes()
+            .req_latent_latent(
+                tooltip="Latent to use as a reference for nested shapes.",
+            )
+            .opt_customnoise_custom_noise_1()
+            .opt_customnoise_custom_noise_2()
+            .opt_customnoise_custom_noise_3()
+            .opt_customnoise_custom_noise_4()
+        ),
+    )
+
+    @classmethod
+    def get_item_class(cls):
+        return noise.NestedNoise
+
+    def go(
+        self,
+        *,
+        factor: float,
+        latent: dict,
+        custom_noise_1=None,
+        custom_noise_2=None,
+        custom_noise_3=None,
+        custom_noise_4=None,
+    ):
+        noises = tuple(
+            cn
+            for cn in (custom_noise_1, custom_noise_2, custom_noise_3, custom_noise_4)
+            if cn is not None
+        )
+        if not noises:
+            raise ValueError("At least one custom noise item must be attached.")
+        samples = latent["samples"]
+        if nested_tensor is not None and samples.is_nested:
+            nested_parts = samples.unbind()
+        else:
+            nested_parts = (samples,)
+        n_parts = len(nested_parts)
+        if not n_parts:
+            raise ValueError("Latent reference apparently has 0 parts?")
+        noises = tuple(cn.clone() for cn in noises[:n_parts])
+        shapes = tuple((1, *t.shape[1:]) for t in nested_parts)
+        numel = sum(math.prod(shp) for shp in shapes)
+        return super().go(
+            factor,
+            custom_noises=noises,
+            nested_numel=numel,
+            nested_shapes=shapes,
+        )
+
+
 NODE_CLASS_MAPPINGS = {
     "SonarBlendedNoise": SonarBlendedNoiseNode,
     "SonarChannelNoise": SonarChannelNoiseNode,
@@ -1736,6 +1821,7 @@ NODE_CLASS_MAPPINGS = {
     "SonarGuidedNoise": SonarGuidedNoiseNode,
     "SonarLatentOperationFilteredNoise": SonarLatentOperationFilteredNoiseNode,
     "SonarModulatedNoise": SonarModulatedNoiseNode,
+    "SonarNestedNoise": SonarNestedNoiseNode,
     "SonarNormalizeNoiseToScale": SonarNormalizeNoiseToScaleNode,
     "SonarNoveltyFilteredNoise": SonarNoveltyFilteredNoiseNode,
     "SonarPatternBreakNoise": SonarPatternBreakNoiseNode,

@@ -30,7 +30,6 @@ if TYPE_CHECKING:
 
 try:
     from comfy import nested_tensor
-    from comfy.utils import pack_latents, unpack_latents
 except (ModuleNotFoundError, ImportError):
     nested_tensor = None
 
@@ -444,9 +443,6 @@ class CustomNOISE:
 
         batch_size = latent_image.shape[0]
         unique_inds, inverse_inds = np.unique(batch_inds, return_inverse=True)
-        # use_idxs = {
-        #     out_idx: idx % batch_size for out_idx, idx in enumerate(unique_inds)
-        # }
         use_idxs = (idx for idx in range(unique_inds[-1] + 1) if idx in unique_inds)
         use_idxs = {idx: inverse_inds[uidx] for uidx, idx in enumerate(use_idxs)}
         n_use_idxs = len(use_idxs)
@@ -462,9 +458,6 @@ class CustomNOISE:
             sample_idx = idx % batch_size
             for nidx in range(len(nested_parts)):
                 sample = nested_parts[nidx][sample_idx].unsqueeze(0)
-                # print(
-                #     f"\nNOISE: idx {idx}.{nidx}, sample_idx {sample_idx}, shape {latent_image[sample_idx].shape}, nested={sample.is_nested}",
-                # )
                 noise = self._sample_noise(sample, self.seed + idx, sampler_idx=nidx)
                 batch_out_idx = use_idxs.get(idx)
                 if batch_out_idx is not None:
@@ -478,7 +471,7 @@ class CustomNOISE:
 
 
 class SonarToComfyNOISENode(metaclass=IntegratedNode):
-    DESCRIPTION = "Allows converting SONAR_CUSTOM_NOISE to NOISE (used by SamplerCustomAdvanced and possibly other custom samplers). NOTE: Does not work with noise types that depend on sigma (Brownian, ScheduledNoise, etc)."
+    DESCRIPTION = "Allows converting SONAR_CUSTOM_NOISE to NOISE (used by SamplerCustomAdvanced and possibly other custom samplers). The extra alt inputs are used if the latent is a nested tensor and ignored otherwise. Audio/video models like LTX and MiniMax H3 used nested tensors (order video then audio). Connected custom noise inputs will be used in order. NOTE: This node does not work with noise types that depend on sigma (Brownian, ScheduledNoise, etc) unless you manually set a sigma via other nodes."
     RETURN_TYPES = ("NOISE",)
     CATEGORY = "sampling/custom_sampling/noise"
     FUNCTION = "go"
@@ -502,14 +495,44 @@ class SonarToComfyNOISENode(metaclass=IntegratedNode):
                 default=1.0,
                 tooltip="Simple multiplier applied to noise after all other scaling and normalization effects. If set to 0, no noise will be generated (same as disabling noise).",
             )
+            .opt_customnoise_alt_custom_noise_1(
+                tooltip="Optional custom noise. See the node description.",
+            )
+            .opt_customnoise_alt_custom_noise_2(
+                tooltip="Optional custom noise. See the node description.",
+            )
+            .opt_customnoise_alt_custom_noise_3(
+                tooltip="Optional custom noise. See the node description.",
+            )
         ),
     )
 
     @classmethod
-    def go(cls, *, custom_noise, seed, cpu_noise=True, normalize=True, multiplier=1.0):
+    def go(
+        cls,
+        *,
+        custom_noise,
+        seed,
+        cpu_noise=True,
+        normalize=True,
+        multiplier=1.0,
+        alt_custom_noise_1=None,
+        alt_custom_noise_2=None,
+        alt_custom_noise_3=None,
+    ):
+        noises = tuple(
+            cn.clone()
+            for cn in (
+                custom_noise,
+                alt_custom_noise_1,
+                alt_custom_noise_2,
+                alt_custom_noise_3,
+            )
+            if cn is not None
+        )
         return (
             CustomNOISE(
-                (custom_noise,),
+                noises,
                 seed,
                 cpu_noise=cpu_noise,
                 normalize=normalize,

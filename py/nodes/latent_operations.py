@@ -351,8 +351,10 @@ class SonarLatentOperationQuantileFilter(SonarQuantileFilteredNoiseNode):
         abs_quantiles: bool,
         only_outliers: bool,
         manual_quantiles: str,
+        zero_mean_scale: str,
     ):
         # TODO: Support an optional reference LATENT_OPERATION.
+        zms, rms, zrs = cls._parse_mean_scales(zero_mean_scale)
         nq_lo, nq_hi = cls._parse_manual_quantiles(manual_quantiles)
         qnorm_filter = functools.partial(
             utils.quantile_normalize,
@@ -368,6 +370,9 @@ class SonarLatentOperationQuantileFilter(SonarQuantileFilteredNoiseNode):
             only_outliers=only_outliers,
             nq_lo=nq_lo,
             nq_hi=nq_hi,
+            zero_mean_scale=zms,
+            restore_mean_scale=rms,
+            zero_result_mean_scale=zrs,
         )
 
         return (SonarLatentOperation(op=lambda latent: qnorm_filter(latent)),)  # noqa: PLW0108

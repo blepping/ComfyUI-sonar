@@ -4,9 +4,10 @@ import contextlib
 import importlib
 import sys
 from functools import partial
-from typing import TYPE_CHECKING, Callable, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from types import ModuleType
 
 
@@ -83,7 +84,7 @@ class Integrations:
 
 
 class SonarIntegrations(Integrations):
-    def __init__(self, *args: list, **kwargs: dict):
+    def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self.register_integration("bleh", "ComfyUI-bleh", self.bleh_integration)
         self.register_integration(
@@ -114,7 +115,7 @@ MODULES = SonarIntegrations()
 
 class IntegratedNode(type):
     @staticmethod
-    def wrap_INPUT_TYPES(orig_method: Callable, *args: list, **kwargs: dict) -> dict:
+    def wrap_INPUT_TYPES(orig_method: Callable, *args: Any, **kwargs: Any) -> dict:
         MODULES.initialize()
         return orig_method(*args, **kwargs)
 

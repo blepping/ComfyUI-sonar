@@ -1,7 +1,7 @@
 # Some noise generation functions shamelessly yoinked from https://github.com/Clybius/ComfyUI-Extra-Samplers
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import torch
 
@@ -10,8 +10,6 @@ from .base import FramesToChannelsNoiseGenerator
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-
-# ruff: noqa: ANN002, ANN003
 
 
 class WaveletNoiseOctave(NamedTuple):
@@ -47,7 +45,7 @@ class WaveletNoiseGenerator(FramesToChannelsNoiseGenerator):
             "noise_sampler": None,
         }
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self.set_octave_data()
 
@@ -96,7 +94,7 @@ class WaveletNoiseGenerator(FramesToChannelsNoiseGenerator):
             raise ValueError("Unworkable parameters for wavelet noise")
         self.octave_data = tuple(octave_data)
 
-    def _generate_octave(self, *args: list, shape: Sequence) -> torch.Tensor:
+    def _generate_octave(self, *args: Any, shape: Sequence) -> torch.Tensor:
         height, width = shape[-2:]
         noise = (
             self.noise_sampler(*args)[..., :height, :width].reshape(shape)
@@ -122,7 +120,7 @@ class WaveletNoiseGenerator(FramesToChannelsNoiseGenerator):
             self.update_blend,
         )
 
-    def generate(self, *args: list) -> torch.Tensor:
+    def generate(self, *args: Any) -> torch.Tensor:
         adjusted_shape = self.get_adjusted_shape()
         height, width = adjusted_shape[-2:]
         curr_shape = list(adjusted_shape)

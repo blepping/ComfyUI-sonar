@@ -25,11 +25,11 @@ NOISE_INPUT_TYPES = frozenset(("SONAR_CUSTOM_NOISE", "OCS_NOISE"))
 
 if not HAVE_COMFY_UNION_TYPE:
 
-    class Wildcard(str):  # noqa: FURB189
+    class Wildcard(str):
         __slots__ = ("whitelist",)
 
         @classmethod
-        def __new__(cls, s, *args: list, whitelist=None, **kwargs: Any):
+        def __new__(cls, s, *args: Any, whitelist=None, **kwargs: Any):
             result = super().__new__(s, *args, **kwargs)
             result.whitelist = whitelist
             return result
@@ -186,7 +186,7 @@ class SonarInputTypes(InputTypes):
 class SonarLazyInputTypes(LazyInputTypes):
     _NO_REPLACE = True
 
-    def __init__(self, *args: list, initializers=(MODULES.initialize,), **kwargs: Any):
+    def __init__(self, *args: Any, initializers=(MODULES.initialize,), **kwargs: Any):
         super().__init__(
             *args,
             initializers=initializers,

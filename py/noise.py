@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 import comfy
 import torch
 import yaml
+from comfy import utils as comfy_utils
 from comfy.k_diffusion import sampling
 from comfy.model_management import throw_exception_if_processing_interrupted
 from torch import Tensor
@@ -24,6 +25,11 @@ from .utils import (
     quantile_normalize,
     scale_noise,
 )
+
+try:
+    from comfy import nested_tensor
+except (ModuleNotFoundError, ImportError):
+    nested_tensor = None
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -1929,6 +1935,9 @@ class QuantileFilteredNoise(CustomNoiseItemBase):
             only_outliers=self.only_outliers,
             nq_lo=self.nq_lo,
             nq_hi=self.nq_hi,
+            zero_mean_scale=self.zero_mean_scale,
+            restore_mean_scale=self.restore_mean_scale,
+            zero_result_mean_scale=self.zero_result_mean_scale,
         )
 
         def noise_sampler(*args, **kwargs):
@@ -2315,6 +2324,65 @@ class CustomNoiseParametersNoise(CustomNoiseItemBase):
                     neginf=noise_temp.min(),
                 )
             return scale_noise(noise, factor, normalized=normalize)
+
+        return noise_sampler
+
+
+class NestedNoise(CustomNoiseItemBase):
+    def clone_key(self, k):
+        if k == "custom_noises":
+            return tuple(n.clone() for n in self.custom_noises)
+        return super().clone_key(k)
+
+    def make_noise_sampler(
+        self,
+        x,
+        sigma_min,
+        sigma_max,
+        *args,
+        **kwargs,
+    ):
+        x_numel = x[0].numel()
+        x_shape = x.shape
+        shapes = self.nested_shapes
+        if x_numel != self.nested_numel:
+            errstr = f"Sampling latent with shape {x.shape} has {x_numel} element(s) per batch item which does not match the initial reference with shape(s) {shapes} and element(s) {self.nested_numel}"
+            raise ValueError(errstr)
+        factor = self.factor
+        n_shapes = len(shapes)
+        # batch_size = x.shape[0]
+        noise_samplers = tuple(
+            n.make_noise_sampler(
+                x_part,
+                *args,
+                sigma_min=sigma_min,
+                sigma_max=sigma_max,
+                **kwargs,
+            )
+            for n, x_part in zip(
+                self.custom_noises[:n_shapes],
+                comfy_utils.unpack_latents(x, shapes),
+                strict=True,
+            )
+        )
+        del x
+        n_samplers = len(noise_samplers)
+        if not n_samplers:
+            raise RuntimeError("Internal error: No noise samplers available")
+
+        def noise_sampler(*args, **kwargs) -> torch.Tensor:
+            noise_chunks = (
+                noise_samplers[nidx % n_samplers](*args, **kwargs)
+                for nidx in range(n_shapes)
+            )
+            if factor != 1:
+                noise_chunks = (nc.mul_(factor) for nc in noise_chunks)
+            result = comfy_utils.pack_latents(tuple(noise_chunks))[0]
+            return (
+                result
+                if result.shape[1:] == x_shape[1:]
+                else result.reshape(-1, *x_shape[1:])
+            )
 
         return noise_sampler
 
