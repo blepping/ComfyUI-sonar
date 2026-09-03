@@ -4,12 +4,14 @@ import abc
 import math
 import random
 from functools import partial
-from typing import Callable
+from typing import TYPE_CHECKING
 
 import comfy
 import torch
 import yaml
+from comfy import utils as comfy_utils
 from comfy.k_diffusion import sampling
+from comfy.model_management import throw_exception_if_processing_interrupted
 from torch import Tensor
 
 from . import external, utils
@@ -23,6 +25,14 @@ from .utils import (
     quantile_normalize,
     scale_noise,
 )
+
+try:
+    from comfy import nested_tensor
+except (ModuleNotFoundError, ImportError):
+    nested_tensor = None
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 # ruff: noqa: ANN002, ANN003, FBT001
 
@@ -64,7 +74,16 @@ class CustomNoiseItemBase(abc.ABC):
 
     def get_normalize(self, k, default=None):
         val = getattr(self, k, None)
-        return default if val is None else val
+        if val in {None, "default"}:
+            return default
+        if val == "disabled":
+            return False
+        if val == "forced":
+            return True
+        return default
+        # if isinstance(val, bool):
+        #     return val
+        # return default if val is None else val
 
     @abc.abstractmethod
     def make_noise_sampler(
@@ -456,13 +475,66 @@ class AdvancedVoronoiNoise(AdvancedNoiseBase):
         return super().clone_key(k)
 
     def make_noise_sampler(self, x, *args, normalized=True, **kwargs):
-        if x.ndim != 4:
+        if x.ndim < 4:
             raise ValueError("Can only handle 4+ dimensional latents")
         return super().make_noise_sampler(
             x,
             *args,
             normalized=normalized,
             noise_sampler_factory=self.custom_noise,
+            **kwargs,
+        )
+
+
+class AdvancedSimulationNoise(AdvancedNoiseBase):
+    ns_factory_arg_keys = tuple(SimulationNoiseGenerator.ng_params(no_super=True))
+
+    @property
+    def ns_factory(self):
+        return SimulationNoiseGenerator
+
+    def clone_key(self, k):
+        if (
+            k in {"custom_noise_h", "custom_noise_w", "custom_noise_z"}
+            and getattr(self, k) is not None
+        ):
+            return getattr(self, k).clone()
+        return super().clone_key(k)
+
+    def make_noise_sampler(self, x, *args, normalized=True, **kwargs):
+        if x.ndim < 4:
+            raise ValueError("Can only handle 4+ dimensional latents")
+        return super().make_noise_sampler(
+            x,
+            *args,
+            normalized=normalized,
+            noise_sampler_factory_h=self.custom_noise_h,
+            noise_sampler_factory_w=self.custom_noise_w,
+            noise_sampler_factory_z=self.custom_noise_z,
+            **kwargs,
+        )
+
+
+class AdvancedAutomataNoise(AdvancedNoiseBase):
+    ns_factory_arg_keys = tuple(AutomataNoiseGenerator.ng_params())
+
+    @property
+    def ns_factory(self):
+        return AutomataNoiseGenerator
+
+    # def clone_key(self, k):
+    #     if k == "custom_noise" and self.custom_noise is not None:
+    #         return self.custom_noise.clone()
+    #     return super().clone_key(k)
+
+    def make_noise_sampler(self, x, *args, normalized=True, **kwargs):
+        if x.ndim < 4:
+            raise ValueError("Can only handle 4+ dimensional latents")
+        return super().make_noise_sampler(
+            x,
+            *args,
+            normalized=normalized,
+            # noise_sampler_factory=self.custom_noise,
             **kwargs,
         )
 
@@ -1311,17 +1383,9 @@ class BlendedNoise(CustomNoiseItemBase):
         custom_noise_mask=None,
         noise_2_percent=0.5,
     ):
-        if custom_noise_1 is None and (
-            custom_noise_mask is not None or noise_2_percent != 1
-        ):
+        if custom_noise_1 is None and custom_noise_2 is None:
             raise ValueError(
-                "When custom_noise_1 is not attached noise_2_percent must be set to 1",
-            )
-        if custom_noise_2 is None and (
-            custom_noise_mask is not None or noise_2_percent != 0
-        ):
-            raise ValueError(
-                "When custom_noise_2 is not attached noise_2_percent must be set to 0",
+                "At least one of the custom_noise inputs must be connected.",
             )
         if (
             custom_noise_mask is None
@@ -1334,7 +1398,7 @@ class BlendedNoise(CustomNoiseItemBase):
             factor,
             noise_2_percent=noise_2_percent,
             blend_function=blend_function,
-            custom_noise_1=custom_noise_1.clone(),
+            custom_noise_1=None if custom_noise_1 is None else custom_noise_1.clone(),
             custom_noise_2=None if custom_noise_2 is None else custom_noise_2.clone(),
             custom_noise_mask=None
             if custom_noise_mask is None
@@ -1344,7 +1408,7 @@ class BlendedNoise(CustomNoiseItemBase):
 
     def clone_key(self, k):
         if k == "custom_noise_1":
-            return self.custom_noise_1.clone()
+            return None if self.custom_noise_1 is None else self.custom_noise_1.clone()
         if k == "custom_noise_2":
             return None if self.custom_noise_2 is None else self.custom_noise_2.clone()
         if k == "custom_noise_mask":
@@ -1361,47 +1425,33 @@ class BlendedNoise(CustomNoiseItemBase):
         blend_function = self.blend_function
         n2_blend = self.noise_2_percent
 
-        ns_1 = self.custom_noise_1.make_noise_sampler(
-            x,
-            *args,
-            normalized=False,
-            **kwargs,
-        )
-        ns_2 = (
+        if self.custom_noise_1 is None and self.custom_noise_2 is None:
+            raise RuntimeError("Impossible: No available noise generator")
+        ns_1, ns_2, ns_mask = (
             None
-            if self.custom_noise_2 is None
-            else self.custom_noise_2.make_noise_sampler(
-                x,
-                *args,
-                normalized=False,
-                **kwargs,
-            )
-        )
-        ns_mask = (
-            None
-            if self.custom_noise_mask is None
-            else self.custom_noise_mask.make_noise_sampler(
-                x,
-                *args,
-                normalized=False,
-                **kwargs,
-            )
+            if ng is None
+            else ng.make_noise_sampler(x, *args, normalized=False, **kwargs)
+            for ng in (self.custom_noise_1, self.custom_noise_2, self.custom_noise_mask)
         )
         n2_blend_tensor = x.new_full((1,), n2_blend) if ns_mask is None else None
 
-        def noise_sampler(s, sn):
+        def noise_sampler(s, sn, *args, **kwargs):
             nonlocal n2_blend_tensor
-            noise_1 = ns_1(s, sn)
-            noise_2 = None if ns_2 is None else ns_2(s, sn)
+            noise_1 = None if ns_1 is None else ns_1(s, sn, *args, **kwargs)
+            noise_2 = None if ns_2 is None else ns_2(s, sn, *args, **kwargs)
+            if noise_1 is None:
+                noise_1 = noise_2
+            elif noise_2 is None:
+                noise_2 = noise_1
             if ns_mask is not None:
                 n2_blend_tensor = (
-                    utils.normalize_to_scale(ns_mask(s, sn), 0.0, 1.0) + n2_blend
+                    utils.normalize_to_scale(
+                        ns_mask(s, sn, *args, **kwargs),
+                        0.0,
+                        1.0,
+                    ).add_(n2_blend)
                 ).clamp_(0.0, 1.0)
-            noise = (
-                noise_1
-                if noise_2 is None
-                else blend_function(noise_1, noise_2, n2_blend_tensor)
-            )
+            noise = blend_function(noise_1, noise_2, n2_blend_tensor)
             return scale_noise(noise, factor, normalized=normalize)
 
         return noise_sampler
@@ -1662,6 +1712,62 @@ class ScatternetFilteredNoise(CustomNoiseItemBase):
         return noise_sampler
 
 
+class NoveltyFilteredNoise(CustomNoiseItemBase):
+    def clone_key(self, k):
+        if k == "noise" and self.noise is not None:
+            return self.noise.clone()
+        return super().clone_key(k)
+
+    def make_noise_sampler(
+        self,
+        x,
+        sigma_min,
+        sigma_max,
+        *args,
+        normalized=True,
+        **kwargs,
+    ):
+        factor = self.factor
+        normalize = self.get_normalize("normalize", normalized)
+        if self.noise is not None:
+            internal_ns = self.noise.make_noise_sampler(
+                x,
+                *args,
+                sigma_min=sigma_min,
+                sigma_max=sigma_max,
+                normalized=self.normalize_noise,
+                **kwargs,
+            )
+        else:
+            internal_ns = None
+        ns_kwargs = getattr(self, "ns_kwargs", {}).copy()
+        kwargs |= ns_kwargs
+        ns = NoveltyFilteredNoiseGenerator(
+            x,
+            *args,
+            sigma_min=sigma_min,
+            sigma_max=sigma_max,
+            normalized=False,
+            noise_sampler=internal_ns,
+            skip_initial=self.skip_initial,
+            iters_per_call=self.iters_per_call,
+            blend_ratio=self.blend_ratio,
+            blend_function=utils.BLENDING_MODES[self.blend_mode],
+            update_blend_ratio=self.update_blend_ratio,
+            update_blend_function=utils.BLENDING_MODES[self.update_blend_mode],
+            **kwargs,
+        )
+
+        def noise_sampler(sigma, sigma_next):
+            return scale_noise(
+                ns(sigma, sigma_next),
+                factor,
+                normalized=normalize,
+            )
+
+        return noise_sampler
+
+
 class LatentOperationFilteredNoise(CustomNoiseItemBase):
     def clone_key(self, k):
         if k == "noise" and self.noise is not None:
@@ -1778,6 +1884,10 @@ class QuantileFilteredNoise(CustomNoiseItemBase):
     def clone_key(self, k):
         if k == "noise":
             return self.noise.clone()
+        if k == "noise_reference":
+            return (
+                None if self.noise_reference is None else self.noise_reference.clone()
+            )
         return super().clone_key(k)
 
     def make_noise_sampler(
@@ -1799,6 +1909,18 @@ class QuantileFilteredNoise(CustomNoiseItemBase):
             normalized=self.normalize_noise,
             **kwargs,
         )
+        ns_ref = (
+            None
+            if self.noise_reference is None or self.nq_lo is not None
+            else self.noise_reference.make_noise_sampler(
+                x,
+                *args,
+                sigma_min=sigma_min,
+                sigma_max=sigma_max,
+                normalized=self.normalize_noise,
+                **kwargs,
+            )
+        )
         noise_filter = partial(
             quantile_normalize,
             quantile=self.quantile,
@@ -1807,11 +1929,22 @@ class QuantileFilteredNoise(CustomNoiseItemBase):
             nq_fac=self.norm_fac,
             pow_fac=self.norm_pow,
             strategy=self.strategy,
+            pow_fac_in=self.norm_power_in,
+            sign_mode=self.sign_mode,
+            abs_quantiles=self.abs_quantiles,
+            only_outliers=self.only_outliers,
+            nq_lo=self.nq_lo,
+            nq_hi=self.nq_hi,
+            zero_mean_scale=self.zero_mean_scale,
+            restore_mean_scale=self.restore_mean_scale,
+            zero_result_mean_scale=self.zero_result_mean_scale,
         )
 
-        def noise_sampler(sigma, sigma_next):
+        def noise_sampler(*args, **kwargs):
+            noise_reference = None if ns_ref is None else ns_ref(*args, **kwargs)
+            noise = ns(*args, **kwargs)
             return scale_noise(
-                noise_filter(ns(sigma, sigma_next)),
+                noise_filter(noise, noise_reference=noise_reference),
                 factor,
                 normalized=normalize,
             )
@@ -1866,29 +1999,32 @@ class PerDimNoise(CustomNoiseItemBase):
             slice(-dim_size, None) if d == dim else slice(None, None)
             for d in range(x.ndim)
         )
+        n_chunks = math.ceil(dim_size / chunk_size)
+
         if self.shrink_dim:
 
             def noise_sampler(sigma, sigma_next) -> torch.Tensor:
-                noise = torch.cat(
-                    tuple(ns(sigma, sigma_next) for _ in range(dim_size)),
-                    dim=dim,
-                )[trim_slice]
+                chunks = []
+                for _ in range(n_chunks):
+                    throw_exception_if_processing_interrupted()
+                    chunks.append(ns(sigma, sigma_next))
+                noise = torch.cat(chunks, dim=dim)[trim_slice]
                 return scale_noise(noise, factor, normalized=normalize)
 
-        else:
-            select_dim = [slice(None, None) for d in range(x.ndim)]
-            n_chunks = math.ceil(dim_size / chunk_size)
-            temp_shape = list(x.shape)
-            temp_shape[dim] = int(n_chunks * chunk_size)
+            return noise_sampler
 
-            def noise_sampler(sigma, sigma_next) -> torch.Tensor:
-                nonlocal select_dim
-                result = x.new_zeros(temp_shape)
-                # result = torch.zeros_like(x)
-                for idx in range(0, dim_size, chunk_size):
-                    select_dim[dim] = slice(idx, idx + chunk_size)
-                    result[select_dim] = ns(sigma, sigma_next)[select_dim]
-                return scale_noise(result[trim_slice], factor, normalized=normalize)
+        select_dim = [slice(None, None) for d in range(x.ndim)]
+        temp_shape = list(x.shape)
+        temp_shape[dim] = int(n_chunks * chunk_size)
+
+        def noise_sampler(sigma, sigma_next) -> torch.Tensor:
+            nonlocal select_dim
+            result = x.new_zeros(temp_shape)
+            for idx in range(0, dim_size, chunk_size):
+                throw_exception_if_processing_interrupted()
+                select_dim[dim] = slice(idx, idx + chunk_size)
+                result[select_dim] = ns(sigma, sigma_next)[select_dim]
+            return scale_noise(result[trim_slice], factor, normalized=normalize)
 
         return noise_sampler
 
@@ -2094,6 +2230,9 @@ class CustomNoiseParametersNoise(CustomNoiseItemBase):
     ):
         factor = self.factor
         normalize = self.get_normalize("normalize", normalized)
+        print(
+            f"\n****** NS: normalized={normalized}, normalize={normalize}, self.normalize={self.normalize}"
+        )
         orig_shape = x.shape
         orig_dtype = x.dtype
         orig_device = x.device
@@ -2169,6 +2308,14 @@ class CustomNoiseParametersNoise(CustomNoiseItemBase):
                     temp_rng_state.set_states()
             else:
                 noise = ns(sigma, sigma_next)
+            if fixed_aspect:
+                noise = noise.flatten(start_dim=-spatdims)[..., : height * width]
+            if noise.shape != orig_shape:
+                noise = noise.reshape(orig_shape)
+            if noise.dtype != orig_dtype or noise.device != orig_device:
+                if noise.dtype.is_complex and not orig_dtype.is_complex:
+                    noise = noise.real.mul_(0.5).add_(noise.imag.mul_(0.5))
+                noise = noise.to(device=orig_device, dtype=orig_dtype)
             if fix_invalid:
                 noise_temp = noise.nan_to_num(0, posinf=0, neginf=0)
                 noise = noise.nan_to_num_(
@@ -2176,13 +2323,66 @@ class CustomNoiseParametersNoise(CustomNoiseItemBase):
                     posinf=noise_temp.max(),
                     neginf=noise_temp.min(),
                 )
-            if fixed_aspect:
-                noise = noise.flatten(start_dim=-spatdims)[..., : height * width]
-            if noise.shape != orig_shape:
-                noise = noise.reshape(orig_shape)
-            if noise.dtype != orig_dtype or noise.device != orig_device:
-                noise = noise.to(device=orig_device, dtype=orig_dtype)
             return scale_noise(noise, factor, normalized=normalize)
+
+        return noise_sampler
+
+
+class NestedNoise(CustomNoiseItemBase):
+    def clone_key(self, k):
+        if k == "custom_noises":
+            return tuple(n.clone() for n in self.custom_noises)
+        return super().clone_key(k)
+
+    def make_noise_sampler(
+        self,
+        x,
+        sigma_min,
+        sigma_max,
+        *args,
+        **kwargs,
+    ):
+        x_numel = x[0].numel()
+        x_shape = x.shape
+        shapes = self.nested_shapes
+        if x_numel != self.nested_numel:
+            errstr = f"Sampling latent with shape {x.shape} has {x_numel} element(s) per batch item which does not match the initial reference with shape(s) {shapes} and element(s) {self.nested_numel}"
+            raise ValueError(errstr)
+        factor = self.factor
+        n_shapes = len(shapes)
+        # batch_size = x.shape[0]
+        noise_samplers = tuple(
+            n.make_noise_sampler(
+                x_part,
+                *args,
+                sigma_min=sigma_min,
+                sigma_max=sigma_max,
+                **kwargs,
+            )
+            for n, x_part in zip(
+                self.custom_noises[:n_shapes],
+                comfy_utils.unpack_latents(x, shapes),
+                strict=True,
+            )
+        )
+        del x
+        n_samplers = len(noise_samplers)
+        if not n_samplers:
+            raise RuntimeError("Internal error: No noise samplers available")
+
+        def noise_sampler(*args, **kwargs) -> torch.Tensor:
+            noise_chunks = (
+                noise_samplers[nidx % n_samplers](*args, **kwargs)
+                for nidx in range(n_shapes)
+            )
+            if factor != 1:
+                noise_chunks = (nc.mul_(factor) for nc in noise_chunks)
+            result = comfy_utils.pack_latents(tuple(noise_chunks))[0]
+            return (
+                result
+                if result.shape[1:] == x_shape[1:]
+                else result.reshape(-1, *x_shape[1:])
+            )
 
         return noise_sampler
 

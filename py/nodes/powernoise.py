@@ -7,6 +7,7 @@ from __future__ import annotations
 import math
 import os
 import random
+from typing import Any
 
 import comfy
 import folder_paths
@@ -86,7 +87,7 @@ class ChannelMixer:
         channel_mixer /= channel_mixer.norm(dim=1, keepdim=True)
         return channel_mixer
 
-    def to(self, *args: list, **kwargs: dict):
+    def to(self, *args: Any, **kwargs: Any):
         if self.mixer is not None:
             self.mixer = self.mixer.to(*args, **kwargs)
         return self
@@ -100,7 +101,7 @@ class ChannelMixer:
         noise = self.mixer @ noise.swapaxes(0, 1).reshape(c, -1)
         return noise.reshape(c, b, h, w).swapaxes(1, 0)
 
-    def __call__(self, *args: list, **kwargs: dict):
+    def __call__(self, *args: Any, **kwargs: Any):
         return self.apply(*args, **kwargs)
 
 
@@ -301,7 +302,7 @@ class PowerNoiseItem(CustomNoiseItemBase):
         *,
         channel_correlation,
         power_filter=None,
-        **kwargs: dict,
+        **kwargs: Any,
     ):
         if isinstance(channel_correlation, str):
             channel_correlation = torch.tensor(
@@ -476,7 +477,7 @@ class PowerFilterNoiseItem(PowerNoiseItem):
         noise,
         normalize_noise,
         normalize_result,
-        **kwargs: dict,
+        **kwargs: Any,
     ):
         super().__init__(
             factor,
@@ -628,7 +629,7 @@ class SonarPowerNoiseNode(SonarCustomNoiseNodeBase):
     def go(
         self,
         preview="none",
-        **kwargs: dict,
+        **kwargs: Any,
     ):
         result = super().go(**kwargs)
         if preview == "none":
@@ -713,7 +714,7 @@ class SonarPowerFilterNoiseNode(SonarPowerNoiseNode, SonarNormalizeNoiseNodeMixi
         normalize_noise,
         normalize_result,
         preview="none",
-        **kwargs: dict,
+        **kwargs: Any,
     ):
         return super().go(
             factor=factor,

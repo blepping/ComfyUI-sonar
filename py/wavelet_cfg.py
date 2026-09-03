@@ -172,6 +172,7 @@ class WCFGPercentages(NamedTuple):
             else:
                 pct_enabled_sigmas = (start_sigma - sigma) / (start_sigma - end_sigma)
             steps = len(sigmas) - 1
+            have_steps = False
             if steps > 1:
                 step = utils.step_from_sigmas(sigma, sigmas)
                 pct_steps = step / (steps - 1) if step is not None else None
@@ -179,10 +180,11 @@ class WCFGPercentages(NamedTuple):
                     (sigmas <= start_sigma) & (sigmas >= end_sigma)
                 ]
                 if len(enabled_steps) > 1:
+                    have_steps = True
                     step_first = enabled_steps[0].item()
                     step_last = enabled_steps[-1].item()
                     pct_enabled_steps = (step - step_first) / (step_last - step_first)
-            else:
+            if not have_steps:
                 step = 0.0
                 pct_steps = 1.0
                 step_first = step_last = None
@@ -247,6 +249,8 @@ class WCFGScales(NamedTuple):
             target = self.yh_scales
         if isinstance(target, float):
             return f"{target:.4f}"
+        if not isinstance(target, (list, tuple)):
+            return str(target)
         result = ", ".join(
             self.pretty_yh_scales(target=val)
             if isinstance(val, (list, tuple))

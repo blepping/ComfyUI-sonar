@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any
 
 import torch
 
 from .utils import fallback
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
 try:
     import pytorch_wavelets as ptwav
@@ -98,13 +98,15 @@ class Wavelet:
         if not two_step_inverse:
             return inverse_function((yl, yh))
         result = inverse_function((torch.zeros_like(yl), yh))
-        result += inverse_function((
-            yl,
-            tuple(torch.zeros_like(yh_band) for yh_band in yh),
-        ))
+        result += inverse_function(
+            (
+                yl,
+                tuple(torch.zeros_like(yh_band) for yh_band in yh),
+            ),
+        )
         return result
 
-    def to(self, *args: list, copy: bool = False, **kwargs: dict) -> Wavelet:
+    def to(self, *args: Any, copy: bool = False, **kwargs: Any) -> Wavelet:
         o = Wavelet.__new__(Wavelet) if copy else self
         o._wavelet_forward = self._wavelet_forward.to(*args, **kwargs)  # noqa: SLF001
         o._wavelet_inverse = self._wavelet_inverse.to(*args, **kwargs)  # noqa: SLF001

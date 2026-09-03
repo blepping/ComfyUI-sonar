@@ -247,7 +247,7 @@ class SonarBase:
         momentum = self.cfg.momentum if momentum is None else momentum
         mode = self.cfg.momentum_mode
         if (
-            momentum == 1  # noqa: PLR0916
+            momentum == 1
             or history is None
             or (mode == MomentumMode.DENOISED and not is_denoised)
             or (mode != MomentumMode.DENOISED and is_denoised)
@@ -412,7 +412,7 @@ class SonarGuidanceMixin:
 
 
 class SonarWithGuidance(SonarBase, SonarGuidanceMixin):
-    def __init__(self, *args: list[Any], **kwargs: dict[str, Any]):
+    def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
         SonarGuidanceMixin.__init__(self, self.cfg.guidance)
 
@@ -424,8 +424,8 @@ class SonarSampler(SonarWithGuidance):
         sigmas: Tensor,
         s_in: Tensor,
         extra_args: dict[str, Any],
-        *args: list[Any],
-        **kwargs: dict[str, Any],
+        *args: Any,
+        **kwargs: Any,
     ):
         super().__init__(*args, **kwargs)
         self.model = model
@@ -437,7 +437,7 @@ class SonarSampler(SonarWithGuidance):
         self,
         x: Tensor,
         sigma: Tensor,
-        *args: list[Any],
+        *args: Any,
         s_in=None,
         extra_args=None,
     ) -> Tensor:
@@ -452,8 +452,8 @@ class SonarSampler(SonarWithGuidance):
 class SonarEuler(SonarSampler):
     def __init__(
         self,
-        *args: list[Any],
-        **kwargs: dict[str, Any],
+        *args: Any,
+        **kwargs: Any,
     ):
         super().__init__(*args, **kwargs)
 
@@ -531,8 +531,8 @@ class SonarEulerAncestral(SonarSampler):
         self,
         eta: float = 1.0,
         s_noise: float = 1.0,
-        *args: list[Any],
-        **kwargs: dict[str, Any],
+        *args: Any,
+        **kwargs: Any,
     ):
         super().__init__(*args, **kwargs)
         self.eta = eta
@@ -560,9 +560,8 @@ class SonarEulerAncestral(SonarSampler):
         )
         if sigma_next > 0:
             result_sample = self.guidance_step(step_index, result_sample, denoised)
-            result_sample = (  # noqa: PLR6104
-                result_sample
-                + self.noise_sampler(sigma, sigma_next) * (self.s_noise * sigma_up)
+            result_sample = result_sample + self.noise_sampler(sigma, sigma_next) * (
+                self.s_noise * sigma_up
             )
 
         return (
@@ -630,8 +629,8 @@ class SonarDPMPPSDE(SonarSampler):
         self,
         eta: float = 1.0,
         s_noise: float = 1.0,
-        *args: list[Any],
-        **kwargs: dict[str, Any],
+        *args: Any,
+        **kwargs: Any,
     ):
         super().__init__(*args, **kwargs)
         self.eta = eta

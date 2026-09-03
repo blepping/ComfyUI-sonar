@@ -467,8 +467,8 @@ Some modes act as wrappers to other modes. All modes will just ignore parameters
 
 Modes listed with the defaults for parameters they support. These modes also support `dscale` which defaults to 1 and can be used to manually adjust the scale of the mode result.
 
-* `euclidean`
-* `manhatten`
+* `euclidean` - Default mode, uses Euclidean distances.
+* `manhatten` - Uses Manhatten distances.
 * `chebyshev`
 * `minkowsi:p=3.0`
 * `quadratic`

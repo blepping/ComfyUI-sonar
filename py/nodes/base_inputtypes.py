@@ -3,29 +3,38 @@ from __future__ import annotations
 
 from copy import deepcopy
 from functools import partial
-from typing import Callable, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+bi_int = int
+bi_bool = bool
+bi_float = float
 
 
 class InputCollection:
-    _DELEGATE_KEYS = frozenset((
-        "bool",
-        "boolean",
-        "clip",
-        "conditioning",
-        "field",
-        "float",
-        "image",
-        "int",
-        "latent",
-        "model",
-        "sampler",
-        "seed",
-        "sigmas",
-        "string",
-        "vae",
-    ))
+    _DELEGATE_KEYS = frozenset(
+        (
+            "bool",
+            "boolean",
+            "clip",
+            "conditioning",
+            "field",
+            "float",
+            "image",
+            "int",
+            "latent",
+            "model",
+            "sampler",
+            "seed",
+            "sigmas",
+            "string",
+            "vae",
+        ),
+    )
 
-    def __init__(self, **kwargs: dict):
+    def __init__(self, **kwargs: Any):
         self.fields = kwargs
 
     def __getattr__(self, key: str):
@@ -42,10 +51,10 @@ class InputCollection:
     def clone(self):
         return InputCollection(**self.to_dict())
 
-    def __len__(self) -> int:
+    def __len__(self) -> bi_int:
         return len(self.fields)
 
-    def __contains__(self, key: str) -> bool:
+    def __contains__(self, key: str) -> bi_bool:
         return key in self.fields
 
     def field(
@@ -53,8 +62,8 @@ class InputCollection:
         name: str,
         type: str | tuple,
         *,
-        _skip: bool = False,
-        **kwargs: dict,
+        _skip: bi_bool = False,
+        **kwargs: Any,
     ) -> InputCollection:
         if not _skip:
             self.fields[name] = (type,) if not kwargs else (type, kwargs)
@@ -63,7 +72,7 @@ class InputCollection:
     def string(
         self,
         name: str,
-        **kwargs: dict,
+        **kwargs: Any,
     ) -> InputCollection:
         return self.field(name, "STRING", **kwargs)
 
@@ -71,11 +80,11 @@ class InputCollection:
         self,
         name: str,
         *,
-        step: float = 0.001,
-        min: float = -10000.0,
-        max: float = 10000.0,
-        round: bool = False,
-        **kwargs: dict,
+        step: bi_float = 0.001,
+        min: bi_float = -10000.0,
+        max: bi_float = 10000.0,
+        round: bi_bool = False,
+        **kwargs: Any,
     ) -> InputCollection:
         return self.field(
             name,
@@ -91,9 +100,9 @@ class InputCollection:
         self,
         name: str,
         *,
-        min: float = -10000,
-        max: float = 10000,
-        **kwargs: dict,
+        min: bi_float = -10000,
+        max: bi_float = 10000,
+        **kwargs: Any,
     ) -> InputCollection:
         return self.field(
             name,
@@ -106,22 +115,22 @@ class InputCollection:
     def bool(
         self,
         name: str,
-        default: bool = False,
-        **kwargs: dict,
+        default: bi_bool = False,
+        **kwargs: Any,
     ) -> InputCollection:
         return self.field(name, "BOOLEAN", default=default, **kwargs)
 
-    boolean = bool
+    boolean = bool  # noqa: A003
 
     def seed(
         self,
         name: str = "seed",
         *,
-        default: int = 0,
-        min: int = 0,
-        max: int = 0xFFFFFFFFFFFFFFFF,
+        default: bi_int = 0,
+        min: bi_int = 0,
+        max: bi_int = 0xFFFFFFFFFFFFFFFF,
         tooltip="Seed to use for generated noise",
-        **kwargs: dict,
+        **kwargs: Any,
     ) -> InputCollection:
         return self.int(
             name,
@@ -132,32 +141,32 @@ class InputCollection:
             **kwargs,
         )
 
-    def image(self, name: str = "image", **kwargs: dict) -> InputCollection:
+    def image(self, name: str = "image", **kwargs: Any) -> InputCollection:
         return self.field(name, "IMAGE", **kwargs)
 
-    def latent(self, name: str = "latent", **kwargs: dict) -> InputCollection:
+    def latent(self, name: str = "latent", **kwargs: Any) -> InputCollection:
         return self.field(name, "LATENT", **kwargs)
 
     def conditioning(
         self,
         name: str = "conditioning",
-        **kwargs: dict,
+        **kwargs: Any,
     ) -> InputCollection:
         return self.field(name, "CONDITIONING", **kwargs)
 
-    def model(self, name: str = "model", **kwargs: dict) -> InputCollection:
+    def model(self, name: str = "model", **kwargs: Any) -> InputCollection:
         return self.field(name, "MODEL", **kwargs)
 
-    def sigmas(self, name: str = "sigmas", **kwargs: dict) -> InputCollection:
+    def sigmas(self, name: str = "sigmas", **kwargs: Any) -> InputCollection:
         return self.field(name, "SIGMAS", **kwargs)
 
-    def sampler(self, name: str = "sampler", **kwargs: dict) -> InputCollection:
+    def sampler(self, name: str = "sampler", **kwargs: Any) -> InputCollection:
         return self.field(name, "SAMPLER", **kwargs)
 
-    def clip(self, name: str = "clip", **kwargs: dict) -> InputCollection:
+    def clip(self, name: str = "clip", **kwargs: Any) -> InputCollection:
         return self.field(name, "CLIP", **kwargs)
 
-    def vae(self, name: str = "vae", **kwargs: dict) -> InputCollection:
+    def vae(self, name: str = "vae", **kwargs: Any) -> InputCollection:
         return self.field(name, "VAE", **kwargs)
 
 
@@ -226,7 +235,7 @@ class InputTypes:
             errstr = f"Unknown attribute {key} for InputTypes"
             raise AttributeError(errstr)
 
-        def wrapper(*args: list, **kwargs: dict):
+        def wrapper(*args: Any, **kwargs: Any):
             meth(*args, **kwargs)
             return self
 
@@ -240,7 +249,7 @@ class LazyInputTypes:
         self.builder = builder
         self.initializers = initializers
 
-    def get_input_types(self, *args: list, **kwargs: dict):
+    def get_input_types(self, *args: Any, **kwargs: Any):
         if args or kwargs:
             args = tuple(args)
             cache_key = (args, tuple(kwargs.items()))
@@ -259,5 +268,5 @@ class LazyInputTypes:
             self._input_types_params[cache_key] = result
         return result
 
-    def __call__(self, *args: list, **kwargs: dict) -> dict:
+    def __call__(self, *args: Any, **kwargs: Any) -> dict:
         return self.get_input_types(*args, **kwargs)()

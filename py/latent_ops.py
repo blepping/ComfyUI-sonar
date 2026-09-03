@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import math
 import random
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import torch
 
 from . import utils
 
 if TYPE_CHECKING:
-    from types import Sequence
+    from collections.abc import Sequence
 
 
 class SonarLatentOperation:
@@ -34,9 +34,9 @@ class SonarLatentOperation:
     def call_op(
         self,
         t: torch.Tensor,
-        *args: list,
+        *args: Any,
         op=None,
-        **kwargs: dict,
+        **kwargs: Any,
     ) -> torch.Tensor:
         if op is None:
             op = self.op
@@ -51,7 +51,7 @@ class SonarLatentOperation:
         latent: torch.Tensor,
         *,
         sigma: torch.Tensor | float | None = None,
-        **kwargs: dict,
+        **kwargs: Any,
     ) -> torch.Tensor:
         if not self.enabled(sigma=sigma):
             return latent
@@ -64,16 +64,18 @@ class SonarLatentOperationAdvanced(SonarLatentOperation):
         *,
         blend_mode: str,
         blend_strength: float,
+        blend_strategy: str,
         input_multiplier: float,
         output_multiplier: float,
         difference_multiplier: float,
         ops: Sequence,
         op_alt=None,
-        **kwargs: dict,
+        **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self.blend_function = utils.BLENDING_MODES[blend_mode]
         self.blend_strength = blend_strength
+        self.blend_strategy = blend_strategy
         self.input_multiplier = input_multiplier
         self.output_multiplier = output_multiplier
         self.difference_multiplier = difference_multiplier
@@ -85,7 +87,7 @@ class SonarLatentOperationAdvanced(SonarLatentOperation):
         latent: torch.Tensor,
         *,
         sigma: torch.Tensor | float | None = None,
-        **kwargs: dict,
+        **kwargs: Any,
     ) -> torch.Tensor:
         t = latent
         enabled = self.enabled(sigma)
@@ -103,19 +105,23 @@ class SonarLatentOperationAdvanced(SonarLatentOperation):
         ) - t
         if self.difference_multiplier != 1.0:
             diff *= self.difference_multiplier
-        return self.blend_function(t, diff, self.blend_strength)
+        if self.blend_strategy == "difference":
+            return self.blend_function(t, diff, self.blend_strength)
+        if self.blend_strategy == "result":
+            return self.blend_function(t, t + diff, self.blend_strength)
+        raise ValueError(f"Unknown blend strategy: {self.blend_strategy}")
 
 
 class SonarLatentOperationNoise(SonarLatentOperation):
     def __init__(
         self,
-        *args: list,
+        *args: Any,
         custom_noise,
         scale_to_sigma: bool = False,
         cpu_noise: bool = False,
         normalize: bool = True,
         lazy_noise_sampler: bool = False,
-        **kwargs: dict,
+        **kwargs: Any,
     ):
         super().__init__(*args, **kwargs)
         self.custom_noise = custom_noise
@@ -131,7 +137,7 @@ class SonarLatentOperationNoise(SonarLatentOperation):
         latent: torch.Tensor,
         *,
         sigma: torch.Tensor | float | None = None,
-        **kwargs: dict,
+        **kwargs: Any,
     ) -> torch.Tensor:
         t = latent
         enabled = self.enabled(sigma)
@@ -187,12 +193,12 @@ class SonarLatentOperationNoise(SonarLatentOperation):
 
 
 class SonarLatentOperationSetSeed(SonarLatentOperation):
-    def __init__(self, *args: list, seed: int, restore_rng_state: bool, **kwargs: dict):
+    def __init__(self, *args: Any, seed: int, restore_rng_state: bool, **kwargs: Any):
         super().__init__(*args, **kwargs)
         self.seed = seed
         self.restore_rng_state = restore_rng_state
 
-    def __call__(self, *args: list, **kwargs: dict) -> torch.Tensor:
+    def __call__(self, *args: Any, **kwargs: Any) -> torch.Tensor:
         if self.restore_rng_state:
             pyrandst = random.getstate()
             torchrandst = torch.random.get_rng_state()

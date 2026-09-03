@@ -25,11 +25,11 @@ NOISE_INPUT_TYPES = frozenset(("SONAR_CUSTOM_NOISE", "OCS_NOISE"))
 
 if not HAVE_COMFY_UNION_TYPE:
 
-    class Wildcard(str):  # noqa: FURB189
+    class Wildcard(str):
         __slots__ = ("whitelist",)
 
         @classmethod
-        def __new__(cls, s, *args: list, whitelist=None, **kwargs: dict):
+        def __new__(cls, s, *args: Any, whitelist=None, **kwargs: Any):
             result = super().__new__(s, *args, **kwargs)
             result.whitelist = whitelist
             return result
@@ -48,17 +48,19 @@ NOISE_INPUT_TYPES_HINT = (
 
 
 class SonarInputCollection(InputCollection):
-    def __init__(self, *args: list, **kwargs: dict):
+    def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
-        self._DELEGATE_KEYS = self._DELEGATE_KEYS | frozenset((  # noqa: PLR6104
-            "customnoise",
-            "floatpct",
-            "normalizetristate",
-            "selectblend",
-            "selectnoise",
-            "selectscalemode",
-            "yaml",
-        ))
+        self._DELEGATE_KEYS = self._DELEGATE_KEYS | frozenset(
+            (
+                "customnoise",
+                "floatpct",
+                "normalizetristate",
+                "selectblend",
+                "selectnoise",
+                "selectscalemode",
+                "yaml",
+            ),
+        )
 
     def yaml(
         self,
@@ -68,7 +70,7 @@ class SonarInputCollection(InputCollection):
         placeholder="# YAML or JSON here",
         dynamicPrompts=False,  # noqa: N803
         multiline=True,
-        **kwargs: dict,
+        **kwargs: Any,
     ):
         return self.field(
             name,
@@ -87,7 +89,7 @@ class SonarInputCollection(InputCollection):
         default="lerp",
         insert_modes=(),
         tooltip="Mode used for blending. If you have ComfyUI-bleh then you will have access to many more blend modes.",
-        **kwargs: dict,
+        **kwargs: Any,
     ) -> InputCollection:
         if not MODULES.initialized:
             raise RuntimeError(
@@ -108,7 +110,7 @@ class SonarInputCollection(InputCollection):
         default="nearest-exact",
         insert_modes=(),
         tooltip="Mode used for scaling. If you have ComfyUI-bleh then you will have access to many more scale modes.",
-        **kwargs: dict,
+        **kwargs: Any,
     ) -> InputCollection:
         if not MODULES.initialized:
             raise RuntimeError(
@@ -129,7 +131,7 @@ class SonarInputCollection(InputCollection):
         default="gaussian",
         insert_types=(),
         tooltip="Sets the type of noise.",
-        **kwargs: dict,
+        **kwargs: Any,
     ) -> InputCollection:
         return self.field(
             name,
@@ -144,7 +146,7 @@ class SonarInputCollection(InputCollection):
         name: str,
         add_hint: bool = True,  # noqa: FBT001
         tooltip="Allows connecting a custom noise chain.",
-        **kwargs: dict,
+        **kwargs: Any,
     ) -> InputCollection:
         if add_hint:
             tooltip = f"{tooltip}\n{NOISE_INPUT_TYPES_HINT}"
@@ -156,7 +158,7 @@ class SonarInputCollection(InputCollection):
         *,
         default="default",
         tooltip="Controls whether noise is normalized to 1.0 strength.",
-        **kwargs: dict,
+        **kwargs: Any,
     ):
         return self.field(
             name,
@@ -166,14 +168,14 @@ class SonarInputCollection(InputCollection):
             **kwargs,
         )
 
-    def floatpct(self, name: str, *, min=0.0, max=1.0, **kwargs: dict):  # noqa: A002
+    def floatpct(self, name: str, *, min=0.0, max=1.0, **kwargs: Any):  # noqa: A002
         return self.float(name=name, min=min, max=max, **kwargs)
 
 
 class SonarInputTypes(InputTypes):
     _NO_REPLACE = True
 
-    def __init__(self, *args: list, **kwargs: dict):
+    def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(
             *args,
             collection_class=SonarInputCollection,
@@ -184,7 +186,7 @@ class SonarInputTypes(InputTypes):
 class SonarLazyInputTypes(LazyInputTypes):
     _NO_REPLACE = True
 
-    def __init__(self, *args: list, initializers=(MODULES.initialize,), **kwargs: dict):
+    def __init__(self, *args: Any, initializers=(MODULES.initialize,), **kwargs: Any):
         super().__init__(
             *args,
             initializers=initializers,
@@ -204,20 +206,22 @@ class SonarCustomNoiseNodeBase(metaclass=IntegratedNode):
         raise NotImplementedError
 
     INPUT_TYPES = SonarLazyInputTypes(
-        lambda *, include_rescale=True, include_chain=True: SonarInputTypes()
-        .req_float_factor(
-            default=1.0,
-            tooltip="Scaling factor for the generated noise of this type.",
-        )
-        .req_float_rescale(
-            _skip=not include_rescale,
-            default=0.0,
-            min=0.0,
-            tooltip="When non-zero, this custom noise item and other custom noise items items connected to it will have their factor scaled to add up to the specified rescale value. When set to 0, rescaling is disabled.",
-        )
-        .opt_customnoise_sonar_custom_noise_opt(
-            _skip=not include_chain,
-            tooltip="Optional input for more custom noise items.",
+        lambda *, include_rescale=True, include_chain=True: (
+            SonarInputTypes()
+            .req_float_factor(
+                default=1.0,
+                tooltip="Scaling factor for the generated noise of this type.",
+            )
+            .req_float_rescale(
+                _skip=not include_rescale,
+                default=0.0,
+                min=0.0,
+                tooltip="When non-zero, this custom noise item and other custom noise items items connected to it will have their factor scaled to add up to the specified rescale value. When set to 0, rescaling is disabled.",
+            )
+            .opt_customnoise_sonar_custom_noise_opt(
+                _skip=not include_chain,
+                tooltip="Optional input for more custom noise items.",
+            )
         ),
         initializers=(),
     )
@@ -227,7 +231,7 @@ class SonarCustomNoiseNodeBase(metaclass=IntegratedNode):
         factor=1.0,
         rescale=0.0,
         sonar_custom_noise_opt=None,
-        **kwargs: dict[str, Any],
+        **kwargs: Any[str, Any],
     ):
         nis = (
             sonar_custom_noise_opt.clone()
@@ -240,7 +244,7 @@ class SonarCustomNoiseNodeBase(metaclass=IntegratedNode):
 
 
 class NoiseChainInputTypes(SonarInputTypes):
-    def __init__(self, *, parent=SonarCustomNoiseNodeBase, **kwargs: dict):
+    def __init__(self, *, parent=SonarCustomNoiseNodeBase, **kwargs: Any):
         super().__init__(parent=parent, **kwargs)
 
 
@@ -251,7 +255,7 @@ class NoiseNoChainInputTypes(SonarInputTypes):
         parent=SonarCustomNoiseNodeBase,
         parent_args=(),
         parent_kwargs=None,
-        **kwargs: dict,
+        **kwargs: Any,
     ):
         super().__init__(
             parent=parent,
